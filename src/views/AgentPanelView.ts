@@ -1,0 +1,708 @@
+import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import type OpenCodePlugin from "../../main";
+import type { OpenCodeEventSubscription } from "../services/opencode-events";
+import type { JsonObject, OpenCodeSession } from "../services/opencode-types";
+
+export const VIEW_TYPE_OPENCODE_AGENT_PANEL = "opencode-agent-panel";
+
+interface AgentPanelProject {
+  id: string;
+  name: string;
+  openedDirectories: string[];
+  worktrees: AgentPanelWorktree[];
+}
+
+interface AgentPanelWorktree {
+  id: string;
+  name: string;
+  path: string;
+  sessions: AgentPanelSession[];
+}
+
+interface AgentPanelSession {
+  id: string;
+  title: string;
+  status: SessionVisualStatus;
+  muted: boolean;
+  children: AgentPanelSession[];
+}
+
+type SessionVisualStatus = "idle" | "working" | "attention" | "done" | "error" | "retry";
+
+interface OpenCodeProjectMeta {
+  id: string;
+  name: string;
+  worktree?: string;
+  sandboxes: string[];
+}
+
+interface OpenedDirectoryContext {
+  directory: string;
+  project?: JsonObject;
+}
+
+export class AgentPanelView extends ItemView {
+  private collapsed = new Set<string>();
+  private activeSessionId?: string;
+  private highlightedKey?: string;
+  private eventSubscription?: OpenCodeEventSubscription;
+  private visibleRows: { key: string; kind: "project" | "worktree" | "session" | "new-session"; element: HTMLElement; sessionId?: string }[] = [];
+  private loading = false;
+  private refreshTimer?: number;
+
+  constructor(
+    leaf: WorkspaceLeaf,
+    private readonly plugin: OpenCodePlugin,
+  ) {
+    super(leaf);
+  }
+
+  /** Returns the stable Obsidian view type used by plugin registration. */
+  getViewType(): string {
+    return VIEW_TYPE_OPENCODE_AGENT_PANEL;
+  }
+
+  /** Returns the display label shown in Obsidian sidebars and tabs. */
+  getDisplayText(): string {
+    return "OpenCode agents";
+  }
+
+  /** Returns the Lucide icon used by the sidebar tab and ribbon command. */
+  getIcon(): string {
+    return "bot";
+  }
+
+  /** Builds the panel shell and loads read-only OpenCode data when opened. */
+  async onOpen(): Promise<void> {
+    this.contentEl.addClass("opencode-agent-panel");
+    this.contentEl.tabIndex = 0;
+    this.contentEl.addEventListener("keydown", this.handleKeydown);
+    this.subscribeToServerEvents();
+    await this.refresh();
+  }
+
+  /** Clears the panel when Obsidian closes the view. */
+  async onClose(): Promise<void> {
+    this.contentEl.removeEventListener("keydown", this.handleKeydown);
+    this.eventSubscription?.close();
+    if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+    this.contentEl.empty();
+  }
+
+  /** Subscribes to read-only OpenCode events so the tree stays fresh while visible. */
+  private subscribeToServerEvents(): void {
+    this.eventSubscription?.close();
+    this.eventSubscription = this.plugin.requireOpenCodeService().subscribeToEvents({
+      onEvent: () => this.scheduleRefresh(),
+    });
+  }
+
+  /** Debounces event-driven reloads to avoid rendering every streaming event individually. */
+  private scheduleRefresh(): void {
+    if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = window.setTimeout(() => {
+      this.refreshTimer = undefined;
+      void this.refresh();
+    }, 250);
+  }
+
+  /** Reloads projects, sessions, and statuses using only OpenCode GET endpoints. */
+  async refresh(): Promise<void> {
+    if (this.loading) return;
+    this.loading = true;
+    this.renderLoading();
+
+    try {
+      const service = this.plugin.requireOpenCodeService();
+      await service.health();
+      const openedDirectories = this.plugin.getOpenedDirectories();
+      const [projects, openedContexts, sessionGroups, statuses] = await Promise.all([
+        openedDirectories[0] ? service.listProjects(openedDirectories[0]).catch(() => []) : Promise.resolve([]),
+        Promise.all(
+          openedDirectories.map(async (directory): Promise<OpenedDirectoryContext> => ({
+            directory,
+            project: await service.getCurrentProject(directory).catch(() => undefined),
+          })),
+        ),
+        Promise.all(openedDirectories.map((directory) => service.listSessions({ directory, limit: 100 }).catch(() => []))),
+        service.getSessionStatus().catch(() => ({})),
+      ]);
+      const sessionDirectoryById = new Map<string, string>();
+      sessionGroups.forEach((sessionsForDirectory, index) => {
+        const directory = openedDirectories[index];
+        if (!directory) return;
+        sessionsForDirectory.forEach((session) => sessionDirectoryById.set(session.id, directory));
+      });
+      const sessions = this.uniqueSessions(sessionGroups.flat()).filter((session) => !this.isArchived(session));
+      const tree = await this.buildProjectTree(
+        [...(Array.isArray(projects) ? projects : []), ...openedContexts.flatMap((context) => (context.project ? [context.project] : []))],
+        sessions,
+        statuses && typeof statuses === "object" && !Array.isArray(statuses) ? (statuses as JsonObject) : {},
+        openedContexts,
+        sessionDirectoryById,
+      );
+      this.renderTree(tree);
+    } catch (error) {
+      this.renderDisconnected(error);
+    } finally {
+      this.loading = false;
+    }
+  }
+
+  /** Builds the project/session tree that the sidebar renderer consumes. */
+  private async buildProjectTree(
+    projects: JsonObject[],
+    sessions: OpenCodeSession[],
+    statuses: JsonObject,
+    openedContexts: OpenedDirectoryContext[],
+    sessionDirectoryById: Map<string, string>,
+  ): Promise<AgentPanelProject[]> {
+    const sessionsByProject = new Map<string, Map<string, OpenCodeSession[]>>();
+    const knownProjects = new Map<string, OpenCodeProjectMeta>();
+    const openedByProject = new Map<string, Set<string>>();
+
+    for (const project of projects) {
+      const id = this.readString(project, ["id", "ID", "projectID"]);
+      if (!id) continue;
+      const worktree = this.readString(project, ["worktree", "directory", "path"]);
+      knownProjects.set(id, {
+        id,
+        worktree,
+        name: this.readString(project, ["name", "title"]) ?? (worktree ? this.basename(worktree) : id),
+        sandboxes: this.readStringArray(project, "sandboxes"),
+      });
+    }
+
+    for (const context of openedContexts) {
+      const project = this.effectiveProjectForOpenedDirectory(context, knownProjects);
+      const worktree = this.effectiveWorktreeForOpenedDirectory(context, knownProjects.get(project.id));
+      const worktrees = sessionsByProject.get(project.id) ?? new Map<string, OpenCodeSession[]>();
+      worktrees.set(worktree.id, worktrees.get(worktree.id) ?? []);
+      sessionsByProject.set(project.id, worktrees);
+      openedByProject.set(project.id, (openedByProject.get(project.id) ?? new Set()).add(context.directory));
+      if (!knownProjects.has(project.id)) knownProjects.set(project.id, { id: project.id, name: project.name, worktree: worktree.path, sandboxes: [] });
+    }
+
+    for (const session of sessions) {
+      const project = this.effectiveProjectForSession(session, knownProjects);
+      const worktree = this.effectiveWorktreeForSession(session, knownProjects.get(project.id), sessionDirectoryById.get(session.id));
+      const worktrees = sessionsByProject.get(project.id) ?? new Map<string, OpenCodeSession[]>();
+      worktrees.set(worktree.id, [...(worktrees.get(worktree.id) ?? []), session]);
+      sessionsByProject.set(project.id, worktrees);
+      if (!knownProjects.has(project.id)) knownProjects.set(project.id, { id: project.id, name: project.name, worktree: worktree.path, sandboxes: [] });
+    }
+
+    const entries = [...sessionsByProject.entries()].sort(([left], [right]) => left.localeCompare(right));
+    return Promise.all(
+      entries.map(async ([projectId, worktreeMap]) => ({
+        id: projectId,
+        name: knownProjects.get(projectId)?.name ?? projectId,
+        openedDirectories: [...(openedByProject.get(projectId) ?? new Set())],
+        worktrees: await Promise.all(
+          [...worktreeMap.entries()].sort(([left], [right]) => left.localeCompare(right)).map(async ([worktreeId, worktreeSessions]) => ({
+            id: worktreeId,
+            name: this.basename(worktreeId),
+            path: worktreeId,
+            sessions: await this.buildSessionNodes(worktreeSessions, statuses),
+          })),
+        ),
+      })),
+    );
+  }
+
+  /** Recursively hydrates session children for a project branch. */
+  private async buildSessionNodes(sessions: OpenCodeSession[], statuses: JsonObject): Promise<AgentPanelSession[]> {
+    const roots = sessions.filter((session) => !this.readString(session, ["parentID", "parentId"]));
+    const sortedRoots = roots.length > 0 ? roots : sessions;
+    return Promise.all(sortedRoots.sort((a, b) => this.sessionTitle(a).localeCompare(this.sessionTitle(b))).map((session) => this.buildSessionNode(session, statuses)));
+  }
+
+  /** Hydrates a single session node and its OpenCode child sessions. */
+  private async buildSessionNode(session: OpenCodeSession, statuses: JsonObject): Promise<AgentPanelSession> {
+    const service = this.plugin.requireOpenCodeService();
+    const id = session.id;
+    const children = await service.listSessionChildren(id).catch(() => []);
+
+    return {
+      id,
+      title: this.sessionTitle(session),
+      status: this.visualStatusFor(id, statuses),
+      muted: false,
+      children: await Promise.all(children.map((child) => this.buildSessionNode(child, statuses))),
+    };
+  }
+
+  /** Renders a centered loading state that matches Obsidian empty-state styling. */
+  private renderLoading(): void {
+    this.contentEl.empty();
+    this.renderHeader();
+    const state = this.contentEl.createDiv({ cls: "opencode-agent-panel__state" });
+    state.createDiv({ cls: "opencode-agent-panel__spinner" });
+    state.createDiv({ text: "Loading OpenCode sessions…", cls: "opencode-agent-panel__state-text" });
+  }
+
+  /** Renders the disconnected state specified for missing or stopped OpenCode servers. */
+  private renderDisconnected(error: unknown): void {
+    this.contentEl.empty();
+    this.renderHeader();
+    const state = this.contentEl.createDiv({ cls: "opencode-agent-panel__state" });
+    state.createDiv({ text: "opencode server not running.", cls: "opencode-agent-panel__state-title" });
+    state.createDiv({ text: "Start it with `opencode serve` in a terminal.", cls: "opencode-agent-panel__state-text" });
+    const retry = state.createEl("button", { text: "Retry connection", cls: "mod-cta" });
+    retry.addEventListener("click", () => void this.refresh());
+    if (error instanceof Error) state.createDiv({ text: error.message, cls: "opencode-agent-panel__error-detail" });
+  }
+
+  /** Renders the full project tree using Obsidian's native nav/tree class vocabulary. */
+  private renderTree(projects: AgentPanelProject[]): void {
+    this.contentEl.empty();
+    this.visibleRows = [];
+    this.renderHeader();
+
+    const nav = this.contentEl.createDiv({ cls: "nav-files-container node-insert-event opencode-agent-panel__tree" });
+    const root = nav.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__root" });
+
+    if (projects.length === 0) {
+      this.renderEmptyTree(nav);
+      return;
+    }
+
+    for (const project of projects) this.renderProject(root, project);
+  }
+
+  /** Renders the panel header with native clickable-icon affordances. */
+  private renderHeader(): void {
+    const header = this.contentEl.createDiv({ cls: "opencode-agent-panel__header" });
+    header.createDiv({ text: "OpenCode", cls: "opencode-agent-panel__title" });
+    const actions = header.createDiv({ cls: "opencode-agent-panel__actions" });
+    const openDirectory = actions.createEl("button", { attr: { "aria-label": "Open directory in OpenCode" }, cls: "clickable-icon" });
+    setIcon(openDirectory, "folder-plus");
+    openDirectory.addEventListener("click", () => void this.plugin.openDirectoryWithPicker());
+    const refresh = actions.createEl("button", { attr: { "aria-label": "Refresh OpenCode sessions" }, cls: "clickable-icon" });
+    setIcon(refresh, "refresh-cw");
+    refresh.addEventListener("click", () => void this.refresh());
+  }
+
+  /** Renders an empty connected tree when OpenCode has no sessions yet. */
+  private renderEmptyTree(container: HTMLElement): void {
+    const state = container.createDiv({ cls: "opencode-agent-panel__state" });
+    state.createDiv({ text: "No directories opened yet.", cls: "opencode-agent-panel__state-title" });
+    state.createDiv({ text: "Open a directory to let the OpenCode server resolve its project/worktree.", cls: "opencode-agent-panel__state-text" });
+    const open = state.createEl("button", { text: "Open directory…", cls: "mod-cta" });
+    open.addEventListener("click", () => void this.plugin.openDirectoryWithPicker());
+  }
+
+  /** Renders one project branch and its passive new-session placeholder. */
+  private renderProject(container: HTMLElement, project: AgentPanelProject): void {
+    const key = `project:${project.id}`;
+    const collapsed = this.collapsed.has(key);
+    const item = container.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__project" });
+    const title = item.createDiv({ cls: "tree-item-self nav-folder-title is-clickable" });
+    this.registerRow(key, "project", title);
+    this.renderCollapseIcon(title, collapsed);
+    const avatar = title.createDiv({ text: this.initials(project.name), cls: "opencode-agent-panel__project-avatar" });
+    avatar.style.setProperty("--opencode-project-avatar-color", this.projectColor(project.id));
+    title.createDiv({ text: project.name, cls: "tree-item-inner nav-folder-title-content" });
+    title.addEventListener("click", () => this.toggleCollapsed(key));
+    title.addEventListener("contextmenu", (event) => this.showProjectMenu(event, project));
+
+    if (collapsed) return;
+    const children = item.createDiv({ cls: "tree-item-children nav-folder-children" });
+    if (project.worktrees.length > 1) {
+      for (const worktree of project.worktrees) this.renderWorktree(children, worktree);
+      return;
+    }
+
+    const worktree = project.worktrees[0];
+    if (!worktree) return;
+    for (const session of worktree.sessions) this.renderSession(children, session, 0);
+    this.renderNewSessionPlaceholder(children, project.id, worktree.path);
+  }
+
+  /** Renders the optional worktree/directory level when a project has multiple roots. */
+  private renderWorktree(container: HTMLElement, worktree: AgentPanelWorktree): void {
+    const key = `worktree:${worktree.id}`;
+    const collapsed = this.collapsed.has(key);
+    const item = container.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__worktree" });
+    const title = item.createDiv({ cls: "tree-item-self nav-folder-title is-clickable" });
+    this.registerRow(key, "worktree", title);
+    this.renderCollapseIcon(title, collapsed);
+    const icon = title.createDiv({ cls: "opencode-agent-panel__worktree-icon" });
+    setIcon(icon, "git-branch");
+    title.createDiv({ text: worktree.name, cls: "tree-item-inner nav-folder-title-content" });
+    title.title = worktree.path;
+    title.addEventListener("click", () => this.toggleCollapsed(key));
+
+    if (collapsed) return;
+    const children = item.createDiv({ cls: "tree-item-children nav-folder-children" });
+    for (const session of worktree.sessions) this.renderSession(children, session, 0);
+    this.renderNewSessionPlaceholder(children, worktree.id, worktree.path);
+  }
+
+  /** Renders a recursive session branch with left status and right notification slots. */
+  private renderSession(container: HTMLElement, session: AgentPanelSession, depth: number): void {
+    const key = `session:${session.id}`;
+    const collapsed = this.collapsed.has(key);
+    const item = container.createDiv({ cls: "tree-item nav-file opencode-agent-panel__session" });
+    item.style.setProperty("--opencode-depth", String(depth));
+
+    const title = item.createDiv({ cls: "tree-item-self nav-file-title is-clickable", attr: { "data-session-id": session.id } });
+    this.registerRow(key, "session", title, session.id);
+    if (this.activeSessionId === session.id) title.addClass("is-active");
+    this.renderCollapseIcon(title, collapsed, session.children.length === 0);
+    this.renderStatusIndicator(title, session.status);
+    title.createDiv({ text: session.title, cls: "tree-item-inner nav-file-title-content" });
+    this.renderNotificationIndicator(title, session.muted);
+    title.addEventListener("click", () => this.selectSession(session));
+    title.addEventListener("contextmenu", (event) => this.showSessionMenu(event, session));
+
+    if (session.children.length === 0 || collapsed) return;
+    const children = item.createDiv({ cls: "tree-item-children nav-folder-children" });
+    for (const child of session.children) this.renderSession(children, child, depth + 1);
+  }
+
+  /** Renders the passive placeholder reserved for future session creation flow. */
+  private renderNewSessionPlaceholder(container: HTMLElement, projectId: string, directory: string): void {
+    const key = `new-session:${projectId}:${directory}`;
+    const row = container.createDiv({ cls: "tree-item nav-file opencode-agent-panel__new-session" });
+    const title = row.createDiv({ cls: "tree-item-self nav-file-title is-clickable" });
+    this.registerRow(key, "new-session", title);
+    title.createDiv({ cls: "tree-item-icon collapse-icon" });
+    const plus = title.createDiv({ cls: "opencode-agent-panel__placeholder-icon" });
+    setIcon(plus, "plus");
+    title.createDiv({ text: "new session", cls: "tree-item-inner nav-file-title-content" });
+    title.title = "Session creation is intentionally disabled until the composer flow is implemented.";
+    title.addEventListener("click", () => new Notice(`New session for ${projectId} will be wired in the composer iteration.`));
+  }
+
+  /** Renders the native disclosure slot for folders and sessions with children. */
+  private renderCollapseIcon(container: HTMLElement, collapsed: boolean, hidden = false): void {
+    const icon = container.createDiv({ cls: "tree-item-icon collapse-icon" });
+    if (hidden) return;
+    setIcon(icon, collapsed ? "chevron-right" : "chevron-down");
+  }
+
+  /** Renders the left session status indicator according to the plugin spec. */
+  private renderStatusIndicator(container: HTMLElement, status: SessionVisualStatus): void {
+    const slot = container.createDiv({ cls: `opencode-agent-panel__status opencode-agent-panel__status--${status}` });
+    if (status === "attention") setIcon(slot, "megaphone");
+    if (status === "error") setIcon(slot, "alert-circle");
+    if (status === "retry") setIcon(slot, "rotate-cw");
+    if (status === "done") slot.createSpan();
+    if (status === "working") {
+      slot.createSpan();
+      slot.createSpan();
+      slot.createSpan();
+    }
+  }
+
+  /** Renders the right muted-notification indicator slot. */
+  private renderNotificationIndicator(container: HTMLElement, muted: boolean): void {
+    const slot = container.createDiv({ cls: "opencode-agent-panel__notification" });
+    if (!muted) return;
+    setIcon(slot, "bell-off");
+  }
+
+  /** Selects a session row and opens its read-only Obsidian session tab. */
+  private selectSession(session: AgentPanelSession): void {
+    this.activeSessionId = session.id;
+    this.highlightedKey = `session:${session.id}`;
+    if (session.children.length > 0) this.toggleCollapsed(`session:${session.id}`, false);
+    else this.renderActiveOnly();
+    void this.plugin.openSessionTab(session.id, session.title);
+  }
+
+  /** Toggles a tree branch and refreshes DOM from the current server snapshot. */
+  private toggleCollapsed(key: string, refresh = true): void {
+    if (this.collapsed.has(key)) this.collapsed.delete(key);
+    else this.collapsed.add(key);
+    if (refresh) void this.refresh();
+  }
+
+  /** Refreshes the row state after a local-only active selection changes. */
+  private renderActiveOnly(): void {
+    this.contentEl.querySelectorAll(".opencode-agent-panel__session .tree-item-self").forEach((row) => row.removeClass("is-active"));
+    this.contentEl.querySelectorAll(".opencode-agent-panel__row-highlighted").forEach((row) => row.removeClass("opencode-agent-panel__row-highlighted"));
+    if (!this.activeSessionId) return;
+    const active = this.contentEl.querySelector(`[data-session-id="${CSS.escape(this.activeSessionId)}"]`);
+    active?.addClass("is-active");
+    this.applyHighlight();
+  }
+
+  /** Registers a visible tree row for keyboard navigation and highlight management. */
+  private registerRow(key: string, kind: "project" | "worktree" | "session" | "new-session", element: HTMLElement, sessionId?: string): void {
+    this.visibleRows.push({ key, kind, element, sessionId });
+    element.dataset.opencodeRowKey = key;
+    if (!this.highlightedKey) this.highlightedKey = key;
+    if (this.highlightedKey === key) element.addClass("opencode-agent-panel__row-highlighted");
+  }
+
+  /** Handles focus-gated tree keyboard navigation modeled after Obsidian's file explorer. */
+  private handleKeydown = (event: KeyboardEvent): void => {
+    if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Enter"].includes(event.key)) event.preventDefault();
+    if (event.key === "ArrowUp") this.moveHighlight(-1);
+    if (event.key === "ArrowDown") this.moveHighlight(1);
+    if (event.key === "ArrowLeft") this.collapseHighlighted();
+    if (event.key === "ArrowRight") this.expandOrSelectHighlighted();
+    if (event.key === " ") this.activateHighlighted();
+    if (event.key === "Enter") new Notice("Rename will be wired with session mutation support in a later iteration.");
+  };
+
+  /** Moves the keyboard highlight up or down in the current visible row list. */
+  private moveHighlight(delta: number): void {
+    if (this.visibleRows.length === 0) return;
+    const current = Math.max(0, this.visibleRows.findIndex((row) => row.key === this.highlightedKey));
+    const next = Math.min(this.visibleRows.length - 1, Math.max(0, current + delta));
+    this.highlightedKey = this.visibleRows[next]?.key;
+    this.applyHighlight();
+  }
+
+  /** Applies the current keyboard highlight using native-ish selected-row styling. */
+  private applyHighlight(): void {
+    this.contentEl.querySelectorAll(".opencode-agent-panel__row-highlighted").forEach((row) => row.removeClass("opencode-agent-panel__row-highlighted"));
+    const row = this.visibleRows.find((candidate) => candidate.key === this.highlightedKey);
+    row?.element.addClass("opencode-agent-panel__row-highlighted");
+    row?.element.scrollIntoView({ block: "nearest" });
+  }
+
+  /** Collapses the highlighted branch, or moves from a leaf to its nearest branch later. */
+  private collapseHighlighted(): void {
+    const row = this.visibleRows.find((candidate) => candidate.key === this.highlightedKey);
+    if (!row || row.kind === "session" || row.kind === "new-session") return;
+    this.collapsed.add(row.key);
+    void this.refresh();
+  }
+
+  /** Expands a branch or activates a highlighted leaf session. */
+  private expandOrSelectHighlighted(): void {
+    const row = this.visibleRows.find((candidate) => candidate.key === this.highlightedKey);
+    if (!row) return;
+    if (row.kind === "project" || row.kind === "worktree") {
+      this.collapsed.delete(row.key);
+      void this.refresh();
+      return;
+    }
+    this.activateHighlighted();
+  }
+
+  /** Activates the currently highlighted row. */
+  private activateHighlighted(): void {
+    const row = this.visibleRows.find((candidate) => candidate.key === this.highlightedKey);
+    if (!row) return;
+    if (row.kind === "project" || row.kind === "worktree") this.toggleCollapsed(row.key);
+    if (row.kind === "session" && row.sessionId) {
+      this.activeSessionId = row.sessionId;
+      this.renderActiveOnly();
+      void this.plugin.openSessionTab(row.sessionId);
+    }
+    if (row.kind === "new-session") new Notice("New-session creation is deferred until the composer flow is implemented.");
+  }
+
+  /** Deduplicates directory-scoped session batches; referenced by refresh before tree construction. */
+  private uniqueSessions(sessions: OpenCodeSession[]): OpenCodeSession[] {
+    const map = new Map<string, OpenCodeSession>();
+    for (const session of sessions) map.set(session.id, session);
+    return [...map.values()];
+  }
+
+  /** Detects archived sessions from OpenCode time metadata; referenced by refresh filtering. */
+  private isArchived(session: OpenCodeSession): boolean {
+    const time = this.readObject(session, "time");
+    return typeof time?.archived === "number";
+  }
+
+  /** Converts raw OpenCode status payloads into the panel's visual states. */
+  private visualStatusFor(sessionId: string, statuses: JsonObject): SessionVisualStatus {
+    const status = statuses[sessionId];
+    if (!status || typeof status !== "object") return "idle";
+    const type = this.readString(status as JsonObject, ["type", "status", "state"]);
+    if (type === "retry") return "retry";
+    if (type === "error" || type === "failed") return "error";
+    if (type === "permission" || type === "question" || type === "attention") return "attention";
+    if (type === "running" || type === "working" || type === "active" || type === "busy") return "working";
+    if (type === "done" || type === "complete" || type === "completed") return "done";
+    return "idle";
+  }
+
+  /** Extracts a session title with useful fallbacks for incomplete API payloads. */
+  private sessionTitle(session: OpenCodeSession): string {
+    return this.readString(session, ["title", "name", "summary"]) ?? session.id;
+  }
+
+  /** Resolves the sidebar project using OpenCode's git-project/global-project split; referenced by buildProjectTree. */
+  private effectiveProjectForSession(session: OpenCodeSession, knownProjects: Map<string, OpenCodeProjectMeta>): { id: string; name: string } {
+    const projectId = this.readString(session, ["projectID", "projectId"]);
+    const project = this.readObject(session, "project");
+    const nestedProjectId = project ? this.readString(project, ["id", "projectID", "projectId"]) : undefined;
+    const id = projectId ?? nestedProjectId;
+    const directory = this.effectiveDirectoryForSession(session);
+    const metadata = id ? knownProjects.get(id) : undefined;
+
+    if (!id || id === "global") return { id: `cwd:${directory}`, name: this.basename(directory) };
+
+    const matched = this.matchKnownProjectDirectory(directory, knownProjects);
+    const nestedName = project ? this.readString(project, ["name", "title"]) : undefined;
+    const displayPath = metadata?.worktree ?? matched?.worktree ?? directory;
+    return { id, name: metadata?.name ?? nestedName ?? this.basename(displayPath) ?? id };
+  }
+
+  /** Resolves an explicitly opened directory into a sidebar project before any sessions exist. */
+  private effectiveProjectForOpenedDirectory(context: OpenedDirectoryContext, knownProjects: Map<string, OpenCodeProjectMeta>): { id: string; name: string } {
+    const project = context.project;
+    const id = project ? this.readString(project, ["id", "projectID", "projectId"]) : undefined;
+    const worktree = project ? this.readString(project, ["worktree", "directory", "path"]) : undefined;
+    const metadata = id ? knownProjects.get(id) : undefined;
+
+    if (!id || id === "global") return { id: `cwd:${context.directory}`, name: this.basename(context.directory) };
+    return { id, name: metadata?.name ?? (project ? this.readString(project, ["name", "title"]) : undefined) ?? this.basename(worktree ?? context.directory) ?? id };
+  }
+
+  /** Extracts the visible worktree bucket; opened directory wins so linked worktrees stay visually separate. */
+  private effectiveWorktreeForSession(session: OpenCodeSession, projectMeta?: OpenCodeProjectMeta, openedDirectory?: string): { id: string; path: string } {
+    const project = this.readObject(session, "project");
+    const worktree = project ? this.readString(project, ["worktree", "directory", "path"]) : undefined;
+    const directory = this.effectiveDirectoryForSession(session);
+    const projectId = this.readString(session, ["projectID", "projectId"]) ?? (project ? this.readString(project, ["id", "projectID", "projectId"]) : undefined);
+
+    if (projectId === "global") return { id: directory, path: directory };
+    if (openedDirectory) return { id: openedDirectory, path: openedDirectory };
+
+    const subpath = this.readString(session, ["path", "subpath"]);
+    const inferredWorktree = subpath ? this.worktreeFromSessionPath(directory, subpath) : undefined;
+    const resolved = inferredWorktree ?? worktree ?? projectMeta?.worktree ?? directory;
+    return { id: resolved, path: resolved };
+  }
+
+  /** Resolves the visible worktree bucket for an explicitly opened directory with no sessions yet. */
+  private effectiveWorktreeForOpenedDirectory(context: OpenedDirectoryContext, projectMeta?: OpenCodeProjectMeta): { id: string; path: string } {
+    const project = context.project;
+    const id = project ? this.readString(project, ["id", "projectID", "projectId"]) : undefined;
+    if (!id || id === "global") return { id: context.directory, path: context.directory };
+
+    return { id: context.directory, path: context.directory };
+  }
+
+  /** Matches session directories against known project roots/sandboxes, mirroring OpenCode's projectForSession helper. */
+  private matchKnownProjectDirectory(directory: string, knownProjects: Map<string, OpenCodeProjectMeta>): OpenCodeProjectMeta | undefined {
+    const key = this.pathKey(directory);
+    for (const project of knownProjects.values()) {
+      if (project.worktree && this.pathKey(project.worktree) === key) return project;
+      const sandbox = project.sandboxes.find((item) => this.pathKey(item) === key);
+      if (sandbox) return project;
+    }
+    return undefined;
+  }
+
+  /** Gets the most useful CWD-like path from an OpenCode session payload. */
+  private effectiveDirectoryForSession(session: OpenCodeSession): string {
+    return this.readString(session, ["directory", "cwd", "path"]) ?? "OpenCode";
+  }
+
+  /** Reconstructs the git worktree root from OpenCode's exact session directory and relative session path. */
+  private worktreeFromSessionPath(directory: string, subpath: string): string | undefined {
+    const cleanSubpath = subpath.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (!cleanSubpath || cleanSubpath === ".") return directory;
+
+    const cleanDirectory = directory.replace(/\\/g, "/").replace(/\/+$/g, "");
+    const suffix = `/${cleanSubpath}`;
+    if (!this.pathKey(cleanDirectory).endsWith(this.pathKey(suffix))) return undefined;
+
+    const root = cleanDirectory.slice(0, cleanDirectory.length - suffix.length);
+    return root || "/";
+  }
+
+  /** Reads a nested object field from a loosely typed OpenCode object. */
+  private readObject(source: JsonObject, key: string): JsonObject | undefined {
+    const value = source[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) return value as JsonObject;
+    return undefined;
+  }
+
+  /** Reads the first string-like value from a loosely typed OpenCode object. */
+  private readString(source: JsonObject, keys: string[]): string | undefined {
+    for (const key of keys) {
+      const value = source[key];
+      if (typeof value === "string" && value.trim()) return value;
+      if (typeof value === "number") return String(value);
+    }
+    return undefined;
+  }
+
+  /** Reads a string array from loosely typed OpenCode project metadata. */
+  private readStringArray(source: JsonObject, key: string): string[] {
+    const value = source[key];
+    if (!Array.isArray(value)) return [];
+    return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  }
+
+  /** Normalizes paths for directory comparisons, equivalent to OpenCode's pathKey usage for our needs. */
+  private pathKey(value: string): string {
+    return value.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  }
+
+  /** Returns a display basename for absolute paths while preserving non-path identifiers. */
+  private basename(value: string): string {
+    const normalized = value.replace(/\/$/, "");
+    return normalized.split("/").filter(Boolean).pop() ?? normalized;
+  }
+
+  /** Opens a native Obsidian context menu for future project-scoped actions. */
+  private showProjectMenu(event: MouseEvent, project: AgentPanelProject): void {
+    event.preventDefault();
+    const menu = new Menu();
+    menu.addItem((item) => item.setTitle("Refresh").setIcon("refresh-cw").onClick(() => void this.refresh()));
+    menu.addItem((item) => item.setTitle(`Project: ${project.name}`).setDisabled(true));
+    for (const directory of project.openedDirectories) {
+      menu.addItem((item) =>
+        item
+          .setTitle(project.openedDirectories.length === 1 ? "Close directory" : `Close ${this.basename(directory)}`)
+          .setIcon("x")
+          .onClick(() => void this.plugin.removeOpenedDirectory(directory)),
+      );
+    }
+    menu.addItem((item) => item.setTitle("Set icon…").setIcon("image").setDisabled(true));
+    menu.showAtMouseEvent(event);
+  }
+
+  /** Opens a native Obsidian context menu for future session-scoped actions. */
+  private showSessionMenu(event: MouseEvent, session: AgentPanelSession): void {
+    event.preventDefault();
+    const menu = new Menu();
+    menu.addItem((item) =>
+      item
+        .setTitle(session.id)
+        .setIcon("copy")
+        .onClick(() => void this.copySessionId(session.id)),
+    );
+    menu.addSeparator();
+    menu.addItem((item) => item.setTitle("Open session").setIcon("message-square").onClick(() => void this.plugin.openSessionTab(session.id, session.title)));
+    menu.addItem((item) => item.setTitle("Rename").setIcon("pencil").setDisabled(true));
+    menu.addItem((item) => item.setTitle("Fork").setIcon("git-fork").setDisabled(true));
+    menu.addSeparator();
+    menu.addItem((item) => item.setTitle(session.title).setDisabled(true));
+    menu.showAtMouseEvent(event);
+  }
+
+  /** Copies a session id from the context menu; referenced by showSessionMenu for testing workflows. */
+  private async copySessionId(sessionId: string): Promise<void> {
+    await navigator.clipboard.writeText(sessionId);
+    new Notice(`Copied session ID: ${sessionId}`);
+  }
+
+  /** Generates a short project-avatar label using native sidebar proportions. */
+  private initials(name: string): string {
+    return name
+      .split(/[\s/_-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "OC";
+  }
+
+  /** Picks a stable Obsidian theme token for a project fallback avatar. */
+  private projectColor(projectId: string): string {
+    const tokens = ["--color-blue", "--color-green", "--color-yellow", "--color-orange", "--color-purple", "--color-cyan", "--color-pink"];
+    const hash = [...projectId].reduce((total, char) => total + char.charCodeAt(0), 0);
+    return `var(${tokens[hash % tokens.length]})`;
+  }
+}

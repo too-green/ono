@@ -1,0 +1,744 @@
+.opencode-agent-panel {
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  height: 100%;
+  padding: var(--size-4-1) 0;
+}
+
+.opencode-agent-panel__header {
+  align-items: center;
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: flex;
+  gap: var(--size-4-2);
+  justify-content: space-between;
+  margin-bottom: var(--size-4-1);
+  min-height: 32px;
+  padding: 0 var(--size-4-3) var(--size-4-1);
+}
+
+.opencode-agent-panel__title {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+}
+
+.opencode-agent-panel__actions {
+  align-items: center;
+  display: flex;
+  gap: var(--size-2-1);
+}
+
+.opencode-agent-panel__tree {
+  padding: 0 var(--size-4-1);
+}
+
+.opencode-agent-panel .tree-item-self {
+  align-items: center;
+  border-radius: var(--radius-s);
+  color: var(--nav-item-color);
+  gap: var(--size-2-1);
+  min-height: var(--nav-item-size);
+  padding-inline-end: var(--size-2-2);
+}
+
+.opencode-agent-panel .tree-item-self:hover {
+  background-color: var(--nav-item-background-hover);
+  color: var(--nav-item-color-hover);
+}
+
+.opencode-agent-panel .tree-item-self.is-active {
+  background-color: var(--nav-item-background-active);
+  color: var(--nav-item-color-active);
+}
+
+.opencode-agent-panel .tree-item-self.opencode-agent-panel__row-highlighted:not(.is-active) {
+  background-color: var(--background-modifier-hover);
+  box-shadow: inset 0 0 0 1px var(--background-modifier-border-hover);
+}
+
+.opencode-agent-panel .tree-item-inner {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-agent-panel__project-avatar {
+  align-items: center;
+  background: color-mix(in srgb, var(--opencode-project-avatar-color) 22%, transparent);
+  border: 1px solid color-mix(in srgb, var(--opencode-project-avatar-color) 45%, transparent);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  display: inline-flex;
+  flex: 0 0 18px;
+  font-size: 9px;
+  font-weight: var(--font-semibold);
+  height: 18px;
+  justify-content: center;
+  line-height: 1;
+  width: 18px;
+}
+
+.opencode-agent-panel__status,
+.opencode-agent-panel__notification,
+.opencode-agent-panel__placeholder-icon,
+.opencode-agent-panel__worktree-icon {
+  align-items: center;
+  color: var(--text-muted);
+  display: inline-flex;
+  flex: 0 0 16px;
+  height: 16px;
+  justify-content: center;
+  width: 16px;
+}
+
+.opencode-agent-panel__status svg,
+.opencode-agent-panel__notification svg,
+.opencode-agent-panel__placeholder-icon svg,
+.opencode-agent-panel__worktree-icon svg {
+  height: 14px;
+  width: 14px;
+}
+
+.opencode-agent-panel__status--attention,
+.opencode-agent-panel__status--error,
+.opencode-agent-panel__notification {
+  color: var(--color-red);
+}
+
+.opencode-agent-panel__status--retry {
+  animation: opencode-agent-panel-spin 1.2s linear infinite;
+  color: var(--text-muted);
+}
+
+.opencode-agent-panel__status--done span {
+  background: var(--color-green);
+  border-radius: 50%;
+  height: 7px;
+  width: 7px;
+}
+
+.opencode-agent-panel__status--working {
+  gap: 2px;
+}
+
+.opencode-agent-panel__status--working span {
+  animation: opencode-agent-panel-bounce 1.2s infinite ease-in-out both;
+  background: var(--text-muted);
+  border-radius: 50%;
+  height: 4px;
+  width: 4px;
+}
+
+.opencode-agent-panel__status--working span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.opencode-agent-panel__status--working span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.opencode-agent-panel__new-session .tree-item-self {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.opencode-agent-panel__state {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  justify-content: center;
+  min-height: 160px;
+  padding: var(--size-4-6) var(--size-4-4);
+  text-align: center;
+}
+
+.opencode-agent-panel__state-title {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.opencode-agent-panel__state-text,
+.opencode-agent-panel__error-detail {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.opencode-agent-panel__error-detail {
+  color: var(--text-error);
+  margin-top: var(--size-4-2);
+}
+
+.opencode-agent-panel__spinner {
+  animation: opencode-agent-panel-spin 1s linear infinite;
+  border: 2px solid var(--background-modifier-border);
+  border-top-color: var(--text-muted);
+  border-radius: 50%;
+  height: 18px;
+  width: 18px;
+}
+
+@keyframes opencode-agent-panel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes opencode-agent-panel-bounce {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.opencode-session-view {
+  background: var(--background-primary);
+  color: var(--text-normal);
+  height: 100%;
+  overflow: auto;
+}
+
+.opencode-session-view__shell {
+  margin: 0 auto;
+  max-width: 920px;
+  padding: var(--size-4-6) var(--size-4-8);
+}
+
+.opencode-session-view__header {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: flex;
+  gap: var(--size-4-4);
+  justify-content: space-between;
+  margin-bottom: var(--size-4-6);
+  padding-bottom: var(--size-4-3);
+}
+
+.opencode-session-view__title-wrap {
+  min-width: 0;
+}
+
+.opencode-session-view__title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-large);
+  font-weight: var(--font-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-session-view__subtitle {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: var(--size-2-1);
+  user-select: text;
+}
+
+.opencode-session-view__actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--size-2-1);
+}
+
+.opencode-session-view__timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.opencode-session-view__message {
+  border-radius: var(--radius-m);
+  margin: var(--size-4-5) 0;
+  padding: var(--size-4-3) var(--size-4-4);
+}
+
+.opencode-session-view__message--user {
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-secondary));
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 20%, var(--background-modifier-border));
+}
+
+.opencode-session-view__message--assistant {
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.opencode-session-view__markdown {
+  font-family: var(--font-text);
+  font-size: var(--font-text-size);
+  line-height: var(--line-height-normal);
+  margin: var(--size-4-5) 0;
+  user-select: text;
+}
+
+.opencode-session-view__message .opencode-session-view__markdown,
+.opencode-session-view__tool .opencode-session-view__markdown,
+.opencode-session-view__reasoning .opencode-session-view__markdown {
+  margin: 0;
+}
+
+.opencode-session-view__part-gap {
+  flex: 0 0 var(--size-4-3);
+  height: var(--size-4-3);
+}
+
+.opencode-session-view__markdown input[type="checkbox"] {
+  pointer-events: none;
+}
+
+.opencode-session-view__reasoning {
+  border-left: 2px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  margin: 0;
+  padding-left: var(--size-4-3);
+}
+
+.opencode-session-view__reasoning[open] {
+  border-left-color: var(--background-modifier-border-hover);
+}
+
+.opencode-session-view__reasoning-summary {
+  align-items: center;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  display: flex;
+  gap: var(--size-4-2);
+  list-style: none;
+  min-height: 28px;
+  padding: var(--size-2-1) var(--size-4-2);
+}
+
+.opencode-session-view__reasoning-summary:hover {
+  background: var(--background-modifier-hover);
+}
+
+.opencode-session-view__reasoning-summary::-webkit-details-marker {
+  display: none;
+}
+
+.opencode-session-view__reasoning-summary::after {
+  color: var(--text-faint);
+  content: "›";
+  margin-left: auto;
+  transform: rotate(0deg);
+  transition: transform 120ms ease-in-out;
+}
+
+.opencode-session-view__reasoning[open] > .opencode-session-view__reasoning-summary::after {
+  transform: rotate(90deg);
+}
+
+.opencode-session-view__reasoning-icon {
+  align-items: center;
+  color: var(--color-purple);
+  display: inline-flex;
+  flex: 0 0 18px;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.opencode-session-view__reasoning-icon svg {
+  height: 16px;
+  width: 16px;
+}
+
+.opencode-session-view__reasoning-title {
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
+.opencode-session-view__reasoning-spinner {
+  animation: opencode-agent-panel-spin 1s linear infinite;
+  border: 2px solid var(--background-modifier-border);
+  border-radius: 50%;
+  border-top-color: var(--color-purple);
+  height: 12px;
+  width: 12px;
+}
+
+.opencode-session-view__reasoning-body {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  padding: var(--size-2-2) var(--size-4-2) var(--size-4-2) 36px;
+}
+
+.opencode-session-view__tool {
+  border-left: 2px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  margin: 0;
+  padding-left: var(--size-4-3);
+}
+
+.opencode-session-view__tool[open] {
+  border-left-color: var(--background-modifier-border-hover);
+}
+
+.opencode-session-view__tool--error {
+  border-left-color: var(--text-error);
+}
+
+.opencode-session-view__tool--error[open] {
+  border-left-color: var(--text-error);
+}
+
+.opencode-session-view__tool-summary {
+  align-items: center;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  display: flex;
+  gap: var(--size-4-2);
+  list-style: none;
+  min-height: 28px;
+  padding: var(--size-2-1) var(--size-4-2);
+}
+
+.opencode-session-view__tool-summary:hover {
+  background: var(--background-modifier-hover);
+}
+
+.opencode-session-view__tool-summary::-webkit-details-marker {
+  display: none;
+}
+
+.opencode-session-view__tool-summary::after {
+  color: var(--text-faint);
+  content: "›";
+  margin-left: auto;
+  transform: rotate(0deg);
+  transition: transform 120ms ease-in-out;
+}
+
+.opencode-session-view__tool[open] > .opencode-session-view__tool-summary::after {
+  transform: rotate(90deg);
+}
+
+.opencode-session-view__tool-icon {
+  align-items: center;
+  color: var(--text-faint);
+  display: inline-flex;
+  flex: 0 0 18px;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.opencode-session-view__tool-icon svg {
+  height: 16px;
+  width: 16px;
+}
+
+.opencode-session-view__tool-title {
+  color: var(--text-muted);
+  font-weight: normal;
+  white-space: nowrap;
+}
+
+.opencode-session-view__tool-display-path {
+  align-items: baseline;
+  display: inline-flex;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.opencode-session-view__tool-path-prefix {
+  color: var(--text-faint);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.opencode-session-view__tool-path-basename {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  font-weight: var(--font-medium);
+}
+
+.opencode-session-view__tool-subtitle {
+  color: var(--text-faint);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-session-view__tool-status,
+.opencode-session-view__tool-tag {
+  background: var(--background-modifier-hover);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-faint);
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  padding: 1px var(--size-2-2);
+}
+
+.opencode-session-view__tool--error .opencode-session-view__tool-status {
+  color: var(--text-error);
+}
+
+.opencode-session-view__tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  padding: var(--size-2-2) var(--size-4-2) var(--size-4-2) 36px;
+}
+
+.opencode-session-view__read-table {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  overflow-x: auto;
+  padding: var(--size-2-2) 0;
+}
+
+.opencode-session-view__read-line {
+  display: grid;
+  grid-template-columns: 6ch minmax(0, 1fr);
+  min-width: max-content;
+}
+
+.opencode-session-view__read-line-number {
+  color: var(--text-faint);
+  padding: 0 var(--size-2-2);
+  text-align: right;
+  user-select: none;
+}
+
+.opencode-session-view__read-code {
+  color: var(--text-muted);
+  padding: 0 var(--size-4-2);
+  white-space: pre;
+}
+
+.opencode-session-view__tool-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-2);
+  padding: var(--size-2-2) 0 var(--size-2-2) 20px;
+}
+
+.opencode-session-view__tool-path,
+.opencode-session-view__tool-section-title,
+.opencode-session-view__tool-empty {
+  color: var(--text-faint);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.opencode-session-view__tool-section-title {
+  font-family: var(--font-interface);
+  font-weight: var(--font-medium);
+  text-transform: uppercase;
+}
+
+.opencode-session-view__diff-table {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  overflow-x: auto;
+  padding: var(--size-2-2) 0;
+}
+
+.opencode-session-view__diff-line {
+  display: grid;
+  grid-template-columns: 4ch 4ch minmax(0, 1fr);
+  min-width: max-content;
+}
+
+.opencode-session-view__diff-line--add {
+  background: color-mix(in srgb, var(--color-green) 14%, transparent);
+}
+
+.opencode-session-view__diff-line--del {
+  background: color-mix(in srgb, var(--color-red) 14%, transparent);
+}
+
+.opencode-session-view__diff-line--meta {
+  background: var(--background-modifier-hover);
+  color: var(--text-faint);
+}
+
+.opencode-session-view__diff-line-number {
+  color: var(--text-faint);
+  padding: 0 var(--size-2-2);
+  text-align: right;
+  user-select: none;
+}
+
+.opencode-session-view__diff-code {
+  color: var(--text-muted);
+  padding: 0 var(--size-4-2);
+  white-space: pre;
+}
+
+.opencode-session-view__diff-stats {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: var(--size-2-2);
+}
+
+.opencode-session-view__diff-stat-add,
+.opencode-session-view__diff-stat-del {
+  color: var(--text-faint);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.opencode-session-view__diff-stat-add {
+  color: var(--color-green);
+}
+
+.opencode-session-view__diff-stat-del {
+  color: var(--color-red);
+}
+
+.opencode-session-view__diagnostics {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-2);
+  padding: var(--size-4-3);
+}
+
+.opencode-session-view__diagnostic {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.opencode-session-view__diagnostic-label {
+  color: var(--text-error);
+  font-weight: var(--font-semibold);
+}
+
+.opencode-session-view__diagnostic-location {
+  color: var(--color-purple);
+}
+
+.opencode-session-view__diagnostic-message {
+  color: var(--text-muted);
+}
+
+.opencode-session-view__tool-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+}
+
+.opencode-session-view__todos {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-2);
+}
+
+.opencode-session-view__todo {
+  align-items: center;
+  display: flex;
+  gap: var(--size-4-2);
+}
+
+.opencode-session-view__todo-checkbox {
+  pointer-events: none;
+}
+
+.opencode-session-view__todo-content {
+  color: var(--text-muted);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.opencode-session-view__todo-checkbox:checked + .opencode-session-view__todo-content {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.opencode-session-view__tool .markdown-rendered {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.opencode-session-view__tool .markdown-rendered pre {
+  margin: 0;
+}
+
+.opencode-session-view__terminal {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  position: relative;
+}
+
+.opencode-session-view__terminal pre {
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  line-height: var(--line-height-tight);
+  margin: 0;
+  overflow-x: auto;
+  padding: var(--size-4-3);
+  white-space: pre-wrap;
+}
+
+.opencode-session-view__copy {
+  position: absolute;
+  right: var(--size-2-2);
+  top: var(--size-2-2);
+}
+
+.opencode-session-view__empty,
+.opencode-session-view__state {
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.opencode-session-view__state {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  justify-content: center;
+  min-height: 240px;
+  padding: var(--size-4-8);
+}
+
+.opencode-session-view__state-title {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.opencode-session-view__state-text {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.opencode-session-view__spinner {
+  animation: opencode-agent-panel-spin 1s linear infinite;
+  border: 2px solid var(--background-modifier-border);
+  border-radius: 50%;
+  border-top-color: var(--text-muted);
+  height: 20px;
+  width: 20px;
+}

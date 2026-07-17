@@ -1,0 +1,23 @@
+{
+  "name": "obsidian-opencode-plugin",
+  "version": "0.0.1",
+  "description": "Obsidian desktop UI for an externally managed OpenCode server.",
+  "main": "main.js",
+  "scripts": {
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "opencode"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.23.0",
+    "obsidian": "^1.6.7",
+    "typescript": "^5.5.3"
+  }
+}

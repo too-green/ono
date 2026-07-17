@@ -1,0 +1,9 @@
+{
+  "id": "opencode-plugin",
+  "name": "OpenCode",
+  "version": "0.0.1",
+  "minAppVersion": "1.6.0",
+  "description": "Desktop-only OpenCode client inside Obsidian.",
+  "author": "Ahmed Yaseen",
+  "isDesktopOnly": true
+}

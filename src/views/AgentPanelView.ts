@@ -1,6 +1,7 @@
 import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type OpenCodePlugin from "../../main";
 import type { OpenCodeEventSubscription } from "../services/opencode-events";
+import { logServiceError } from "../services/opencode-http";
 import type { JsonObject, OpenCodeSession } from "../services/opencode-types";
 
 export const VIEW_TYPE_OPENCODE_AGENT_PANEL = "opencode-agent-panel";
@@ -45,10 +46,12 @@ export class AgentPanelView extends ItemView {
   private collapsed = new Set<string>();
   private activeSessionId?: string;
   private highlightedKey?: string;
-  private eventSubscription?: OpenCodeEventSubscription;
-  private visibleRows: { key: string; kind: "project" | "worktree" | "session" | "new-session"; element: HTMLElement; sessionId?: string }[] = [];
+  private eventSubscriptions: OpenCodeEventSubscription[] = [];
+  private eventSubscriptionDirectoriesKey = "";
+  private visibleRows: { key: string; kind: "project" | "worktree" | "session" | "new-session"; element: HTMLElement; sessionId?: string; directory?: string }[] = [];
   private loading = false;
   private refreshTimer?: number;
+  private lastRenderedTreeSignature = "";
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -77,24 +80,45 @@ export class AgentPanelView extends ItemView {
     this.contentEl.addClass("opencode-agent-panel");
     this.contentEl.tabIndex = 0;
     this.contentEl.addEventListener("keydown", this.handleKeydown);
-    this.subscribeToServerEvents();
+    this.syncEventSubscriptions(this.plugin.getOpenedDirectories());
     await this.refresh();
   }
 
   /** Clears the panel when Obsidian closes the view. */
   async onClose(): Promise<void> {
     this.contentEl.removeEventListener("keydown", this.handleKeydown);
-    this.eventSubscription?.close();
+    this.closeEventSubscriptions();
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     this.contentEl.empty();
   }
 
-  /** Subscribes to read-only OpenCode events so the tree stays fresh while visible. */
-  private subscribeToServerEvents(): void {
-    this.eventSubscription?.close();
-    this.eventSubscription = this.plugin.requireOpenCodeService().subscribeToEvents({
-      onEvent: () => this.scheduleRefresh(),
-    });
+  /** Subscribes to sidebar-relevant OpenCode events so token streaming does not blink the tree. */
+  private syncEventSubscriptions(directories: string[]): void {
+    const key = [...directories].sort().join("\n");
+    if (key === this.eventSubscriptionDirectoriesKey && this.eventSubscriptions.length > 0) return;
+    this.closeEventSubscriptions();
+    this.eventSubscriptionDirectoriesKey = key;
+    this.eventSubscriptions = directories.map((directory) =>
+      this.plugin.requireOpenCodeService().subscribeToEvents(
+        {
+          onEvent: (event) => {
+            if (this.shouldRefreshForEvent(event.type)) this.scheduleRefresh();
+          },
+        },
+        directory,
+      ),
+    );
+  }
+
+  /** Closes all directory-scoped event streams owned by this panel. */
+  private closeEventSubscriptions(): void {
+    for (const subscription of this.eventSubscriptions) subscription.close();
+    this.eventSubscriptions = [];
+  }
+
+  /** Returns true for events that can change project/session rows or their status badges. */
+  private shouldRefreshForEvent(type: string): boolean {
+    return type === "session.created" || type === "session.updated" || type === "session.deleted" || type === "session.status" || type === "project.updated";
   }
 
   /** Debounces event-driven reloads to avoid rendering every streaming event individually. */
@@ -102,30 +126,31 @@ export class AgentPanelView extends ItemView {
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = undefined;
-      void this.refresh();
+      void this.refresh({ showLoading: false });
     }, 250);
   }
 
   /** Reloads projects, sessions, and statuses using only OpenCode GET endpoints. */
-  async refresh(): Promise<void> {
+  async refresh(options: { showLoading?: boolean } = {}): Promise<void> {
     if (this.loading) return;
     this.loading = true;
-    this.renderLoading();
+    if (options.showLoading !== false || !this.contentEl.hasChildNodes()) this.renderLoading();
 
     try {
       const service = this.plugin.requireOpenCodeService();
       await service.health();
       const openedDirectories = this.plugin.getOpenedDirectories();
+      this.syncEventSubscriptions(openedDirectories);
       const [projects, openedContexts, sessionGroups, statuses] = await Promise.all([
-        openedDirectories[0] ? service.listProjects(openedDirectories[0]).catch(() => []) : Promise.resolve([]),
+        openedDirectories[0] ? service.listProjects(openedDirectories[0]).catch(logServiceError([], "listProjects", openedDirectories[0])) : Promise.resolve([]),
         Promise.all(
           openedDirectories.map(async (directory): Promise<OpenedDirectoryContext> => ({
             directory,
-            project: await service.getCurrentProject(directory).catch(() => undefined),
+            project: await service.getCurrentProject(directory).catch(logServiceError(undefined, "getCurrentProject", directory)),
           })),
         ),
-        Promise.all(openedDirectories.map((directory) => service.listSessions({ directory, limit: 100 }).catch(() => []))),
-        service.getSessionStatus().catch(() => ({})),
+        Promise.all(openedDirectories.map((directory) => service.listSessions({ directory, limit: 100 }).catch(logServiceError([], "listSessions", directory)))),
+        service.getSessionStatus().catch(logServiceError({}, "getSessionStatus")),
       ]);
       const sessionDirectoryById = new Map<string, string>();
       sessionGroups.forEach((sessionsForDirectory, index) => {
@@ -141,8 +166,12 @@ export class AgentPanelView extends ItemView {
         openedContexts,
         sessionDirectoryById,
       );
+      const treeSignature = JSON.stringify(tree);
+      if (treeSignature === this.lastRenderedTreeSignature) return;
+      this.lastRenderedTreeSignature = treeSignature;
       this.renderTree(tree);
     } catch (error) {
+      this.lastRenderedTreeSignature = "";
       this.renderDisconnected(error);
     } finally {
       this.loading = false;
@@ -221,7 +250,7 @@ export class AgentPanelView extends ItemView {
   private async buildSessionNode(session: OpenCodeSession, statuses: JsonObject): Promise<AgentPanelSession> {
     const service = this.plugin.requireOpenCodeService();
     const id = session.id;
-    const children = await service.listSessionChildren(id).catch(() => []);
+    const children = await service.listSessionChildren(id).catch(logServiceError([], "listSessionChildren", id));
 
     return {
       id,
@@ -361,18 +390,18 @@ export class AgentPanelView extends ItemView {
     for (const child of session.children) this.renderSession(children, child, depth + 1);
   }
 
-  /** Renders the passive placeholder reserved for future session creation flow. */
+  /** Renders the client-only new-session draft entry for a project directory. */
   private renderNewSessionPlaceholder(container: HTMLElement, projectId: string, directory: string): void {
     const key = `new-session:${projectId}:${directory}`;
     const row = container.createDiv({ cls: "tree-item nav-file opencode-agent-panel__new-session" });
     const title = row.createDiv({ cls: "tree-item-self nav-file-title is-clickable" });
-    this.registerRow(key, "new-session", title);
+    this.registerRow(key, "new-session", title, undefined, directory);
     title.createDiv({ cls: "tree-item-icon collapse-icon" });
     const plus = title.createDiv({ cls: "opencode-agent-panel__placeholder-icon" });
     setIcon(plus, "plus");
     title.createDiv({ text: "new session", cls: "tree-item-inner nav-file-title-content" });
-    title.title = "Session creation is intentionally disabled until the composer flow is implemented.";
-    title.addEventListener("click", () => new Notice(`New session for ${projectId} will be wired in the composer iteration.`));
+    title.title = "Create an empty OpenCode session and focus its composer.";
+    title.addEventListener("click", () => void this.createNewSession(directory));
   }
 
   /** Renders the native disclosure slot for folders and sessions with children. */
@@ -430,8 +459,8 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Registers a visible tree row for keyboard navigation and highlight management. */
-  private registerRow(key: string, kind: "project" | "worktree" | "session" | "new-session", element: HTMLElement, sessionId?: string): void {
-    this.visibleRows.push({ key, kind, element, sessionId });
+  private registerRow(key: string, kind: "project" | "worktree" | "session" | "new-session", element: HTMLElement, sessionId?: string, directory?: string): void {
+    this.visibleRows.push({ key, kind, element, sessionId, directory });
     element.dataset.opencodeRowKey = key;
     if (!this.highlightedKey) this.highlightedKey = key;
     if (this.highlightedKey === key) element.addClass("opencode-agent-panel__row-highlighted");
@@ -495,7 +524,12 @@ export class AgentPanelView extends ItemView {
       this.renderActiveOnly();
       void this.plugin.openSessionTab(row.sessionId);
     }
-    if (row.kind === "new-session") new Notice("New-session creation is deferred until the composer flow is implemented.");
+    if (row.kind === "new-session" && row.directory) void this.createNewSession(row.directory);
+  }
+
+  /** Opens a local draft tab without creating a server-side OpenCode session. */
+  private async createNewSession(directory: string): Promise<void> {
+    await this.plugin.openNewSessionTab(directory);
   }
 
   /** Deduplicates directory-scoped session batches; referenced by refresh before tree construction. */

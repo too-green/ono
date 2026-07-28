@@ -36,7 +36,81 @@ export interface OpenCodeListSessionsParams {
 
 export interface OpenCodeListMessagesParams {
   limit?: number;
+  order?: "asc" | "desc";
+  cursor?: string;
+  before?: string;
 }
+
+export interface OpenCodeMessagePage {
+  messages: OpenCodeMessageBundle[];
+  olderCursor?: string;
+  newerCursor?: string;
+  complete: boolean;
+}
+
+export interface OpenCodeCreateSessionInput {
+  title?: string;
+  agent?: string;
+  model?: { providerID: string; id: string; variant?: string };
+}
+
+export interface OpenCodeModelRef extends JsonObject {
+  providerID: string;
+  modelID: string;
+  variant?: string;
+}
+
+export interface OpenCodePromptPartInput extends JsonObject {
+  type: "text" | "file" | "agent" | "subtask";
+}
+
+export interface OpenCodePromptInput {
+  agent?: string;
+  model?: { providerID: string; modelID: string };
+  variant?: string;
+  parts: OpenCodePromptPartInput[];
+}
+
+export interface OpenCodeCommandInput {
+  agent?: string;
+  model?: string;
+  command: string;
+  arguments: string;
+  variant?: string;
+  parts?: OpenCodePromptPartInput[];
+}
+
+export type OpenCodePermissionReply = "once" | "always" | "reject";
+
+export interface OpenCodePermissionRequest extends JsonObject {
+  id: string;
+  sessionID: string;
+  permission: string;
+  patterns: string[];
+  metadata: JsonObject;
+  always: string[];
+}
+
+export interface OpenCodeQuestionOption extends JsonObject {
+  label: string;
+  description: string;
+}
+
+export interface OpenCodeQuestionInfo extends JsonObject {
+  question: string;
+  header: string;
+  options: OpenCodeQuestionOption[];
+  multiple?: boolean;
+  custom?: boolean;
+}
+
+export interface OpenCodeQuestionRequest extends JsonObject {
+  id: string;
+  sessionID: string;
+  questions: OpenCodeQuestionInfo[];
+}
+
+export type OpenCodeQuestionAnswer = string[];
 
 export interface OpenCodeFindFilesParams {
   query: string;

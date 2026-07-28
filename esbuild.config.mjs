@@ -10,6 +10,7 @@ await esbuild.build({
   bundle: true,
   external: ["obsidian", "electron", "@codemirror/*", "@lezer/*", ...builtins],
   format: "cjs",
+  loader: { ".svg": "text" },
   target: "es2018",
   logLevel: "info",
   sourcemap: prod ? false : "inline",

@@ -5,6 +5,16 @@ export interface OpenCodePluginSettings {
   openedDirectories: string[];
   groupContextTools: boolean;
   showReasoningBlocks: boolean;
+  interruptConfirmSeconds: number;
+  sessionScroll: Record<string, { top: number; atBottom: boolean }>;
+  sessionDrafts: Record<string, string>;
+  sessionPromptHistory: Record<string, string[]>;
+  sessionAgentChoices: Record<string, string>;
+  sessionModelChoices: Record<string, { providerID: string; modelID: string; variant?: string }>;
+  sessionAutoApprove: Record<string, boolean>;
+  sessionMute: Record<string, boolean>;
+  sessionAttachedFiles: Record<string, string[]>;
+  favoriteModels: Array<{ providerID: string; modelID: string; variant?: string }>;
 }
 
 export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
@@ -14,4 +24,14 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   openedDirectories: [],
   groupContextTools: false,
   showReasoningBlocks: true,
+  interruptConfirmSeconds: 3,
+  sessionScroll: {},
+  sessionDrafts: {},
+  sessionPromptHistory: {},
+  sessionAgentChoices: {},
+  sessionModelChoices: {},
+  sessionAutoApprove: {},
+  sessionMute: {},
+  sessionAttachedFiles: {},
+  favoriteModels: [],
 };

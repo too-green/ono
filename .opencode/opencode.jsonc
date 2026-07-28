@@ -4,7 +4,20 @@
     "opencode": {
       "repository": "anomalyco/opencode",
       "branch": "dev",
-      "description": "Use for OpenCode implementation details, APIs, and UI behavior."
+      "description": "Refer for OpenCode implementation details, APIs, and UI behavior."
+    },
+    "openchamber": {
+      "repository": "openchamber/openchamber",
+      "branch": "main",
+      "description": "a popular 3rd party opensource opencode GUI client app"
+    },
+    "product-spec": {
+      "path": "../docs/product-spec",
+      "description": "living product spec for current project - organized in multiple markdown note files linked to each other using obsidian wikilinks to allow tracing related pieces of information"
+    },
+    "agent_logs": {
+      "path": "../docs/tmp",
+      "description": "temporary documenation that is not committed to git - used for inter-agent communication files, current implementation state, long horizon plan and progress etc"
     }
   }
 }

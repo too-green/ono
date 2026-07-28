@@ -17,6 +17,9 @@ data.json
 .opencode/logs/
 .opencode/tmp/
 
+# Temporary inter-agent documentation
+docs/tmp/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

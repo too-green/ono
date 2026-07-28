@@ -2,13 +2,21 @@ import { OpenCodeEventStream, type OpenCodeEventHandlers, type OpenCodeEventSubs
 import { OpenCodeHttpClient } from "./opencode-http";
 import type {
   JsonObject,
+  OpenCodeCommandInput,
+  OpenCodeCreateSessionInput,
   OpenCodeFindFilesParams,
   OpenCodeFindTextParams,
   OpenCodeHealth,
   OpenCodeListMessagesParams,
   OpenCodeListSessionsParams,
+  OpenCodeMessagePage,
   OpenCodeListToolsParams,
   OpenCodeMessageBundle,
+  OpenCodePermissionReply,
+  OpenCodePermissionRequest,
+  OpenCodePromptInput,
+  OpenCodeQuestionAnswer,
+  OpenCodeQuestionRequest,
   OpenCodeSession,
 } from "./opencode-types";
 
@@ -37,9 +45,9 @@ export class OpenCodeService {
     return this.http.get<OpenCodeHealth>("/global/health", undefined, signal);
   }
 
-  /** Subscribes to bus events from `GET /event` for future live UI reconciliation. */
-  subscribeToEvents(handlers: OpenCodeEventHandlers): OpenCodeEventSubscription {
-    return this.events.subscribe(handlers);
+  /** Subscribes to directory-scoped bus events from `GET /event?directory=...`. */
+  subscribeToEvents(handlers: OpenCodeEventHandlers, directory?: string): OpenCodeEventSubscription {
+    return this.events.subscribe(handlers, directory);
   }
 
   /** Lists known projects from `GET /project`; optional directory triggers OpenCode's backend resolver. */
@@ -97,6 +105,81 @@ export class OpenCodeService {
     return this.http.get<OpenCodeSession>(`/session/${encodeURIComponent(sessionId)}`);
   }
 
+  /** Creates a session through `POST /session`; referenced by the agents panel new-session placeholder. */
+  createSession(input?: OpenCodeCreateSessionInput, directory?: string): Promise<OpenCodeSession> {
+    return this.http.post<OpenCodeSession>("/session", input ?? {}, { directory });
+  }
+
+  /** Sends a non-blocking prompt through `POST /session/:id/prompt_async`; referenced by the composer. */
+  sendPromptAsync(sessionId: string, input: OpenCodePromptInput, directory?: string): Promise<void> {
+    return this.http.post<void>(`/session/${encodeURIComponent(sessionId)}/prompt_async`, input, { directory });
+  }
+
+  /** Aborts an active session through `POST /session/:id/abort`; referenced by the composer stop button. */
+  abortSession(sessionId: string, directory?: string): Promise<boolean> {
+    return this.http.post<boolean>(`/session/${encodeURIComponent(sessionId)}/abort`, {}, { directory });
+  }
+
+  /** Runs a slash command through `POST /session/:id/command`; referenced by composer `/` submission. */
+  runCommand(sessionId: string, input: OpenCodeCommandInput, directory?: string): Promise<OpenCodeMessageBundle> {
+    return this.http.post<OpenCodeMessageBundle>(`/session/${encodeURIComponent(sessionId)}/command`, input, { directory });
+  }
+
+  /** Compacts session context via `POST /session/:id/summarize`; referenced by the `/compact` built-in command. */
+  summarizeSession(sessionId: string, directory?: string): Promise<JsonObject> {
+    return this.http.post<JsonObject>(`/session/${encodeURIComponent(sessionId)}/summarize`, {}, { directory });
+  }
+
+  /** Reverts the last message pair via `POST /session/:id/revert`; referenced by the `/undo` built-in command. */
+  revertSession(sessionId: string, directory?: string): Promise<JsonObject> {
+    return this.http.post<JsonObject>(`/session/${encodeURIComponent(sessionId)}/revert`, {}, { directory });
+  }
+
+  /** Restores the last reverted message pair via `POST /session/:id/unrevert`; referenced by the `/redo` built-in command. */
+  unrevertSession(sessionId: string, directory?: string): Promise<JsonObject> {
+    return this.http.post<JsonObject>(`/session/${encodeURIComponent(sessionId)}/unrevert`, {}, { directory });
+  }
+
+  /** Shares a session via `POST /session/:id/share`; referenced by the `/share` built-in command. */
+  shareSession(sessionId: string, directory?: string): Promise<JsonObject> {
+    return this.http.post<JsonObject>(`/session/${encodeURIComponent(sessionId)}/share`, {}, { directory });
+  }
+
+  /** Unshares a session via `DELETE /session/:id/share`; referenced by the `/unshare` built-in command. */
+  unshareSession(sessionId: string, directory?: string): Promise<JsonObject> {
+    return this.http.delete<JsonObject>(`/session/${encodeURIComponent(sessionId)}/share`, { directory });
+  }
+
+  /** Forks a session via `POST /session/:id/fork`; referenced by the `/fork` built-in command. */
+  forkSession(sessionId: string, directory?: string): Promise<OpenCodeSession> {
+    return this.http.post<OpenCodeSession>(`/session/${encodeURIComponent(sessionId)}/fork`, {}, { directory });
+  }
+
+  /** Lists pending permission requests from `GET /permission`; referenced by the session permission dock. */
+  listPermissionRequests(directory?: string): Promise<OpenCodePermissionRequest[]> {
+    return this.http.get<OpenCodePermissionRequest[]>("/permission", { directory });
+  }
+
+  /** Replies to one permission request through `POST /permission/:id/reply`; referenced by permission buttons. */
+  replyPermission(requestId: string, reply: OpenCodePermissionReply, directory?: string): Promise<boolean> {
+    return this.http.post<boolean>(`/permission/${encodeURIComponent(requestId)}/reply`, { reply }, { directory });
+  }
+
+  /** Lists pending question requests from `GET /question`; referenced by the session question dock. */
+  listQuestionRequests(directory?: string): Promise<OpenCodeQuestionRequest[]> {
+    return this.http.get<OpenCodeQuestionRequest[]>("/question", { directory });
+  }
+
+  /** Answers one question request through `POST /question/:id/reply`; referenced by the question dock submit action. */
+  replyQuestion(requestId: string, answers: OpenCodeQuestionAnswer[], directory?: string): Promise<boolean> {
+    return this.http.post<boolean>(`/question/${encodeURIComponent(requestId)}/reply`, { answers }, { directory });
+  }
+
+  /** Rejects one question request through `POST /question/:id/reject`; referenced by the question dock reject action. */
+  rejectQuestion(requestId: string, directory?: string): Promise<boolean> {
+    return this.http.post<boolean>(`/question/${encodeURIComponent(requestId)}/reject`, {}, { directory });
+  }
+
   /** Lists child sessions from `GET /session/:id/children`. */
   listSessionChildren(sessionId: string): Promise<OpenCodeSession[]> {
     return this.http.get<OpenCodeSession[]>(`/session/${encodeURIComponent(sessionId)}/children`);
@@ -112,9 +195,28 @@ export class OpenCodeService {
     return this.http.get<JsonObject[]>(`/session/${encodeURIComponent(sessionId)}/diff`, { messageID: messageId });
   }
 
-  /** Lists message bundles from `GET /session/:id/message`. */
-  listMessages(sessionId: string, params?: OpenCodeListMessagesParams): Promise<OpenCodeMessageBundle[]> {
-    return this.http.get<OpenCodeMessageBundle[]>(`/session/${encodeURIComponent(sessionId)}/message`, params);
+  /** Lists all message bundles from `GET /session/:id/message`; referenced by full-session side panels. */
+  async listMessages(sessionId: string, params?: OpenCodeListMessagesParams): Promise<OpenCodeMessageBundle[]> {
+    const payload = await this.http.get<OpenCodeMessageBundle[] | { data?: OpenCodeMessageBundle[] }>(`/session/${encodeURIComponent(sessionId)}/message`, params);
+    return Array.isArray(payload) ? payload : payload.data ?? [];
+  }
+
+  /** Reads one normalized cursor page from `GET /session/:id/message`; referenced by lazy session timelines. */
+  async listMessagePage(sessionId: string, params?: OpenCodeListMessagesParams): Promise<OpenCodeMessagePage> {
+    const query = { limit: params?.limit, before: params?.before ?? params?.cursor };
+    const response = await this.http.getResponse<OpenCodeMessageBundle[] | { data?: OpenCodeMessageBundle[]; cursor?: { previous?: string; next?: string } }>(
+      `/session/${encodeURIComponent(sessionId)}/message`,
+      query,
+    );
+    const payload = response.json;
+    const headerCursor = response.headers["x-next-cursor"] ?? response.headers["X-Next-Cursor"];
+    if (Array.isArray(payload)) return { messages: payload, olderCursor: headerCursor, complete: !headerCursor };
+    return {
+      messages: payload.data ?? [],
+      olderCursor: payload.cursor?.next ?? headerCursor,
+      newerCursor: payload.cursor?.previous,
+      complete: !(payload.cursor?.next ?? headerCursor),
+    };
   }
 
   /** Reads one message bundle from `GET /session/:id/message/:messageID`. */
@@ -123,8 +225,8 @@ export class OpenCodeService {
   }
 
   /** Lists slash commands from `GET /command`. */
-  listCommands(): Promise<JsonObject[]> {
-    return this.http.get<JsonObject[]>("/command");
+  listCommands(directory?: string): Promise<JsonObject[]> {
+    return this.http.get<JsonObject[]>("/command", { directory });
   }
 
   /** Searches file contents using `GET /find`. */
@@ -182,8 +284,26 @@ export class OpenCodeService {
     return this.http.get<JsonObject>("/mcp");
   }
 
-  /** Lists available agents using `GET /agent`. */
-  listAgents(): Promise<JsonObject[]> {
-    return this.http.get<JsonObject[]>("/agent");
+  /** Lists directory-scoped agents using `GET /agent`; referenced by composer selection. */
+  listAgents(directory?: string): Promise<JsonObject[]> {
+    return this.http.get<JsonObject[]>("/agent", { directory });
+  }
+
+  /** Lists configured models by flattening `GET /config/providers`; referenced by composer model/variant selection. */
+  async listModels(directory?: string): Promise<JsonObject[]> {
+    const payload = await this.http.get<JsonObject>("/config/providers", { directory });
+    const providers = Array.isArray(payload.providers) ? payload.providers : [];
+    return providers.flatMap((provider) => {
+      if (!provider || typeof provider !== "object" || Array.isArray(provider)) return [];
+      const providerObject = provider as JsonObject;
+      const providerID = typeof providerObject.id === "string" ? providerObject.id : undefined;
+      const models = providerObject.models;
+      if (!models || typeof models !== "object" || Array.isArray(models)) return [];
+      return Object.values(models).flatMap((model) => {
+        if (!model || typeof model !== "object" || Array.isArray(model)) return [];
+        const modelObject = model as JsonObject;
+        return [{ ...modelObject, providerID: typeof modelObject.providerID === "string" ? modelObject.providerID : providerID }];
+      });
+    });
   }
 }

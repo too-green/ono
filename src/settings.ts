@@ -1,4 +1,5 @@
 import type { OpenCodeServerConfig } from "./services/opencode-service";
+import { DEFAULT_WORKING_ANIMATION, type WorkingAnimation } from "./session-state";
 
 export interface OpenCodePluginSettings {
   server: OpenCodeServerConfig;
@@ -14,6 +15,8 @@ export interface OpenCodePluginSettings {
   sessionAutoApprove: Record<string, boolean>;
   sessionMute: Record<string, boolean>;
   sessionAttachedFiles: Record<string, string[]>;
+  sessionUnread: Record<string, boolean>;
+  workingAnimation: WorkingAnimation;
   favoriteModels: Array<{ providerID: string; modelID: string; variant?: string }>;
 }
 
@@ -33,5 +36,7 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   sessionAutoApprove: {},
   sessionMute: {},
   sessionAttachedFiles: {},
+  sessionUnread: {},
+  workingAnimation: DEFAULT_WORKING_ANIMATION,
   favoriteModels: [],
 };

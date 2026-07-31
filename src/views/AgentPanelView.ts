@@ -2,7 +2,8 @@ import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type OpenCodePlugin from "../../main";
 import type { OpenCodeEventSubscription } from "../services/opencode-events";
 import { logServiceError } from "../services/opencode-http";
-import type { JsonObject, OpenCodeSession } from "../services/opencode-types";
+import type { JsonObject, OpenCodeEvent, OpenCodeSession } from "../services/opencode-types";
+import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
 
 export const VIEW_TYPE_OPENCODE_AGENT_PANEL = "opencode-agent-panel";
 
@@ -28,8 +29,6 @@ interface AgentPanelSession {
   children: AgentPanelSession[];
 }
 
-type SessionVisualStatus = "idle" | "working" | "attention" | "done" | "error" | "retry";
-
 interface OpenCodeProjectMeta {
   id: string;
   name: string;
@@ -52,6 +51,7 @@ export class AgentPanelView extends ItemView {
   private loading = false;
   private refreshTimer?: number;
   private lastRenderedTreeSignature = "";
+  private lastKnownSessionStatuses = new Map<string, string>();
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -102,6 +102,7 @@ export class AgentPanelView extends ItemView {
       this.plugin.requireOpenCodeService().subscribeToEvents(
         {
           onEvent: (event) => {
+            this.applyLiveSessionEvent(event);
             if (this.shouldRefreshForEvent(event.type)) this.scheduleRefresh();
           },
         },
@@ -118,7 +119,20 @@ export class AgentPanelView extends ItemView {
 
   /** Returns true for events that can change project/session rows or their status badges. */
   private shouldRefreshForEvent(type: string): boolean {
-    return type === "session.created" || type === "session.updated" || type === "session.deleted" || type === "session.status" || type === "project.updated";
+    return (
+      type === "session.created" ||
+      type === "session.updated" ||
+      type === "session.deleted" ||
+      type === "session.status" ||
+      type === "session.idle" ||
+      type === "session.error" ||
+      type === "permission.asked" ||
+      type === "permission.replied" ||
+      type === "question.asked" ||
+      type === "question.replied" ||
+      type === "question.rejected" ||
+      type === "project.updated"
+    );
   }
 
   /** Debounces event-driven reloads to avoid rendering every streaming event individually. */
@@ -141,7 +155,7 @@ export class AgentPanelView extends ItemView {
       await service.health();
       const openedDirectories = this.plugin.getOpenedDirectories();
       this.syncEventSubscriptions(openedDirectories);
-      const [projects, openedContexts, sessionGroups, statuses] = await Promise.all([
+      const [projects, openedContexts, sessionGroups, statuses, permissionGroups, questionGroups] = await Promise.all([
         openedDirectories[0] ? service.listProjects(openedDirectories[0]).catch(logServiceError([], "listProjects", openedDirectories[0])) : Promise.resolve([]),
         Promise.all(
           openedDirectories.map(async (directory): Promise<OpenedDirectoryContext> => ({
@@ -150,7 +164,9 @@ export class AgentPanelView extends ItemView {
           })),
         ),
         Promise.all(openedDirectories.map((directory) => service.listSessions({ directory, limit: 100 }).catch(logServiceError([], "listSessions", directory)))),
-        service.getSessionStatus().catch(logServiceError({}, "getSessionStatus")),
+        service.getSessionStatus().catch(logServiceError(undefined, "getSessionStatus")),
+        Promise.all(openedDirectories.map((directory) => service.listPermissionRequests(directory).catch(logServiceError([], "listPermissionRequests", directory)))),
+        Promise.all(openedDirectories.map((directory) => service.listQuestionRequests(directory).catch(logServiceError([], "listQuestionRequests", directory)))),
       ]);
       const sessionDirectoryById = new Map<string, string>();
       sessionGroups.forEach((sessionsForDirectory, index) => {
@@ -159,10 +175,16 @@ export class AgentPanelView extends ItemView {
         sessionsForDirectory.forEach((session) => sessionDirectoryById.set(session.id, directory));
       });
       const sessions = this.uniqueSessions(sessionGroups.flat()).filter((session) => !this.isArchived(session));
+      const statusSnapshot = statuses && typeof statuses === "object" && !Array.isArray(statuses) ? (statuses as JsonObject) : {};
+      for (const request of [...permissionGroups.flat(), ...questionGroups.flat()]) {
+        const sessionId = this.readString(request, ["sessionID", "sessionId"]);
+        if (sessionId) statusSnapshot[sessionId] = { type: "attention" };
+      }
+      if (statuses) this.reconcileSessionStatusSnapshot(statusSnapshot);
       const tree = await this.buildProjectTree(
         [...(Array.isArray(projects) ? projects : []), ...openedContexts.flatMap((context) => (context.project ? [context.project] : []))],
         sessions,
-        statuses && typeof statuses === "object" && !Array.isArray(statuses) ? (statuses as JsonObject) : {},
+        statusSnapshot,
         openedContexts,
         sessionDirectoryById,
       );
@@ -414,15 +436,56 @@ export class AgentPanelView extends ItemView {
   /** Renders the left session status indicator according to the plugin spec. */
   private renderStatusIndicator(container: HTMLElement, status: SessionVisualStatus): void {
     const slot = container.createDiv({ cls: `opencode-agent-panel__status opencode-agent-panel__status--${status}` });
+    this.paintStatusIndicator(slot, status);
+  }
+
+  /** Repaints an existing session row status slot from a live event or full tree render. */
+  private paintStatusIndicator(slot: HTMLElement, status: SessionVisualStatus): void {
+    slot.empty();
+    slot.className = `opencode-agent-panel__status opencode-agent-panel__status--${status}`;
+    const animation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
+    slot.dataset.workingAnimation = animation;
     if (status === "attention") setIcon(slot, "megaphone");
     if (status === "error") setIcon(slot, "alert-circle");
     if (status === "retry") setIcon(slot, "rotate-cw");
     if (status === "done") slot.createSpan();
     if (status === "working") {
-      slot.createSpan();
-      slot.createSpan();
-      slot.createSpan();
+      if (animation === "W3") {
+        slot.createSpan();
+        slot.createSpan();
+        slot.createSpan();
+      } else {
+        slot.createSpan();
+      }
     }
+  }
+
+  /** Applies a status event immediately so visible rows do not wait for a full sidebar refresh. */
+  private applyLiveSessionEvent(event: OpenCodeEvent): void {
+    const properties = event.properties;
+    if (!properties) return;
+    if (event.type === "session.status") {
+      const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
+      const status = this.readObject(properties, "status");
+      const type = status ? this.readString(status, ["type", "status", "state"]) ?? "idle" : "idle";
+      if (sessionId) this.applyLiveSessionStatus(sessionId, type);
+      return;
+    }
+    if (event.type === "session.idle" || event.type === "session.error") {
+      const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
+      if (sessionId) this.applyLiveSessionStatus(sessionId, "idle");
+    }
+  }
+
+  /** Updates one row from another view's live status event; referenced by OpenCodePlugin.notifySessionStatusChanged. */
+  applyLiveSessionStatus(sessionId: string, type: string): void {
+    const previous = this.lastKnownSessionStatuses.get(sessionId);
+    this.markCompletedSessionUnread(sessionId, previous, type);
+    if (type === "idle") this.lastKnownSessionStatuses.delete(sessionId);
+    else this.lastKnownSessionStatuses.set(sessionId, type);
+    const row = this.contentEl.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(sessionId)}"]`);
+    const slot = row?.querySelector<HTMLElement>(".opencode-agent-panel__status");
+    if (slot) this.paintStatusIndicator(slot, this.visualStatusFor(sessionId, {}));
   }
 
   /** Renders the right muted-notification indicator slot. */
@@ -548,14 +611,32 @@ export class AgentPanelView extends ItemView {
   /** Converts raw OpenCode status payloads into the panel's visual states. */
   private visualStatusFor(sessionId: string, statuses: JsonObject): SessionVisualStatus {
     const status = statuses[sessionId];
-    if (!status || typeof status !== "object") return "idle";
-    const type = this.readString(status as JsonObject, ["type", "status", "state"]);
-    if (type === "retry") return "retry";
-    if (type === "error" || type === "failed") return "error";
-    if (type === "permission" || type === "question" || type === "attention") return "attention";
-    if (type === "running" || type === "working" || type === "active" || type === "busy") return "working";
-    if (type === "done" || type === "complete" || type === "completed") return "done";
-    return "idle";
+    const type = status && typeof status === "object" && !Array.isArray(status) ? this.readString(status as JsonObject, ["type", "status", "state"]) : this.lastKnownSessionStatuses.get(sessionId);
+    return visualStatusForSession(type, this.plugin.settings.sessionUnread[sessionId] === true);
+  }
+
+  /** Reconciles busy-to-idle transitions so completed turns remain visible as unread. */
+  private reconcileSessionStatusSnapshot(statuses: JsonObject): void {
+    const next = new Map<string, string>();
+    for (const [sessionId, value] of Object.entries(statuses)) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const type = this.readString(value as JsonObject, ["type", "status", "state"]) ?? "idle";
+      next.set(sessionId, type);
+      this.markCompletedSessionUnread(sessionId, this.lastKnownSessionStatuses.get(sessionId), type);
+    }
+    for (const [sessionId, previous] of this.lastKnownSessionStatuses) {
+      if (next.has(sessionId)) continue;
+      if (isActiveSessionStatus(previous)) next.set(sessionId, previous);
+      else this.markCompletedSessionUnread(sessionId, previous, "idle");
+    }
+    this.lastKnownSessionStatuses = next;
+  }
+
+  /** Marks a session unread only when a previously active run has settled. */
+  private markCompletedSessionUnread(sessionId: string, previous: string | undefined, next: string): void {
+    const settled = next === "idle" || next === "done" || next === "complete" || next === "completed";
+    if (!isActiveSessionStatus(previous) || !settled || this.plugin.settings.sessionUnread[sessionId] === true) return;
+    void this.plugin.rememberSessionUnread(sessionId, true);
   }
 
   /** Extracts a session title with useful fallbacks for incomplete API payloads. */

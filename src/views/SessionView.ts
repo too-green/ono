@@ -6,6 +6,7 @@ import { ModelSelectionMenu, type ModelEntry } from "./ModelSelectionMenu";
 import type { OpenCodeEventSubscription } from "../services/opencode-events";
 import { logServiceError } from "../services/opencode-http";
 import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle, OpenCodeModelRef, OpenCodePermissionReply, OpenCodePermissionRequest, OpenCodeQuestionAnswer, OpenCodeQuestionRequest } from "../services/opencode-types";
+import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
 import { setProviderIcon } from "../utils/provider-icons";
 
 export const VIEW_TYPE_OPENCODE_SESSION = "opencode-session";
@@ -129,6 +130,7 @@ export class SessionView extends ItemView {
   private pendingQueuedUserMessages = 0;
   private submittingPrompt = false;
   private sessionBusy = false;
+  private sessionStatusType = "idle";
   private abortingSession = false;
   private pendingInterruptConfirm = false;
   private interruptConfirmTimer?: number;
@@ -164,7 +166,20 @@ export class SessionView extends ItemView {
 
   /** Returns the Lucide icon used by the session tab. */
   getIcon(): string {
-    return "message-square";
+    switch (this.sessionVisualStatus()) {
+      case "working":
+        return this.workingTabIcon();
+      case "attention":
+        return "megaphone";
+      case "error":
+        return "alert-circle";
+      case "retry":
+        return "rotate-cw";
+      case "done":
+        return "circle";
+      default:
+        return "message-square";
+    }
   }
 
   /** Restores persisted view state when Obsidian reopens this custom tab. */
@@ -191,6 +206,7 @@ export class SessionView extends ItemView {
   /** Initializes live refresh for the session tab. */
   async onOpen(): Promise<void> {
     this.contentEl.addClass("opencode-session-view");
+    this.containerEl.addClass("opencode-session-view-container");
     this.registerDomEvent(window, "keydown", this.handleGlobalComposerSend, { capture: true });
     await this.refresh();
   }
@@ -241,13 +257,14 @@ export class SessionView extends ItemView {
       if (!this.olderCursor) this.olderCursor = page.olderCursor;
       this.historyComplete = page.complete && !this.olderCursor;
       const directory = this.sessionDirectoryFromSession(session);
-      const [agents, models, commands, config, permissions, questions] = await Promise.all([
+      const [agents, models, commands, config, permissions, questions, statuses] = await Promise.all([
         service.listAgents(directory),
         service.listModels(directory).catch(logServiceError([], "listModels", directory)),
         service.listCommands(directory).catch(logServiceError([], "listCommands", directory)),
         service.getConfig().catch(logServiceError({}, "getConfig", directory)),
         service.listPermissionRequests(directory).catch(logServiceError([], "listPermissionRequests", directory)),
         service.listQuestionRequests(directory).catch(logServiceError([], "listQuestionRequests", directory)),
+        service.getSessionStatus().catch(logServiceError({}, "getSessionStatus", directory)),
       ]);
       this.availableAgents = agents;
       this.availableModels = models;
@@ -257,6 +274,7 @@ export class SessionView extends ItemView {
       this.pendingQuestions = questions.filter((item) => item.sessionID === this.sessionId);
       await this.autoApprovePendingPermissions();
       this.currentSession = session;
+      this.applySessionStatusSnapshot(statuses);
 
       if (initialLoad) {
         await this.renderSession(session, this.loadedMessages, { initialLoad });
@@ -282,6 +300,7 @@ export class SessionView extends ItemView {
     this.historyComplete = true;
     this.renderedSessionId = undefined;
     this.currentSession = undefined;
+    this.sessionStatusType = "idle";
     this.jumpButton = undefined;
     if (!this.submittingPrompt) this.disableFollowLatest();
   }
@@ -345,17 +364,7 @@ export class SessionView extends ItemView {
     }
     if (event.type === "session.status") {
       const status = this.readObject(properties, "status");
-      const type = this.readString(status ?? {}, ["type"]);
-      const wasBusy = this.sessionBusy;
-      this.sessionBusy = type === "busy" || type === "working" || type === "running";
-      if (type === "idle") {
-        this.sessionBusy = false;
-        this.queuedMessageIds.clear();
-        this.pendingQueuedUserMessages = 0;
-        this.scheduleCanonicalSync(120);
-        this.releaseFollowLatestAfterIdle();
-      }
-      if (wasBusy !== this.sessionBusy) void this.refreshComposerOnly();
+      if (status) this.applySessionStatus(status, true);
       return;
     }
     if (event.type === "permission.asked") {
@@ -615,13 +624,14 @@ export class SessionView extends ItemView {
         service.listMessagePage(this.sessionId, { limit: INITIAL_MESSAGE_LIMIT, order: "desc" }),
       ]);
       const directory = this.sessionDirectoryFromSession(session);
-      const [agents, models, commands, config, permissions, questions] = await Promise.all([
+      const [agents, models, commands, config, permissions, questions, statuses] = await Promise.all([
         service.listAgents(directory),
         service.listModels(directory).catch(logServiceError([], "listModels", directory)),
         service.listCommands(directory).catch(logServiceError([], "listCommands", directory)),
         service.getConfig().catch(logServiceError({}, "getConfig", directory)),
         service.listPermissionRequests(directory).catch(logServiceError([], "listPermissionRequests", directory)),
         service.listQuestionRequests(directory).catch(logServiceError([], "listQuestionRequests", directory)),
+        service.getSessionStatus().catch(logServiceError({}, "getSessionStatus", directory)),
       ]);
 
       this.availableAgents = agents;
@@ -632,6 +642,7 @@ export class SessionView extends ItemView {
       this.pendingQuestions = questions.filter((item) => item.sessionID === this.sessionId);
       await this.autoApprovePendingPermissions();
       this.currentSession = session;
+      this.applySessionStatusSnapshot(statuses);
       this.applySessionChromeState(session);
       this.loadedMessages = this.mergeMessages(this.loadedMessages, page.messages);
       if (!this.olderCursor) this.olderCursor = page.olderCursor;
@@ -733,6 +744,83 @@ export class SessionView extends ItemView {
     if (info?.sessionID === this.sessionId || info?.sessionId === this.sessionId || info?.id === this.sessionId) return true;
     const part = this.readObject(properties, "part");
     return part?.sessionID === this.sessionId || part?.sessionId === this.sessionId;
+  }
+
+  /** Applies the current session's status from the global v1 status snapshot. */
+  private applySessionStatusSnapshot(snapshot: JsonObject): void {
+    const status = this.sessionId ? this.readObject(snapshot, this.sessionId) : undefined;
+    if (status || !isActiveSessionStatus(this.sessionStatusType)) this.applySessionStatus(status);
+  }
+
+  /** Reconciles busy, retry, and idle status events with composer and unread state. */
+  private applySessionStatus(status: JsonObject | undefined, fromEvent = false): void {
+    const previousType = this.sessionStatusType;
+    const nextType = this.readString(status ?? {}, ["type", "status", "state"]) ?? "idle";
+    const wasBusy = isActiveSessionStatus(previousType);
+    const isBusy = isActiveSessionStatus(nextType);
+    this.sessionStatusType = nextType;
+    this.sessionBusy = isBusy;
+
+    if (fromEvent && nextType === "idle") {
+      this.queuedMessageIds.clear();
+      this.pendingQueuedUserMessages = 0;
+      this.scheduleCanonicalSync(120);
+      this.releaseFollowLatestAfterIdle();
+    }
+    if (wasBusy && !isBusy && this.sessionId) this.setSessionUnread(true);
+    if (this.sessionId) this.plugin.notifySessionStatusChanged(this.sessionId, nextType);
+    this.refreshSessionStateIndicator();
+    if (wasBusy !== isBusy) void this.refreshComposerOnly();
+  }
+
+  /** Returns the visual state shared by the session tab and its in-view indicator. */
+  private sessionVisualStatus(): SessionVisualStatus {
+    if (this.pendingPermissions.length > 0 || this.pendingQuestions.length > 0) return "attention";
+    return visualStatusForSession(this.sessionStatusType, this.sessionId ? this.plugin.settings.sessionUnread[this.sessionId] === true : false);
+  }
+
+  /** Selects a tab icon that also exposes the configured working animation to CSS. */
+  private workingTabIcon(): string {
+    switch (normalizeWorkingAnimation(this.plugin.settings.workingAnimation)) {
+      case "W1":
+        return "circle-dot";
+      case "W2":
+        return "loader-circle";
+      case "W4":
+        return "sparkles";
+      default:
+        return "ellipsis";
+    }
+  }
+
+  /** Updates the tab/header icon and the mounted in-view state indicator after status changes. */
+  private refreshSessionStateIndicator(): void {
+    const status = this.sessionVisualStatus();
+    const animation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
+    this.contentEl.dataset.sessionState = status;
+    this.contentEl.dataset.workingAnimation = animation;
+    const indicator = this.contentEl.querySelector<HTMLElement>(".opencode-session-view__state-indicator");
+    if (indicator) this.paintSessionStateIndicator(indicator, status, animation);
+    this.refreshLeafTitle();
+  }
+
+  /** Paints one session state indicator without rebuilding the surrounding session view. */
+  private paintSessionStateIndicator(container: HTMLElement, status: SessionVisualStatus, animation: string): void {
+    container.empty();
+    container.className = `opencode-session-view__state-indicator opencode-session-view__state-indicator--${status}`;
+    container.dataset.workingAnimation = animation;
+    if (status === "attention") setIcon(container, "megaphone");
+    if (status === "error") setIcon(container, "alert-circle");
+    if (status === "retry") setIcon(container, "rotate-cw");
+    if (status === "done") container.createSpan();
+    if (status === "working") {
+      if (animation === "W2") container.createSpan({ cls: "opencode-session-view__state-spinner" });
+      else if (animation === "W3") {
+        container.createSpan();
+        container.createSpan();
+        container.createSpan();
+      } else container.createSpan();
+    }
   }
 
   /** Renders a placeholder when no session id is bound to this view. */
@@ -858,6 +946,7 @@ export class SessionView extends ItemView {
     this.registerDomEvent(this.contentEl, "scroll", () => {
       this.updateJumpButton();
       this.scheduleScrollStateSave();
+      if (Date.now() > this.programmaticScrollUntil) this.markSessionReadIfAtBottom();
       if (this.followLatest && !this.isNearBottom() && Date.now() > this.programmaticScrollUntil) this.disableFollowLatest();
       if (this.contentEl.scrollTop < LOAD_OLDER_THRESHOLD_PX) void this.loadOlderMessages();
     });
@@ -1032,6 +1121,20 @@ export class SessionView extends ItemView {
     void this.plugin.rememberSessionScroll(this.sessionId, { top: this.contentEl.scrollTop, atBottom: this.isNearBottom() });
   }
 
+  /** Persists the current session's unread completion marker and refreshes visible sidebar rows. */
+  private setSessionUnread(unread: boolean): void {
+    if (!this.sessionId || (this.plugin.settings.sessionUnread[this.sessionId] === true) === unread) return;
+    void this.plugin.rememberSessionUnread(this.sessionId, unread).then(() => {
+      this.refreshSessionStateIndicator();
+      void this.plugin.refreshAgentPanels({ showLoading: false });
+    });
+  }
+
+  /** Clears a completed-turn marker only after the user reaches the latest session content. */
+  private markSessionReadIfAtBottom(): void {
+    if (this.isNearBottom() && this.sessionId && this.plugin.settings.sessionUnread[this.sessionId] === true) this.setSessionUnread(false);
+  }
+
   /** Waits for one animation frame so MarkdownRenderer-created DOM can affect layout. */
   private nextFrame(): Promise<void> {
     return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
@@ -1067,7 +1170,10 @@ export class SessionView extends ItemView {
   private renderHeader(container: HTMLElement, session: JsonObject): void {
     const header = container.createDiv({ cls: "opencode-session-view__header" });
     const titleWrap = header.createDiv({ cls: "opencode-session-view__title-wrap" });
-    titleWrap.createDiv({ text: this.sessionTitleFromSession(session), cls: "opencode-session-view__title" });
+    const titleLine = titleWrap.createDiv({ cls: "opencode-session-view__title-line" });
+    const indicator = titleLine.createDiv({ cls: "opencode-session-view__state-indicator" });
+    this.paintSessionStateIndicator(indicator, this.sessionVisualStatus(), normalizeWorkingAnimation(this.plugin.settings.workingAnimation));
+    titleLine.createDiv({ text: this.sessionTitleFromSession(session), cls: "opencode-session-view__title" });
     titleWrap.createDiv({ text: this.sessionId ?? "", cls: "opencode-session-view__subtitle" });
 
     const actions = header.createDiv({ cls: "opencode-session-view__actions" });
@@ -1311,6 +1417,7 @@ export class SessionView extends ItemView {
 
   /** Repaints permission/question docks without touching the composer input or timeline. */
   private refreshRequestDocks(): void {
+    this.refreshSessionStateIndicator();
     if (!this.requestDockEl?.isConnected) return;
     this.requestDockEl.empty();
     this.renderRequestDocks(this.requestDockEl);
@@ -2334,6 +2441,24 @@ export class SessionView extends ItemView {
     parent.updateHeader?.();
     this.containerEl.closest(".workspace-leaf")?.querySelector(".view-header-title")?.replaceChildren(title);
     this.app.workspace.trigger("layout-change");
+    this.decorateSessionHeader();
+  }
+
+  /** Applies status data attributes to the native view header icon for CSS animation. */
+  private decorateSessionHeader(): void {
+    const status = this.sessionVisualStatus();
+    const animation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
+    const headerIcon = this.containerEl.querySelector<HTMLElement>(".view-header-icon");
+    if (headerIcon) {
+      headerIcon.dataset.opencodeSessionState = status;
+      headerIcon.dataset.workingAnimation = animation;
+    }
+    const leaf = this.leaf as WorkspaceLeaf & { tabHeaderEl?: HTMLElement | null };
+    const tabIcon = leaf.tabHeaderEl?.querySelector<HTMLElement>(".workspace-tab-header-inner-icon");
+    if (tabIcon) {
+      tabIcon.dataset.opencodeSessionState = status;
+      tabIcon.dataset.workingAnimation = animation;
+    }
   }
 
   /** Renders one user/assistant message block. */

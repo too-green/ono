@@ -99,22 +99,25 @@
   width: 14px;
 }
 
-.opencode-agent-panel__status--attention,
+.opencode-agent-panel__status--attention {
+  color: var(--color-orange);
+}
+
 .opencode-agent-panel__status--error,
 .opencode-agent-panel__notification {
   color: var(--color-red);
 }
 
 .opencode-agent-panel__status--retry {
-  animation: opencode-agent-panel-spin 1.2s linear infinite;
-  color: var(--text-muted);
+  animation: opencode-session-state-pulse 1.2s ease-in-out infinite;
+  color: var(--color-red);
 }
 
 .opencode-agent-panel__status--done span {
   background: var(--color-green);
   border-radius: 50%;
-  height: 7px;
-  width: 7px;
+  height: var(--opencode-session-done-size, 7px);
+  width: var(--opencode-session-done-size, 7px);
 }
 
 .opencode-agent-panel__status--working {
@@ -127,6 +130,30 @@
   border-radius: 50%;
   height: 4px;
   width: 4px;
+}
+
+.opencode-agent-panel__status--working[data-working-animation="W1"] span {
+  animation: opencode-session-state-pulse 1.8s ease-in-out infinite;
+  height: 7px;
+  width: 7px;
+}
+
+.opencode-agent-panel__status--working[data-working-animation="W2"] span {
+  animation: opencode-session-state-spin 1.2s linear infinite;
+  background: transparent;
+  border: 2px solid var(--background-modifier-border);
+  border-radius: 50%;
+  border-top-color: var(--text-muted);
+  height: 12px;
+  width: 12px;
+}
+
+.opencode-agent-panel__status--working[data-working-animation="W4"] span {
+  animation: opencode-session-state-shimmer 1.5s linear infinite;
+  background: linear-gradient(90deg, var(--text-faint), var(--interactive-accent), var(--text-faint));
+  background-size: 200% 100%;
+  height: 7px;
+  width: 7px;
 }
 
 .opencode-agent-panel__status--working span:nth-child(2) {
@@ -198,6 +225,30 @@
   }
 }
 
+@keyframes opencode-session-state-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes opencode-session-state-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes opencode-session-state-shimmer {
+  to {
+    background-position: -100% 0;
+  }
+}
+
 .opencode-session-view {
   background: var(--background-primary);
   color: var(--text-normal);
@@ -224,6 +275,165 @@
 
 .opencode-session-view__title-wrap {
   min-width: 0;
+}
+
+.opencode-session-view__title-line {
+  align-items: center;
+  display: flex;
+  gap: var(--size-2-2);
+  min-width: 0;
+}
+
+.opencode-session-view__state-indicator {
+  align-items: center;
+  color: var(--text-faint);
+  display: inline-flex;
+  flex: 0 0 18px;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.opencode-session-view__state-indicator svg {
+  height: 15px;
+  width: 15px;
+}
+
+.opencode-session-view__state-indicator--attention {
+  color: var(--color-orange);
+}
+
+.opencode-session-view__state-indicator--error {
+  color: var(--text-error);
+}
+
+.opencode-session-view__state-indicator--retry {
+  animation: opencode-session-state-pulse 1.2s ease-in-out infinite;
+  color: var(--text-error);
+}
+
+.opencode-session-view__state-indicator--done span {
+  background: var(--color-green);
+  border-radius: 50%;
+  height: 7px;
+  width: 7px;
+}
+
+.opencode-session-view__state-indicator--working {
+  gap: 2px;
+}
+
+.opencode-session-view__state-indicator--working span {
+  animation: opencode-agent-panel-bounce 1.2s infinite ease-in-out both;
+  background: var(--text-muted);
+  border-radius: 50%;
+  height: 4px;
+  width: 4px;
+}
+
+.opencode-session-view__state-indicator--working span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.opencode-session-view__state-indicator--working span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.opencode-session-view__state-indicator--working[data-working-animation="W1"] span {
+  animation: opencode-session-state-pulse 1.8s ease-in-out infinite;
+  height: 7px;
+  width: 7px;
+}
+
+.opencode-session-view__state-indicator--working .opencode-session-view__state-spinner {
+  animation: opencode-session-state-spin 1.2s linear infinite;
+  background: transparent !important;
+  border: 2px solid var(--background-modifier-border);
+  border-radius: 50%;
+  border-top-color: var(--text-muted) !important;
+  height: 12px !important;
+  width: 12px !important;
+}
+
+.opencode-session-view__state-indicator--working[data-working-animation="W4"] span {
+  animation: opencode-session-state-shimmer 1.5s linear infinite;
+  background: linear-gradient(90deg, var(--text-faint), var(--interactive-accent), var(--text-faint));
+  background-size: 200% 100%;
+  height: 7px;
+  width: 7px;
+}
+
+/* ── View header + tab header icon: working animations ── */
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="W1"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="W1"] svg {
+  animation: opencode-session-state-pulse 1.8s ease-in-out infinite;
+}
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="W2"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="W2"] svg {
+  animation: opencode-session-state-spin 1.2s linear infinite;
+}
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="W3"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="W3"] svg {
+  animation: opencode-session-state-pulse 1.2s ease-in-out infinite;
+}
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="W4"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="W4"] svg {
+  animation: opencode-session-state-shimmer 1.5s linear infinite;
+}
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="retry"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="retry"] svg {
+  animation: opencode-session-state-pulse 1.2s ease-in-out infinite;
+}
+
+/* ── View header + tab header icon: status colors ── */
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="attention"],
+.workspace-tab-header-inner-icon[data-opencode-session-state="attention"],
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="attention"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="attention"] svg {
+  color: var(--color-orange);
+}
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="error"],
+.workspace-tab-header-inner-icon[data-opencode-session-state="error"],
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="error"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="error"] svg {
+  color: var(--text-error);
+}
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="retry"],
+.workspace-tab-header-inner-icon[data-opencode-session-state="retry"],
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="retry"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="retry"] svg {
+  color: var(--color-red);
+}
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="done"],
+.workspace-tab-header-inner-icon[data-opencode-session-state="done"],
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="done"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="done"] svg {
+  color: var(--color-green);
+}
+
+/* Replace the Lucide glyph with the same explicitly sized disc used by session rows. */
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="done"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="done"] svg {
+  display: none;
+}
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="done"]::after,
+.workspace-tab-header-inner-icon[data-opencode-session-state="done"]::after {
+  background: var(--color-green);
+  border-radius: 50%;
+  content: "";
+  display: block;
+  height: var(--opencode-session-done-size, 7px);
+  width: var(--opencode-session-done-size, 7px);
 }
 
 .opencode-session-view__title {
@@ -1301,7 +1511,7 @@
 .opencode-session-view__tool-display-path {
   align-items: baseline;
   display: inline-flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -1309,7 +1519,7 @@
 
 .opencode-session-view__tool-path-prefix {
   color: var(--text-faint);
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

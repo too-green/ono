@@ -4,6 +4,7 @@ import { OpenCodeService } from "./src/services/opencode-service";
 import { AgentPanelView, VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./src/views/AgentPanelView";
 import { DiffPanelView, VIEW_TYPE_OPENCODE_DIFF_PANEL, type DiffPanelContext } from "./src/views/DiffPanelView";
 import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView";
+import { normalizeWorkingAnimation } from "./src/session-state";
 
 export default class OpenCodePlugin extends Plugin {
   settings: OpenCodePluginSettings = DEFAULT_OPENCODE_SETTINGS;
@@ -166,6 +167,8 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.sessionMute = this.settings.sessionMute && typeof this.settings.sessionMute === "object" ? this.settings.sessionMute : {};
     this.settings.sessionAttachedFiles =
       this.settings.sessionAttachedFiles && typeof this.settings.sessionAttachedFiles === "object" ? this.settings.sessionAttachedFiles : {};
+    this.settings.sessionUnread = this.settings.sessionUnread && typeof this.settings.sessionUnread === "object" ? this.settings.sessionUnread : {};
+    this.settings.workingAnimation = normalizeWorkingAnimation(this.settings.workingAnimation);
   }
 
   /** Writes plugin settings to Obsidian's plugin data file; referenced by opened-directory mutations. */
@@ -219,6 +222,13 @@ export default class OpenCodePlugin extends Plugin {
   async rememberSessionMute(sessionId: string, muted: boolean): Promise<void> {
     if (muted) this.settings.sessionMute[sessionId] = true;
     else delete this.settings.sessionMute[sessionId];
+    await this.saveSettings();
+  }
+
+  /** Persists whether a session has completed activity the user has not read yet. */
+  async rememberSessionUnread(sessionId: string, unread: boolean): Promise<void> {
+    if (unread) this.settings.sessionUnread[sessionId] = true;
+    else delete this.settings.sessionUnread[sessionId];
     await this.saveSettings();
   }
 
@@ -297,6 +307,13 @@ export default class OpenCodePlugin extends Plugin {
         if (leaf.view instanceof AgentPanelView) await leaf.view.refresh(options);
       }),
     );
+  }
+
+  /** Pushes one live session status into visible agent panels without waiting for their full refresh. */
+  notifySessionStatusChanged(sessionId: string, statusType: string): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL)) {
+      if (leaf.view instanceof AgentPanelView) leaf.view.applyLiveSessionStatus(sessionId, statusType);
+    }
   }
 
   /** Refreshes every visible diff panel after active session or turn context changes. */

@@ -1565,13 +1565,10 @@ export class SessionView extends ItemView {
     return this.pendingPermissions.length > 0 || this.pendingQuestions.length > 0;
   }
 
-  /** Renders the QUEUED badge shown while the agent is streaming; colored with the active agent's color. */
+  /** Renders the QUEUED badge shown while the agent is streaming; referenced by renderComposerControls(). */
   private renderQueuedBadge(container: HTMLElement): void {
     const badge = container.createSpan({ text: "QUEUED", cls: "opencode-session-view__queued-badge" });
     badge.toggleClass("is-visible", this.sessionBusy);
-    const agent = this.visibleAgents().find((item) => this.agentName(item) === this.selectedAgent);
-    const color = this.agentColor(agent);
-    if (color) badge.style.setProperty("--opencode-agent-label-color", color);
   }
 
   /** Renders the send/stop button; click calls abort when busy + composer empty, otherwise sends. */

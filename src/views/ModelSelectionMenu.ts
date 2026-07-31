@@ -94,21 +94,32 @@ export class ModelSelectionMenu {
 
   // ── Positioning ──────────────────────────────────────────────
 
-  /** Places the popover below the anchor, clamped to the viewport. */
+  /**
+   * Pins the popover above the anchor (model label). Height grows upward from
+   * the anchor, capped at 50% of viewport height or available space above —
+   * whichever is smaller. The menu shrinks to fit when fewer rows are present.
+   */
   private positionPopover(): void {
     const rect = this.config.anchorEl.getBoundingClientRect();
     const menuWidth = 340;
-    const maxMenuHeight = 420;
+    const gap = 4;
+    const viewportPad = 8;
+
+    // Cap at 50% of viewport or the space above the anchor
+    const availableAbove = rect.top - gap - viewportPad;
+    const maxHeight = Math.min(window.innerHeight * 0.5, availableAbove);
+
+    // Horizontal: align to anchor, clamped to viewport
     let left = rect.left;
-    let top = rect.bottom + 4;
+    if (left + menuWidth > window.innerWidth - viewportPad) left = window.innerWidth - menuWidth - viewportPad;
+    if (left < viewportPad) left = viewportPad;
 
-    if (left + menuWidth > window.innerWidth - 8) left = window.innerWidth - menuWidth - 8;
-    if (left < 8) left = 8;
-    if (top + maxMenuHeight > window.innerHeight - 8) top = Math.max(8, rect.top - maxMenuHeight - 4);
-
+    // Pin bottom edge just above the anchor
     this.popoverEl.style.left = `${left}px`;
-    this.popoverEl.style.top = `${top}px`;
     this.popoverEl.style.width = `${menuWidth}px`;
+    this.popoverEl.style.bottom = `${window.innerHeight - rect.top + gap}px`;
+    this.popoverEl.style.maxHeight = `${maxHeight}px`;
+    this.popoverEl.style.removeProperty("top");
   }
 
   /** Hides the submenu on viewport changes since positions become stale. */

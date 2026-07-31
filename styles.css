@@ -7,12 +7,12 @@
 
 .opencode-agent-panel__header {
   align-items: center;
-  border-bottom: 1px solid var(--background-modifier-border);
+  border-bottom: var(--border-width) solid var(--background-modifier-border);
   display: flex;
   gap: var(--size-4-2);
   justify-content: space-between;
   margin-bottom: var(--size-4-1);
-  min-height: 32px;
+  min-height: var(--size-4-8);
   padding: 0 var(--size-4-3) var(--size-4-1);
 }
 
@@ -53,7 +53,7 @@
 
 .opencode-agent-panel .tree-item-self.opencode-agent-panel__row-highlighted:not(.is-active) {
   background-color: var(--background-modifier-hover);
-  box-shadow: inset 0 0 0 1px var(--background-modifier-border-hover);
+  box-shadow: inset 0 0 0 var(--border-width) var(--background-modifier-border-hover);
 }
 
 .opencode-agent-panel .tree-item-inner {
@@ -65,17 +65,17 @@
 .opencode-agent-panel__project-avatar {
   align-items: center;
   background: color-mix(in srgb, var(--opencode-project-avatar-color) 22%, transparent);
-  border: 1px solid color-mix(in srgb, var(--opencode-project-avatar-color) 45%, transparent);
+  border: var(--border-width) solid color-mix(in srgb, var(--opencode-project-avatar-color) 45%, transparent);
   border-radius: var(--radius-s);
   color: var(--text-normal);
   display: inline-flex;
-  flex: 0 0 18px;
-  font-size: 9px;
+  flex: 0 0 var(--icon-m);
+  font-size: calc(var(--font-ui-smaller) * 0.75);
   font-weight: var(--font-semibold);
-  height: 18px;
+  height: var(--icon-m);
   justify-content: center;
   line-height: 1;
-  width: 18px;
+  width: var(--icon-m);
 }
 
 .opencode-agent-panel__status,
@@ -85,18 +85,18 @@
   align-items: center;
   color: var(--text-muted);
   display: inline-flex;
-  flex: 0 0 16px;
-  height: 16px;
+  flex: 0 0 var(--icon-s);
+  height: var(--icon-s);
   justify-content: center;
-  width: 16px;
+  width: var(--icon-s);
 }
 
 .opencode-agent-panel__status svg,
 .opencode-agent-panel__notification svg,
 .opencode-agent-panel__placeholder-icon svg,
 .opencode-agent-panel__worktree-icon svg {
-  height: 14px;
-  width: 14px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-agent-panel__status--attention {
@@ -116,44 +116,44 @@
 .opencode-agent-panel__status--done span {
   background: var(--color-green);
   border-radius: 50%;
-  height: var(--opencode-session-done-size, 7px);
-  width: var(--opencode-session-done-size, 7px);
+  height: var(--opencode-session-done-size, var(--size-2-3));
+  width: var(--opencode-session-done-size, var(--size-2-3));
 }
 
 .opencode-agent-panel__status--working {
-  gap: 2px;
+  gap: var(--size-2-1);
 }
 
 .opencode-agent-panel__status--working span {
   animation: opencode-agent-panel-bounce 1.2s infinite ease-in-out both;
   background: var(--text-muted);
   border-radius: 50%;
-  height: 4px;
-  width: 4px;
+  height: var(--size-2-2);
+  width: var(--size-2-2);
 }
 
 .opencode-agent-panel__status--working[data-working-animation="W1"] span {
   animation: opencode-session-state-pulse 1.8s ease-in-out infinite;
-  height: 7px;
-  width: 7px;
+  height: var(--size-2-3);
+  width: var(--size-2-3);
 }
 
 .opencode-agent-panel__status--working[data-working-animation="W2"] span {
   animation: opencode-session-state-spin 1.2s linear infinite;
   background: transparent;
-  border: 2px solid var(--background-modifier-border);
+  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-radius: 50%;
   border-top-color: var(--text-muted);
-  height: 12px;
-  width: 12px;
+  height: var(--size-4-3);
+  width: var(--size-4-3);
 }
 
 .opencode-agent-panel__status--working[data-working-animation="W4"] span {
   animation: opencode-session-state-shimmer 1.5s linear infinite;
   background: linear-gradient(90deg, var(--text-faint), var(--interactive-accent), var(--text-faint));
   background-size: 200% 100%;
-  height: 7px;
-  width: 7px;
+  height: var(--size-2-3);
+  width: var(--size-2-3);
 }
 
 .opencode-agent-panel__status--working span:nth-child(2) {
@@ -199,11 +199,11 @@
 
 .opencode-agent-panel__spinner {
   animation: opencode-agent-panel-spin 1s linear infinite;
-  border: 2px solid var(--background-modifier-border);
+  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-top-color: var(--text-muted);
   border-radius: 50%;
-  height: 18px;
-  width: 18px;
+  height: var(--icon-m);
+  width: var(--icon-m);
 }
 
 @keyframes opencode-agent-panel-spin {
@@ -265,7 +265,7 @@
 
 .opencode-session-view__header {
   align-items: flex-start;
-  border-bottom: 1px solid var(--background-modifier-border);
+  border-bottom: var(--border-width) solid var(--background-modifier-border);
   display: flex;
   gap: var(--size-4-4);
   justify-content: space-between;
@@ -288,15 +288,15 @@
   align-items: center;
   color: var(--text-faint);
   display: inline-flex;
-  flex: 0 0 18px;
-  height: 18px;
+  flex: 0 0 var(--icon-m);
+  height: var(--icon-m);
   justify-content: center;
-  width: 18px;
+  width: var(--icon-m);
 }
 
 .opencode-session-view__state-indicator svg {
-  height: 15px;
-  width: 15px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-session-view__state-indicator--attention {
@@ -315,20 +315,20 @@
 .opencode-session-view__state-indicator--done span {
   background: var(--color-green);
   border-radius: 50%;
-  height: 7px;
-  width: 7px;
+  height: var(--opencode-session-done-size, var(--size-2-3));
+  width: var(--opencode-session-done-size, var(--size-2-3));
 }
 
 .opencode-session-view__state-indicator--working {
-  gap: 2px;
+  gap: var(--size-2-1);
 }
 
 .opencode-session-view__state-indicator--working span {
   animation: opencode-agent-panel-bounce 1.2s infinite ease-in-out both;
   background: var(--text-muted);
   border-radius: 50%;
-  height: 4px;
-  width: 4px;
+  height: var(--size-2-2);
+  width: var(--size-2-2);
 }
 
 .opencode-session-view__state-indicator--working span:nth-child(2) {
@@ -341,26 +341,26 @@
 
 .opencode-session-view__state-indicator--working[data-working-animation="W1"] span {
   animation: opencode-session-state-pulse 1.8s ease-in-out infinite;
-  height: 7px;
-  width: 7px;
+  height: var(--size-2-3);
+  width: var(--size-2-3);
 }
 
 .opencode-session-view__state-indicator--working .opencode-session-view__state-spinner {
   animation: opencode-session-state-spin 1.2s linear infinite;
   background: transparent !important;
-  border: 2px solid var(--background-modifier-border);
+  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-radius: 50%;
   border-top-color: var(--text-muted) !important;
-  height: 12px !important;
-  width: 12px !important;
+  height: var(--size-4-3) !important;
+  width: var(--size-4-3) !important;
 }
 
 .opencode-session-view__state-indicator--working[data-working-animation="W4"] span {
   animation: opencode-session-state-shimmer 1.5s linear infinite;
   background: linear-gradient(90deg, var(--text-faint), var(--interactive-accent), var(--text-faint));
   background-size: 200% 100%;
-  height: 7px;
-  width: 7px;
+  height: var(--size-2-3);
+  width: var(--size-2-3);
 }
 
 /* ── View header + tab header icon: working animations ── */
@@ -432,8 +432,8 @@
   border-radius: 50%;
   content: "";
   display: block;
-  height: var(--opencode-session-done-size, 7px);
-  width: var(--opencode-session-done-size, 7px);
+  height: var(--opencode-session-done-size, var(--size-2-3));
+  width: var(--opencode-session-done-size, var(--size-2-3));
 }
 
 .opencode-session-view__title {
@@ -491,7 +491,7 @@
 
 .opencode-session-view__composer {
   background: color-mix(in srgb, var(--background-primary) 94%, transparent);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-l);
   bottom: var(--size-4-4);
   box-shadow: var(--shadow-s);
@@ -521,7 +521,7 @@
 
 .opencode-session-view__request-dock {
   background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-m);
   display: flex;
   flex-direction: column;
@@ -556,11 +556,11 @@
 
 .opencode-session-view__request-badge {
   background: var(--background-modifier-hover);
-  border-radius: 999px;
+  border-radius: var(--pill-radius);
   color: var(--text-muted);
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
-  padding: 1px var(--size-2-2);
+  padding: var(--size-2-1) var(--size-2-2);
 }
 
 .opencode-session-view__request-summary {
@@ -573,11 +573,11 @@
 
 .opencode-session-view__request-summary code {
   background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   color: var(--text-normal);
   overflow-wrap: anywhere;
-  padding: 2px var(--size-2-2);
+  padding: var(--size-2-1) var(--size-2-2);
 }
 
 .opencode-session-view__request-actions {
@@ -619,7 +619,7 @@
 .opencode-session-view__question-option {
   align-items: flex-start;
   background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   display: flex;
   gap: var(--size-2-2);
@@ -656,14 +656,14 @@
 .opencode-session-view__attachment-chip {
   align-items: center;
   background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 999px;
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--pill-radius);
   color: var(--text-muted);
   display: inline-flex;
   font-size: var(--font-ui-smaller);
   gap: var(--size-2-1);
   max-width: 260px;
-  padding: 2px var(--size-2-2);
+  padding: var(--size-2-1) var(--size-2-2);
 }
 
 .opencode-session-view__attachment-chip span:not(.opencode-session-view__attachment-chip-remove) {
@@ -674,8 +674,8 @@
 
 .opencode-session-view__attachment-chip svg,
 .opencode-session-view__attachment-chip-remove svg {
-  height: 12px;
-  width: 12px;
+  height: var(--size-4-3);
+  width: var(--size-4-3);
 }
 
 .opencode-session-view__attachment-chip-remove {
@@ -708,16 +708,16 @@
 
 .opencode-slash-menu {
   background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-l);
   display: flex;
   flex-direction: column;
-  max-height: 320px;
+  max-height: calc(100dvh - 200px);
   overflow-y: auto;
   padding: var(--size-2-2) 0;
   position: fixed;
-  z-index: var(--layer-popover, 350);
+  z-index: var(--layer-popover);
 }
 
 .opencode-slash-menu__row {
@@ -791,7 +791,7 @@
   gap: var(--size-2-1);
   max-width: 170px;
   overflow: hidden;
-  padding: 2px var(--size-2-1);
+  padding: var(--size-2-1) var(--size-2-1);
   text-overflow: ellipsis;
   transition: opacity 100ms ease-out;
   white-space: nowrap;
@@ -808,8 +808,8 @@
 }
 
 .opencode-session-view__agent-label-icon svg {
-  height: 13px;
-  width: 13px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-session-view__model-pill,
@@ -823,7 +823,7 @@
   font-size: var(--font-ui-smaller);
   gap: var(--size-2-1);
   min-height: 22px;
-  padding: 2px var(--size-2-1);
+  padding: var(--size-2-1) var(--size-2-1);
   transition: color 100ms ease-out;
 }
 
@@ -847,8 +847,8 @@
 }
 
 .opencode-session-view__model-pill-icon svg {
-  height: 14px;
-  width: 14px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-session-view__thinking-pill {
@@ -862,8 +862,8 @@
 }
 
 .opencode-session-view__thinking-pill-icon svg {
-  height: 13px;
-  width: 13px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-session-view__thinking-pill.is-disabled,
@@ -902,8 +902,8 @@
 }
 
 .opencode-session-view__composer-toggle svg {
-  height: 15px;
-  width: 15px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-session-view__composer-toggle.is-icon-only {
@@ -931,20 +931,20 @@
 }
 
 .opencode-session-view__composer-icon svg {
-  height: 15px;
-  width: 15px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-session-view__queued-badge {
-  background: color-mix(in srgb, var(--opencode-agent-label-color, var(--interactive-accent)) 18%, transparent);
-  border: 1px solid color-mix(in srgb, var(--opencode-agent-label-color, var(--interactive-accent)) 42%, transparent);
-  border-radius: 999px;
-  color: var(--opencode-agent-label-color, var(--text-accent));
+  background: color-mix(in srgb, var(--interactive-accent) 18%, transparent);
+  border: var(--border-width) solid color-mix(in srgb, var(--interactive-accent) 42%, transparent);
+  border-radius: var(--pill-radius);
+  color: var(--text-accent);
   display: none;
-  font-size: 9px;
+  font-size: calc(var(--font-ui-smaller) * 0.75);
   font-weight: var(--font-semibold);
   letter-spacing: 0.06em;
-  padding: 1px var(--size-2-2);
+  padding: var(--size-2-1) var(--size-2-2);
 }
 
 .opencode-session-view__queued-badge.is-visible {
@@ -969,8 +969,8 @@
 }
 
 .opencode-session-view__composer-send svg {
-  height: 15px;
-  width: 15px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-session-view__composer-send.is-loading svg {
@@ -989,12 +989,12 @@
 
 .opencode-session-view__composer-send.is-confirming {
   animation: opencode-composer-pulse 1s ease-in-out infinite;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-red) 50%, transparent);
+  box-shadow: 0 0 0 calc(var(--border-width) * 2) color-mix(in srgb, var(--color-red) 50%, transparent);
 }
 
 @keyframes opencode-composer-pulse {
-  0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-red) 30%, transparent); }
-  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-red) 50%, transparent); }
+  0%, 100% { box-shadow: 0 0 0 calc(var(--border-width) * 2) color-mix(in srgb, var(--color-red) 30%, transparent); }
+  50% { box-shadow: 0 0 0 var(--size-2-2) color-mix(in srgb, var(--color-red) 50%, transparent); }
 }
 
 .opencode-session-view__composer-progress {
@@ -1010,13 +1010,13 @@
 
 .opencode-session-view__composer-progress-track {
   flex: 1;
-  height: 1px;
+  height: var(--border-width);
   position: relative;
   transition: box-shadow 150ms ease-out;
 }
 
 .opencode-session-view__composer-progress:hover .opencode-session-view__composer-progress-track {
-  box-shadow: 0 0 8px 1px color-mix(in srgb, var(--interactive-accent) 80%, transparent);
+  box-shadow: 0 0 var(--size-4-2) var(--border-width) color-mix(in srgb, var(--interactive-accent) 80%, transparent);
 }
 
 /* Fill acts as a mask: covers the unfilled portion of the gradient track with the border color. */
@@ -1041,17 +1041,17 @@
 .opencode-session-view__composer-progress-marker::before {
   background: color-mix(in srgb, var(--text-faint) 60%, transparent);
   content: "";
-  height: 1px;
+  height: var(--border-width);
   left: 50%;
   position: absolute;
   top: 0;
   transform: translateX(-50%);
-  width: 1px;
+  width: var(--border-width);
 }
 
 .opencode-session-view__composer-progress-marker-label {
   color: var(--text-faint);
-  font-size: 9px;
+  font-size: calc(var(--font-ui-smaller) * 0.75);
   left: 50%;
   line-height: 1;
   position: absolute;
@@ -1072,17 +1072,17 @@
   font-size: var(--font-ui-smaller);
   gap: var(--size-2-2);
   justify-content: center;
-  min-height: 32px;
+  min-height: var(--size-4-8);
   padding: var(--size-2-2) 0 var(--size-4-2);
 }
 
 .opencode-session-view__history-spinner {
   animation: opencode-agent-panel-spin 1s linear infinite;
-  border: 2px solid var(--background-modifier-border);
+  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-radius: 50%;
   border-top-color: var(--text-faint);
-  height: 12px;
-  width: 12px;
+  height: var(--size-4-3);
+  width: var(--size-4-3);
 }
 
 .opencode-session-view__message-row {
@@ -1094,7 +1094,7 @@
   align-items: center;
   backdrop-filter: blur(2px);
   background: color-mix(in srgb, var(--background-primary) 88%, transparent);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-m);
   bottom: var(--size-4-6);
   box-shadow: var(--shadow-s);
@@ -1142,7 +1142,7 @@
 .opencode-session-view__message--user {
   align-self: flex-end;
   background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-secondary));
-  border: 1px solid color-mix(in srgb, var(--interactive-accent) 20%, var(--background-modifier-border));
+  border: var(--border-width) solid color-mix(in srgb, var(--interactive-accent) 20%, var(--background-modifier-border));
   box-sizing: border-box;
   margin-left: auto;
   max-width: 80%;
@@ -1158,7 +1158,7 @@
 
 .opencode-session-view__message--assistant {
   background: transparent;
-  border: 1px solid transparent;
+  border: var(--border-width) solid transparent;
 }
 
 @media (max-width: 640px) {
@@ -1178,7 +1178,7 @@
 .opencode-session-view__attachment {
   all: unset;
   background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-m);
   box-sizing: border-box;
   color: var(--text-muted);
@@ -1194,7 +1194,7 @@
 .opencode-session-view__attachment:hover,
 .opencode-session-view__attachment:focus-visible {
   border-color: var(--interactive-accent);
-  outline: 2px solid color-mix(in srgb, var(--interactive-accent) 30%, transparent);
+  outline: calc(var(--border-width) * 2) solid color-mix(in srgb, var(--interactive-accent) 30%, transparent);
 }
 
 .opencode-session-view__attachment-image {
@@ -1253,8 +1253,8 @@
 .opencode-session-view__message-copy {
   color: var(--text-faint) !important;
   flex: 0 0 auto;
-  height: 22px;
-  width: 22px;
+  height: calc(var(--size-4-5) + var(--size-2-1));
+  width: calc(var(--size-4-5) + var(--size-2-1));
 }
 
 .opencode-session-view__image-modal {
@@ -1295,12 +1295,12 @@
 .opencode-session-view__compaction-line {
   background: color-mix(in srgb, var(--interactive-accent) 65%, transparent);
   flex: 1 1 auto;
-  height: 1px;
+  height: var(--border-width);
 }
 
 .opencode-session-view__compaction-label {
-  border: 1px solid color-mix(in srgb, var(--interactive-accent) 45%, var(--background-modifier-border));
-  border-radius: 999px;
+  border: var(--border-width) solid color-mix(in srgb, var(--interactive-accent) 45%, var(--background-modifier-border));
+  border-radius: var(--pill-radius);
   color: var(--interactive-accent);
   flex: 0 0 auto;
   font-family: var(--font-interface);
@@ -1310,7 +1310,7 @@
 
 .opencode-session-view__compaction-body {
   background: color-mix(in srgb, var(--interactive-accent) 6%, var(--background-secondary));
-  border: 1px solid color-mix(in srgb, var(--interactive-accent) 20%, var(--background-modifier-border));
+  border: var(--border-width) solid color-mix(in srgb, var(--interactive-accent) 20%, var(--background-modifier-border));
   border-radius: var(--radius-m);
   margin: var(--size-4-3) auto 0;
   max-width: 760px;
@@ -1353,7 +1353,7 @@
 }
 
 .opencode-session-view__reasoning {
-  border-left: 2px solid var(--background-modifier-border);
+  border-left: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   color: var(--text-muted);
   font-family: var(--font-interface);
   font-size: var(--font-ui-small);
@@ -1400,15 +1400,15 @@
   align-items: center;
   color: var(--color-purple);
   display: inline-flex;
-  flex: 0 0 18px;
-  height: 18px;
+  flex: 0 0 var(--icon-m);
+  height: var(--icon-m);
   justify-content: center;
-  width: 18px;
+  width: var(--icon-m);
 }
 
 .opencode-session-view__reasoning-icon svg {
-  height: 16px;
-  width: 16px;
+  height: var(--icon-s);
+  width: var(--icon-s);
 }
 
 .opencode-session-view__reasoning-title {
@@ -1419,11 +1419,11 @@
 
 .opencode-session-view__reasoning-spinner {
   animation: opencode-agent-panel-spin 1s linear infinite;
-  border: 2px solid var(--background-modifier-border);
+  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-radius: 50%;
   border-top-color: var(--color-purple);
-  height: 12px;
-  width: 12px;
+  height: var(--size-4-3);
+  width: var(--size-4-3);
 }
 
 .opencode-session-view__reasoning-body {
@@ -1433,7 +1433,7 @@
 }
 
 .opencode-session-view__tool {
-  border-left: 2px solid var(--background-modifier-border);
+  border-left: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   color: var(--text-muted);
   font-family: var(--font-interface);
   font-size: var(--font-ui-small);
@@ -1491,15 +1491,15 @@
   align-items: center;
   color: var(--text-faint);
   display: inline-flex;
-  flex: 0 0 18px;
-  height: 18px;
+  flex: 0 0 var(--icon-m);
+  height: var(--icon-m);
   justify-content: center;
-  width: 18px;
+  width: var(--icon-m);
 }
 
 .opencode-session-view__tool-icon svg {
-  height: 16px;
-  width: 16px;
+  height: var(--icon-s);
+  width: var(--icon-s);
 }
 
 .opencode-session-view__tool-title {
@@ -1542,7 +1542,7 @@
 .opencode-session-view__tool-status,
 .opencode-session-view__tool-tag {
   background: var(--background-modifier-hover);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   color: var(--text-faint);
   flex: 0 1 auto;
@@ -1550,7 +1550,7 @@
   max-width: min(42ch, 45%);
   min-width: 0;
   overflow: hidden;
-  padding: 1px var(--size-2-2);
+  padding: var(--size-2-1) var(--size-2-2);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1568,7 +1568,7 @@
 
 .opencode-session-view__read-table {
   background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   font-family: var(--font-monospace);
   font-size: var(--font-smaller);
@@ -1618,7 +1618,7 @@
 
 .opencode-session-view__diff-table {
   background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   font-family: var(--font-monospace);
   font-size: var(--font-smaller);
@@ -1681,7 +1681,7 @@
 
 .opencode-session-view__diagnostics {
   background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   display: flex;
   flex-direction: column;
@@ -1755,7 +1755,7 @@
 
 .opencode-session-view__terminal {
   background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-s);
   position: relative;
 }
@@ -1805,11 +1805,11 @@
 
 .opencode-session-view__spinner {
   animation: opencode-agent-panel-spin 1s linear infinite;
-  border: 2px solid var(--background-modifier-border);
+  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-radius: 50%;
   border-top-color: var(--text-muted);
-  height: 20px;
-  width: 20px;
+  height: var(--size-4-5);
+  width: var(--size-4-5);
 }
 
 .opencode-diff-panel {
@@ -1826,7 +1826,7 @@
   gap: var(--size-4-2);
   justify-content: space-between;
   margin-bottom: var(--size-4-3);
-  min-height: 32px;
+  min-height: var(--size-4-8);
   padding: var(--size-2-2) var(--size-4-3) 0;
 }
 
@@ -1878,7 +1878,7 @@
   background: var(--background-modifier-border);
   content: "";
   flex: 1 1 auto;
-  height: 1px;
+  height: var(--border-width);
   min-width: var(--size-4-4);
   transform: translateY(-0.25em);
 }
@@ -1890,7 +1890,7 @@
 .opencode-diff-panel__list {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--border-width);
 }
 
 .opencode-diff-panel__row {
@@ -1901,7 +1901,7 @@
   gap: var(--size-2-2);
   grid-template-columns: minmax(0, 1fr) max-content max-content;
   min-height: var(--nav-item-size);
-  padding: 2px var(--size-2-2);
+  padding: var(--size-2-1) var(--size-2-2);
 }
 
 .opencode-diff-panel__row:hover {
@@ -1977,31 +1977,30 @@
 
 .opencode-diff-panel__spinner {
   animation: opencode-agent-panel-spin 1s linear infinite;
-  border: 2px solid var(--background-modifier-border);
+  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-radius: 50%;
   border-top-color: var(--text-muted);
-  height: 18px;
-  width: 18px;
+  height: var(--icon-m);
+  width: var(--icon-m);
 }
 
 /* ── Model Selection Menu ────────────────────────────────────── */
 
 .opencode-model-menu {
   background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-l);
   display: flex;
   flex-direction: column;
-  max-height: 420px;
   overflow: hidden;
   position: fixed;
-  z-index: var(--layer-popover, 350);
+  z-index: var(--layer-popover);
 }
 
 .opencode-model-menu__search-wrap {
   align-items: center;
-  border-bottom: 1px solid var(--background-modifier-border);
+  border-bottom: var(--border-width) solid var(--background-modifier-border);
   display: flex;
   padding: 0 var(--size-4-3);
 }
@@ -2014,13 +2013,16 @@
 }
 
 .opencode-model-menu__search-icon svg {
-  height: 14px;
-  width: 14px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
-.opencode-model-menu__search {
+/* Element-qualified selector wins specificity over Obsidian's default input[type="text"] styling. */
+input.opencode-model-menu__search,
+input.opencode-model-menu__search:focus {
   background: transparent;
   border: none;
+  box-shadow: none;
   color: var(--text-normal);
   font-size: var(--font-ui-small);
   outline: none;
@@ -2034,7 +2036,7 @@
 
 .opencode-model-menu__list {
   flex: 1 1 auto;
-  max-height: 370px;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--size-2-2) 0;
 }
@@ -2051,7 +2053,7 @@
 
 .opencode-model-menu__separator {
   background: var(--background-modifier-border);
-  height: 1px;
+  height: var(--border-width);
   margin: var(--size-2-2) var(--size-4-3);
 }
 
@@ -2084,8 +2086,8 @@
 }
 
 .opencode-model-menu__row-icon svg {
-  height: 14px;
-  width: 14px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-model-menu__row-name {
@@ -2105,8 +2107,8 @@
 }
 
 .opencode-model-menu__row-check svg {
-  height: 14px;
-  width: 14px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 /* -- Star toggle -- */
@@ -2137,8 +2139,8 @@
 }
 
 .opencode-model-menu__row-star svg {
-  height: 14px;
-  width: 14px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 /* -- Variant arrow -- */
@@ -2151,8 +2153,8 @@
 }
 
 .opencode-model-menu__row-arrow svg {
-  height: 14px;
-  width: 14px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-model-menu__empty {
@@ -2172,13 +2174,13 @@
 
 .opencode-model-menu__submenu {
   background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-m);
   min-width: 140px;
   padding: var(--size-2-1) 0;
   position: fixed;
-  z-index: calc(var(--layer-popover, 350) + 1);
+  z-index: calc(var(--layer-popover) + 1);
 }
 
 .opencode-model-menu__submenu-item {
@@ -2230,8 +2232,8 @@
 }
 
 .opencode-model-menu__submenu-item-star svg {
-  height: 13px;
-  width: 13px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-model-menu__submenu-item-check {
@@ -2241,6 +2243,6 @@
 }
 
 .opencode-model-menu__submenu-item-check svg {
-  height: 14px;
-  width: 14px;
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }

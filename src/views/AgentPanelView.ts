@@ -1,5 +1,6 @@
 import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type OpenCodePlugin from "../../main";
+import { DELETE_CURRENT_FILE_COMMANDS, RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
 import type { OpenCodeEventSubscription } from "../services/opencode-events";
 import { logServiceError } from "../services/opencode-http";
 import type { JsonObject, OpenCodeEvent, OpenCodeSession } from "../services/opencode-types";
@@ -24,6 +25,7 @@ interface AgentPanelWorktree {
 interface AgentPanelSession {
   id: string;
   title: string;
+  directory: string;
   status: SessionVisualStatus;
   muted: boolean;
   children: AgentPanelSession[];
@@ -41,13 +43,21 @@ interface OpenedDirectoryContext {
   project?: JsonObject;
 }
 
+interface AgentPanelVisibleRow {
+  key: string;
+  kind: "project" | "worktree" | "session" | "new-session";
+  element: HTMLElement;
+  session?: AgentPanelSession;
+  directory?: string;
+}
+
 export class AgentPanelView extends ItemView {
   private collapsed = new Set<string>();
   private activeSessionId?: string;
   private highlightedKey?: string;
   private eventSubscriptions: OpenCodeEventSubscription[] = [];
   private eventSubscriptionDirectoriesKey = "";
-  private visibleRows: { key: string; kind: "project" | "worktree" | "session" | "new-session"; element: HTMLElement; sessionId?: string; directory?: string }[] = [];
+  private visibleRows: AgentPanelVisibleRow[] = [];
   private loading = false;
   private refreshTimer?: number;
   private lastRenderedTreeSignature = "";
@@ -272,14 +282,16 @@ export class AgentPanelView extends ItemView {
   private async buildSessionNode(session: OpenCodeSession, statuses: JsonObject): Promise<AgentPanelSession> {
     const service = this.plugin.requireOpenCodeService();
     const id = session.id;
-    const children = await service.listSessionChildren(id).catch(logServiceError([], "listSessionChildren", id));
+    const directory = this.effectiveDirectoryForSession(session);
+    const children = await service.listSessionChildren(id, directory).catch(logServiceError([], "listSessionChildren", id));
 
     return {
       id,
       title: this.sessionTitle(session),
+      directory,
       status: this.visualStatusFor(id, statuses),
-      muted: false,
-      children: await Promise.all(children.map((child) => this.buildSessionNode(child, statuses))),
+      muted: this.plugin.settings.sessionMute[id] === true,
+      children: await Promise.all(children.filter((child) => !this.isArchived(child)).map((child) => this.buildSessionNode(child, statuses))),
     };
   }
 
@@ -319,6 +331,10 @@ export class AgentPanelView extends ItemView {
     }
 
     for (const project of projects) this.renderProject(root, project);
+    if (!this.visibleRows.some((row) => row.key === this.highlightedKey)) {
+      this.highlightedKey = this.visibleRows[0]?.key;
+      this.applyHighlight();
+    }
   }
 
   /** Renders the panel header with native clickable-icon affordances. */
@@ -398,14 +414,14 @@ export class AgentPanelView extends ItemView {
     item.style.setProperty("--opencode-depth", String(depth));
 
     const title = item.createDiv({ cls: "tree-item-self nav-file-title is-clickable", attr: { "data-session-id": session.id } });
-    this.registerRow(key, "session", title, session.id);
+    this.registerRow(key, "session", title, session);
     if (this.activeSessionId === session.id) title.addClass("is-active");
     this.renderCollapseIcon(title, collapsed, session.children.length === 0);
     this.renderStatusIndicator(title, session.status);
     title.createDiv({ text: session.title, cls: "tree-item-inner nav-file-title-content" });
     this.renderNotificationIndicator(title, session.muted);
     title.addEventListener("click", () => this.selectSession(session));
-    title.addEventListener("contextmenu", (event) => this.showSessionMenu(event, session));
+    title.addEventListener("contextmenu", (event) => this.showSessionMenu(event, session, title));
 
     if (session.children.length === 0 || collapsed) return;
     const children = item.createDiv({ cls: "tree-item-children nav-folder-children" });
@@ -522,8 +538,8 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Registers a visible tree row for keyboard navigation and highlight management. */
-  private registerRow(key: string, kind: "project" | "worktree" | "session" | "new-session", element: HTMLElement, sessionId?: string, directory?: string): void {
-    this.visibleRows.push({ key, kind, element, sessionId, directory });
+  private registerRow(key: string, kind: "project" | "worktree" | "session" | "new-session", element: HTMLElement, session?: AgentPanelSession, directory?: string): void {
+    this.visibleRows.push({ key, kind, element, session, directory });
     element.dataset.opencodeRowKey = key;
     if (!this.highlightedKey) this.highlightedKey = key;
     if (this.highlightedKey === key) element.addClass("opencode-agent-panel__row-highlighted");
@@ -531,13 +547,44 @@ export class AgentPanelView extends ItemView {
 
   /** Handles focus-gated tree keyboard navigation modeled after Obsidian's file explorer. */
   private handleKeydown = (event: KeyboardEvent): void => {
+    if (event.target instanceof HTMLInputElement) return;
+    const row = this.visibleRows.find((candidate) => candidate.key === this.highlightedKey);
+    const unmodified = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+    const rename = (event.key === "Enter" && unmodified) || matchesObsidianCommandHotkey(this.app, RENAME_CURRENT_FILE_COMMANDS, event);
+    const archive = ((event.key === "Backspace" || event.key === "Delete") && unmodified) || matchesObsidianCommandHotkey(this.app, DELETE_CURRENT_FILE_COMMANDS, event);
+    if (row?.session && rename) {
+      event.preventDefault();
+      event.stopPropagation();
+      this.beginInlineRename(row.session, row.element);
+      return;
+    }
+    if (row?.session && archive) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) void this.plugin.requestSessionArchive(row.session.id, row.session.directory);
+      return;
+    }
+    if (row?.session && unmodified && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      void this.forkSession(row.session);
+      return;
+    }
+    if (row?.session && unmodified && event.key.toLowerCase() === "m") {
+      event.preventDefault();
+      void this.toggleSessionMute(row.session);
+      return;
+    }
+    if (row?.session && unmodified && event.key.toLowerCase() === "p") {
+      event.preventDefault();
+      void this.plugin.rememberSessionAutoApprove(row.session.id, this.plugin.settings.sessionAutoApprove[row.session.id] !== true);
+      return;
+    }
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Enter"].includes(event.key)) event.preventDefault();
     if (event.key === "ArrowUp") this.moveHighlight(-1);
     if (event.key === "ArrowDown") this.moveHighlight(1);
     if (event.key === "ArrowLeft") this.collapseHighlighted();
     if (event.key === "ArrowRight") this.expandOrSelectHighlighted();
     if (event.key === " ") this.activateHighlighted();
-    if (event.key === "Enter") new Notice("Rename will be wired with session mutation support in a later iteration.");
   };
 
   /** Moves the keyboard highlight up or down in the current visible row list. */
@@ -582,10 +629,10 @@ export class AgentPanelView extends ItemView {
     const row = this.visibleRows.find((candidate) => candidate.key === this.highlightedKey);
     if (!row) return;
     if (row.kind === "project" || row.kind === "worktree") this.toggleCollapsed(row.key);
-    if (row.kind === "session" && row.sessionId) {
-      this.activeSessionId = row.sessionId;
+    if (row.kind === "session" && row.session) {
+      this.activeSessionId = row.session.id;
       this.renderActiveOnly();
-      void this.plugin.openSessionTab(row.sessionId);
+      void this.plugin.openSessionTab(row.session.id, row.session.title);
     }
     if (row.kind === "new-session" && row.directory) void this.createNewSession(row.directory);
   }
@@ -779,8 +826,8 @@ export class AgentPanelView extends ItemView {
     menu.showAtMouseEvent(event);
   }
 
-  /** Opens a native Obsidian context menu for future session-scoped actions. */
-  private showSessionMenu(event: MouseEvent, session: AgentPanelSession): void {
+  /** Opens the session action menu for a sidebar row. */
+  private showSessionMenu(event: MouseEvent, session: AgentPanelSession, row: HTMLElement): void {
     event.preventDefault();
     const menu = new Menu();
     menu.addItem((item) =>
@@ -791,11 +838,83 @@ export class AgentPanelView extends ItemView {
     );
     menu.addSeparator();
     menu.addItem((item) => item.setTitle("Open session").setIcon("message-square").onClick(() => void this.plugin.openSessionTab(session.id, session.title)));
-    menu.addItem((item) => item.setTitle("Rename").setIcon("pencil").setDisabled(true));
-    menu.addItem((item) => item.setTitle("Fork").setIcon("git-fork").setDisabled(true));
+    menu.addItem((item) => item.setTitle("Rename session").setIcon("pencil").onClick(() => this.beginInlineRename(session, row)));
+    menu.addItem((item) => item.setTitle("Fork this session").setIcon("git-fork").onClick(() => void this.forkSession(session)));
+    menu.addItem((item) =>
+      item
+        .setTitle(session.muted ? "Unmute session" : "Mute session")
+        .setIcon(session.muted ? "bell" : "bell-off")
+        .onClick(() => void this.toggleSessionMute(session)),
+    );
+    menu.addItem((item) => item.setTitle("Archive session").setIcon("archive").onClick(() => void this.plugin.requestSessionArchive(session.id, session.directory)));
     menu.addSeparator();
     menu.addItem((item) => item.setTitle(session.title).setDisabled(true));
     menu.showAtMouseEvent(event);
+  }
+
+  /** Replaces a session row title with the file-explorer-style inline rename field. */
+  private beginInlineRename(session: AgentPanelSession, row: HTMLElement): void {
+    const title = row.querySelector<HTMLElement>(".nav-file-title-content");
+    if (!title || title.querySelector("input")) return;
+    const input = document.createElement("input");
+    input.className = "opencode-agent-panel__rename-input";
+    input.type = "text";
+    input.value = session.title;
+    title.replaceChildren(input);
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("pointerdown", (event) => event.stopPropagation());
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const finish = async (save: boolean): Promise<void> => {
+      if (settled) return;
+      settled = true;
+      const next = input.value.trim();
+      if (!save || !next || next === session.title) {
+        title.setText(session.title);
+        return;
+      }
+      input.disabled = true;
+      try {
+        await this.plugin.renameSession(session.id, next, session.directory);
+        session.title = next;
+        if (title.isConnected) title.setText(next);
+      } catch (error) {
+        if (title.isConnected) title.setText(session.title);
+        new Notice(error instanceof Error ? error.message : "Unable to rename OpenCode session.");
+      }
+    };
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void finish(true);
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void finish(false);
+      }
+    });
+    input.addEventListener("blur", () => void finish(true));
+  }
+
+  /** Toggles local notification muting from the row context menu. */
+  private async toggleSessionMute(session: AgentPanelSession): Promise<void> {
+    session.muted = !session.muted;
+    await this.plugin.rememberSessionMute(session.id, session.muted);
+    await this.refresh({ showLoading: false });
+  }
+
+  /** Forks a sidebar session from its latest turn and opens the new session tab. */
+  private async forkSession(session: AgentPanelSession): Promise<void> {
+    try {
+      const forked = await this.plugin.requireOpenCodeService().forkSession(session.id, session.directory);
+      await this.plugin.refreshAgentPanels({ showLoading: false });
+      await this.plugin.openSessionTab(forked.id, forked.title);
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Unable to fork OpenCode session.");
+    }
   }
 
   /** Copies a session id from the context menu; referenced by showSessionMenu for testing workflows. */

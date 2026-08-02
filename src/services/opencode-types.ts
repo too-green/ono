@@ -11,7 +11,26 @@ export interface OpenCodeSession extends JsonObject {
   title?: string;
   projectID?: string;
   parentID?: string;
-  time?: { created?: number; updated?: number };
+  directory?: string;
+  revert?: OpenCodeSessionRevert;
+  time?: { created?: number; updated?: number; archived?: number };
+}
+
+export interface OpenCodeSessionRevert extends JsonObject {
+  messageID: string;
+  partID?: string;
+  snapshot?: string;
+  diff?: string;
+}
+
+export interface OpenCodeRevertSessionInput {
+  messageID: string;
+  partID?: string;
+}
+
+export interface OpenCodeUpdateSessionInput {
+  title?: string;
+  time?: { archived?: number };
 }
 
 export interface OpenCodeMessageBundle extends JsonObject {
@@ -36,9 +55,7 @@ export interface OpenCodeListSessionsParams {
 
 export interface OpenCodeListMessagesParams {
   limit?: number;
-  order?: "asc" | "desc";
   cursor?: string;
-  before?: string;
 }
 
 export interface OpenCodeMessagePage {

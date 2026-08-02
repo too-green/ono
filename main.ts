@@ -1,6 +1,8 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
-import { DEFAULT_OPENCODE_SETTINGS, type OpenCodePluginSettings } from "./src/settings";
+import { DEFAULT_OPENCODE_SETTINGS, OpenCodeSettingTab, type OpenCodePluginSettings } from "./src/settings";
 import { OpenCodeService } from "./src/services/opencode-service";
+import type { OpenCodeSession } from "./src/services/opencode-types";
+import { confirmSessionArchive, requestSessionTitle, type SessionArchiveNode } from "./src/session-actions";
 import { AgentPanelView, VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./src/views/AgentPanelView";
 import { DiffPanelView, VIEW_TYPE_OPENCODE_DIFF_PANEL, type DiffPanelContext } from "./src/views/DiffPanelView";
 import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView";
@@ -10,6 +12,7 @@ export default class OpenCodePlugin extends Plugin {
   settings: OpenCodePluginSettings = DEFAULT_OPENCODE_SETTINGS;
   opencode?: OpenCodeService;
   private diffPanelContext: DiffPanelContext = {};
+  private archivingSessionIds = new Set<string>();
 
   /** Initializes plugin settings and the OpenCode API service used by future UI views. */
   async onload(): Promise<void> {
@@ -19,6 +22,7 @@ export default class OpenCodePlugin extends Plugin {
     this.registerView(VIEW_TYPE_OPENCODE_AGENT_PANEL, (leaf) => new AgentPanelView(leaf, this));
     this.registerView(VIEW_TYPE_OPENCODE_SESSION, (leaf) => new SessionView(leaf, this));
     this.registerView(VIEW_TYPE_OPENCODE_DIFF_PANEL, (leaf) => new DiffPanelView(leaf, this));
+    this.addSettingTab(new OpenCodeSettingTab(this.app, this));
 
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
@@ -111,6 +115,56 @@ export default class OpenCodePlugin extends Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
+  /** Prompts for a title and applies the v1 session rename; referenced by menu-based rename entry points. */
+  async requestSessionRename(sessionId: string, currentTitle: string, directory?: string): Promise<void> {
+    const title = await requestSessionTitle(this.app, currentTitle);
+    if (!title || title === currentTitle.trim()) return;
+    try {
+      await this.renameSession(sessionId, title, directory);
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Unable to rename OpenCode session.");
+    }
+  }
+
+  /** Renames one session through v1 PATCH and synchronizes all open session handles. */
+  async renameSession(sessionId: string, title: string, directory?: string): Promise<void> {
+    const trimmed = title.trim();
+    if (!trimmed) throw new Error("Session name cannot be empty.");
+    const updated = await this.requireOpenCodeService().updateSession(sessionId, { title: trimmed }, directory);
+    const resolvedTitle = updated.title?.trim() || trimmed;
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
+      if (leaf.view instanceof SessionView && leaf.view.getState().sessionId === sessionId) leaf.view.applySessionTitle(resolvedTitle);
+    }
+    await this.refreshAgentPanels({ showLoading: false });
+  }
+
+  /** Confirms and archives a target plus every descendant through v1 PATCH calls. */
+  async requestSessionArchive(sessionId: string, directory?: string): Promise<void> {
+    if (this.archivingSessionIds.has(sessionId)) return;
+    this.archivingSessionIds.add(sessionId);
+    let archivedCount = 0;
+    try {
+      const tree = await this.loadSessionArchiveTree(sessionId, directory);
+      const targets = this.flattenArchiveTargets(tree);
+      if (targets.length === 0) return;
+      if (this.settings.archiveConfirmation && !(await confirmSessionArchive(this.app, tree))) return;
+
+      const archivedAt = Date.now();
+      for (const target of targets) {
+        await this.requireOpenCodeService().archiveSession(target.id, archivedAt, target.directory);
+        archivedCount += 1;
+      }
+      await this.refreshAgentPanels({ showLoading: false });
+      new Notice(targets.length === 1 ? `Archived ${tree.title}.` : `Archived ${tree.title} and ${targets.length - 1} descendant sessions.`);
+    } catch (error) {
+      if (archivedCount > 0) await this.refreshAgentPanels({ showLoading: false });
+      const message = error instanceof Error ? error.message : "Unable to archive OpenCode session.";
+      new Notice(archivedCount > 0 ? `Archived ${archivedCount} descendant sessions before archival stopped: ${message}` : message);
+    } finally {
+      this.archivingSessionIds.delete(sessionId);
+    }
+  }
+
   /** Returns the latest active session/turn context; referenced by DiffPanelView on open. */
   getDiffPanelContext(): DiffPanelContext {
     return { ...this.diffPanelContext };
@@ -154,6 +208,7 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.openedDirectories = Array.isArray(this.settings.openedDirectories) ? this.settings.openedDirectories : [];
     this.settings.groupContextTools = this.settings.groupContextTools === true;
     this.settings.showReasoningBlocks = this.settings.showReasoningBlocks !== false;
+    this.settings.archiveConfirmation = this.settings.archiveConfirmation !== false;
     this.settings.sessionScroll = this.settings.sessionScroll && typeof this.settings.sessionScroll === "object" ? this.settings.sessionScroll : {};
     this.settings.sessionDrafts = this.settings.sessionDrafts && typeof this.settings.sessionDrafts === "object" ? this.settings.sessionDrafts : {};
     this.settings.sessionPromptHistory =
@@ -172,8 +227,34 @@ export default class OpenCodePlugin extends Plugin {
   }
 
   /** Writes plugin settings to Obsidian's plugin data file; referenced by opened-directory mutations. */
-  private async saveSettings(): Promise<void> {
+  async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  /** Loads the target and all descendants because v1 archival only updates one session per PATCH. */
+  private async loadSessionArchiveTree(sessionId: string, directory?: string): Promise<SessionArchiveNode> {
+    const session = await this.requireOpenCodeService().getSession(sessionId, directory);
+    return this.loadSessionArchiveNode(session, directory, new Set());
+  }
+
+  /** Recursively builds the archive confirmation tree while guarding against malformed cycles. */
+  private async loadSessionArchiveNode(session: OpenCodeSession, fallbackDirectory: string | undefined, visited: Set<string>): Promise<SessionArchiveNode> {
+    if (visited.has(session.id)) throw new Error(`OpenCode returned a cyclic session tree at ${session.id}.`);
+    visited.add(session.id);
+    const directory = session.directory ?? fallbackDirectory;
+    const children = await this.requireOpenCodeService().listSessionChildren(session.id, directory);
+    return {
+      id: session.id,
+      title: session.title?.trim() || session.id,
+      directory,
+      archived: typeof session.time?.archived === "number",
+      children: await Promise.all(children.map((child) => this.loadSessionArchiveNode(child, directory, visited))),
+    };
+  }
+
+  /** Flattens descendants before their parent so a partial failure never hides reachable children. */
+  private flattenArchiveTargets(tree: SessionArchiveNode): SessionArchiveNode[] {
+    return [...tree.children.flatMap((child) => this.flattenArchiveTargets(child)), ...(tree.archived ? [] : [tree])];
   }
 
   /** Persists lightweight per-session scroll state; referenced by SessionView scroll listeners. */

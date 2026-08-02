@@ -3,9 +3,12 @@ import { pathToFileURL } from "url";
 import type OpenCodePlugin from "../../main";
 import type { DiffPanelContext } from "./DiffPanelView";
 import { ModelSelectionMenu, type ModelEntry } from "./ModelSelectionMenu";
+import { DELETE_CURRENT_FILE_COMMANDS, RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
+import { diffFilesFromRecords, diffFilesFromUnifiedPatch, type DiffFileSummary } from "../diff-utils";
+import { confirmSessionRewind } from "../session-actions";
 import type { OpenCodeEventSubscription } from "../services/opencode-events";
 import { logServiceError } from "../services/opencode-http";
-import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle, OpenCodeModelRef, OpenCodePermissionReply, OpenCodePermissionRequest, OpenCodeQuestionAnswer, OpenCodeQuestionRequest } from "../services/opencode-types";
+import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle, OpenCodeMessagePage, OpenCodeModelRef, OpenCodePermissionReply, OpenCodePermissionRequest, OpenCodeQuestionAnswer, OpenCodeQuestionRequest } from "../services/opencode-types";
 import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
 import { setProviderIcon } from "../utils/provider-icons";
 
@@ -22,8 +25,8 @@ type MessageRenderKind = "none" | "user" | "assistant-text" | "assistant-compact
 /** All possible built-in functional slash commands. Visibility is filtered per-session by visibleBuiltinCommands(). */
 const ALL_BUILTIN_COMMANDS: { name: string; description: string }[] = [
   { name: "compact", description: "Compact session context into a summary" },
-  { name: "undo", description: "Undo the last message pair" },
-  { name: "redo", description: "Redo the last undone message pair" },
+  { name: "undo", description: "Rewind to the previous user message" },
+  { name: "redo", description: "Restore the next rewound turn" },
   { name: "fork", description: "Fork the session from the latest message" },
   { name: "share", description: "Share the session" },
   { name: "unshare", description: "Unshare the session" },
@@ -90,6 +93,8 @@ export class SessionView extends ItemView {
   private loadingOlder = false;
   private loadedMessages: OpenCodeMessageBundle[] = [];
   private currentSession?: JsonObject;
+  private revertDiffFiles: DiffFileSummary[] = [];
+  private rewindInFlight = false;
   private olderCursor?: string;
   private historyComplete = true;
   private renderedSessionId?: string;
@@ -139,6 +144,7 @@ export class SessionView extends ItemView {
   private composerProgressTrackEl?: HTMLElement;
   private composerProgressFillEl?: HTMLElement;
   private readonly composerProgressMarkers: HTMLElement[] = [];
+  private nativeTitleEl?: HTMLElement;
 
   /** Checkpoint tuples: (bar-fraction, absolute-context, color?). Color defaults to accent. Context optional on last tuple (defaults to model limit). */
   private static readonly PROGRESS_CHECKPOINTS: readonly { fraction: number; context?: number; color?: string }[] = [
@@ -182,6 +188,33 @@ export class SessionView extends ItemView {
     }
   }
 
+  /** Adds the canonical session actions to both the native title-bar and tab-header menus. */
+  onPaneMenu(menu: Menu, source: "more-options" | "tab-header" | string): void {
+    super.onPaneMenu(menu, source);
+    if (!this.sessionId) return;
+    const qualifier = source === "more-options" ? " current session" : " session";
+    menu.addSeparator();
+    menu.addItem((item) =>
+      item
+        .setTitle(`Rename${qualifier}`)
+        .setIcon("pencil")
+        .onClick(() => void this.plugin.requestSessionRename(this.sessionId!, this.getDisplayText(), this.sessionDirectory)),
+    );
+    menu.addItem((item) => item.setTitle("Fork this session").setIcon("git-fork").onClick(() => void this.forkCurrentSession()));
+    menu.addItem((item) =>
+      item
+        .setTitle(`${this.isSessionMuted() ? "Unmute" : "Mute"}${qualifier}`)
+        .setIcon(this.isSessionMuted() ? "bell" : "bell-off")
+        .onClick(() => void this.toggleMute()),
+    );
+    menu.addItem((item) =>
+      item
+        .setTitle(`Archive${qualifier}`)
+        .setIcon("archive")
+        .onClick(() => void this.plugin.requestSessionArchive(this.sessionId!, this.sessionDirectory)),
+    );
+  }
+
   /** Restores persisted view state when Obsidian reopens this custom tab. */
   getState(): Record<string, unknown> {
     return {
@@ -208,6 +241,7 @@ export class SessionView extends ItemView {
     this.contentEl.addClass("opencode-session-view");
     this.containerEl.addClass("opencode-session-view-container");
     this.registerDomEvent(window, "keydown", this.handleGlobalComposerSend, { capture: true });
+    this.registerDomEvent(window, "keydown", this.handleNativeSessionHotkeys, { capture: true });
     await this.refresh();
   }
 
@@ -225,6 +259,8 @@ export class SessionView extends ItemView {
     if (this.scrollSaveTimer) window.clearTimeout(this.scrollSaveTimer);
     if (this.draftSaveTimer) window.clearTimeout(this.draftSaveTimer);
     if (this.interruptConfirmTimer) window.clearTimeout(this.interruptConfirmTimer);
+    this.nativeTitleEl?.removeEventListener("click", this.handleNativeTitleClick);
+    this.nativeTitleEl = undefined;
     this.streamingRenderFrame = undefined;
     this.streamingRenderPending = false;
     this.followLatestFrame = undefined;
@@ -249,13 +285,21 @@ export class SessionView extends ItemView {
     if (initialLoad) this.renderLoading();
     try {
       const service = this.plugin.requireOpenCodeService();
+      const previousRewindMessageId = this.revertMessageId();
       const [session, page] = await Promise.all([
         service.getSession(this.sessionId),
-        service.listMessagePage(this.sessionId, { limit: INITIAL_MESSAGE_LIMIT, order: "desc" }),
+        service.listMessagePage(this.sessionId, { limit: INITIAL_MESSAGE_LIMIT }),
       ]);
-      this.loadedMessages = this.mergeMessages(this.loadedMessages, page.messages);
-      if (!this.olderCursor) this.olderCursor = page.olderCursor;
-      this.historyComplete = page.complete && !this.olderCursor;
+      const rewindMessageId = this.revertMessageId(session);
+      const effectivePage = await this.loadMessageWindow(page, rewindMessageId);
+      if (initialLoad || previousRewindMessageId !== rewindMessageId) {
+        this.loadedMessages = effectivePage.messages;
+        this.olderCursor = effectivePage.olderCursor;
+      } else {
+        this.loadedMessages = this.mergeMessages(this.loadedMessages, effectivePage.messages);
+        if (!this.olderCursor) this.olderCursor = effectivePage.olderCursor;
+      }
+      this.historyComplete = effectivePage.complete && !this.olderCursor;
       const directory = this.sessionDirectoryFromSession(session);
       const [agents, models, commands, config, permissions, questions, statuses] = await Promise.all([
         service.listAgents(directory),
@@ -272,6 +316,7 @@ export class SessionView extends ItemView {
       this.serverConfig = config;
       this.pendingPermissions = permissions.filter((item) => item.sessionID === this.sessionId);
       this.pendingQuestions = questions.filter((item) => item.sessionID === this.sessionId);
+      this.revertDiffFiles = this.revertDiffFilesFromSession(session);
       await this.autoApprovePendingPermissions();
       this.currentSession = session;
       this.applySessionStatusSnapshot(statuses);
@@ -300,6 +345,8 @@ export class SessionView extends ItemView {
     this.historyComplete = true;
     this.renderedSessionId = undefined;
     this.currentSession = undefined;
+    this.revertDiffFiles = [];
+    this.rewindInFlight = false;
     this.sessionStatusType = "idle";
     this.jumpButton = undefined;
     if (!this.submittingPrompt) this.disableFollowLatest();
@@ -320,6 +367,9 @@ export class SessionView extends ItemView {
         if (!this.eventReferencesCurrentSession(event.properties)) return;
         this.applyStreamingEvent(event);
       },
+      onOpen: () => {
+        if (this.renderedSessionId === this.sessionId) this.scheduleCanonicalSync(0);
+      },
     }, directory);
   }
 
@@ -335,6 +385,25 @@ export class SessionView extends ItemView {
       this.scheduleStreamingRender();
       return;
     }
+    if (event.type === "message.removed") {
+      const messageId = this.readString(properties, ["messageID", "messageId"]);
+      if (messageId) {
+        this.loadedMessages = this.loadedMessages.filter((message) => this.messageId(message) !== messageId);
+        this.queuedMessageIds.delete(messageId);
+        this.scheduleStreamingRender();
+      }
+      return;
+    }
+    if (event.type === "message.part.removed") {
+      const messageId = this.readString(properties, ["messageID", "messageId"]);
+      const partId = this.readString(properties, ["partID", "partId"]);
+      const message = messageId ? this.loadedMessages.find((item) => this.messageId(item) === messageId) : undefined;
+      if (message && partId) {
+        message.parts = message.parts.filter((part) => this.readString(part, ["id", "partID", "partId"]) !== partId);
+        this.scheduleStreamingRender();
+      }
+      return;
+    }
     if (event.type === "message.part.updated") {
       const part = this.readObject(properties, "part");
       if (part) this.upsertStreamingPart(part);
@@ -348,17 +417,20 @@ export class SessionView extends ItemView {
       return;
     }
     if (event.type === "session.updated") {
+      if (this.rewindInFlight) return;
       const info = this.readObject(properties, "info");
       if (info) {
         this.currentSession = info;
-        this.sessionTitle = this.sessionTitleFromSession(info);
+        this.revertDiffFiles = this.revertDiffFilesFromSession(info);
+        this.applySessionTitle(this.sessionTitleFromSession(info));
         this.sessionDirectory = this.sessionDirectoryFromSession(info);
-        this.refreshLeafTitle();
       }
       this.scheduleStreamingRender();
       return;
     }
     if (event.type === "session.diff") {
+      this.revertDiffFiles = diffFilesFromRecords(this.readObjectArray(properties, "diff"));
+      this.scheduleStreamingRender();
       void this.plugin.updateDiffPanelContext(this.diffPanelContext(), { force: true });
       return;
     }
@@ -588,14 +660,14 @@ export class SessionView extends ItemView {
     const next = document.createElement("div");
     next.addClass("opencode-session-view__timeline");
     this.renderHistoryBoundary(next);
-    const sorted = [...this.loadedMessages].sort((a, b) => this.messageTime(a) - this.messageTime(b));
-    const visibleMessages = sorted.filter((message) => this.messageRenderKind(message) !== "none");
+    const visibleMessages = this.visibleTimelineMessages(this.loadedMessages);
     for (let index = 0; index < visibleMessages.length; index += 1) {
       const message = visibleMessages[index];
       const row = next.createDiv({ cls: "opencode-session-view__message-row", attr: { "data-message-id": this.messageId(message) } });
       await this.renderMessage(row, message, this.messageRenderOptions(visibleMessages, index));
     }
-    if (visibleMessages.length === 0) next.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
+    this.renderRewindBoundary(next);
+    if (visibleMessages.length === 0 && !this.revertMessageId()) next.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
     current.replaceWith(next);
     if (wasAtBottom) this.scrollToBottom(false);
     this.updateJumpButton();
@@ -612,18 +684,24 @@ export class SessionView extends ItemView {
 
   /** Fetches canonical session data after idle and reconciles only the timeline tail. */
   private async syncCanonicalMessages(): Promise<void> {
-    if (!this.sessionId || this.loading || !this.contentEl.querySelector(".opencode-session-view__timeline")) {
+    if (!this.sessionId || !this.contentEl.querySelector(".opencode-session-view__timeline")) {
       await this.refresh();
       return;
     }
-
+    if (this.loading) {
+      this.scheduleCanonicalSync(200);
+      return;
+    }
     try {
       const service = this.plugin.requireOpenCodeService();
+      const previousRewindMessageId = this.revertMessageId();
       const [session, page] = await Promise.all([
         service.getSession(this.sessionId),
-        service.listMessagePage(this.sessionId, { limit: INITIAL_MESSAGE_LIMIT, order: "desc" }),
+        service.listMessagePage(this.sessionId, { limit: INITIAL_MESSAGE_LIMIT }),
       ]);
+      const rewindMessageId = this.revertMessageId(session);
       const directory = this.sessionDirectoryFromSession(session);
+      const effectivePage = await this.loadMessageWindow(page, rewindMessageId);
       const [agents, models, commands, config, permissions, questions, statuses] = await Promise.all([
         service.listAgents(directory),
         service.listModels(directory).catch(logServiceError([], "listModels", directory)),
@@ -640,13 +718,19 @@ export class SessionView extends ItemView {
       this.serverConfig = config;
       this.pendingPermissions = permissions.filter((item) => item.sessionID === this.sessionId);
       this.pendingQuestions = questions.filter((item) => item.sessionID === this.sessionId);
+      this.revertDiffFiles = this.revertDiffFilesFromSession(session);
       await this.autoApprovePendingPermissions();
       this.currentSession = session;
       this.applySessionStatusSnapshot(statuses);
       this.applySessionChromeState(session);
-      this.loadedMessages = this.mergeMessages(this.loadedMessages, page.messages);
-      if (!this.olderCursor) this.olderCursor = page.olderCursor;
-      this.historyComplete = page.complete && !this.olderCursor;
+      if (previousRewindMessageId !== rewindMessageId) {
+        this.loadedMessages = effectivePage.messages;
+        this.olderCursor = effectivePage.olderCursor;
+      } else {
+        this.loadedMessages = this.mergeMessages(this.loadedMessages, effectivePage.messages);
+        if (!this.olderCursor) this.olderCursor = effectivePage.olderCursor;
+      }
+      this.historyComplete = effectivePage.complete && !this.olderCursor;
       this.refreshRequestDocks();
       await this.reconcileTimelineAppendOnly(this.loadedMessages);
       await this.plugin.updateDiffPanelContext(this.diffPanelContext());
@@ -675,16 +759,24 @@ export class SessionView extends ItemView {
       return;
     }
 
-    const sorted = [...messages].sort((a, b) => this.messageTime(a) - this.messageTime(b));
-    const visibleMessages = sorted.filter((message) => this.messageRenderKind(message) !== "none");
+    const visibleMessages = this.visibleTimelineMessages(messages);
     if (visibleMessages.length === 0) {
       timeline.empty();
       this.renderHistoryBoundary(timeline);
-      timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
+      this.renderRewindBoundary(timeline);
+      if (!this.revertMessageId()) timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
       return;
     }
 
     const renderedIds = Array.from(timeline.querySelectorAll<HTMLElement>("[data-message-id]")).map((row) => row.dataset.messageId).filter((id): id is string => !!id);
+    const visibleIds = new Set(visibleMessages.map((message) => this.messageId(message)));
+    const hasStaleRows = renderedIds.some((id) => !visibleIds.has(id));
+    const mountedBoundary = timeline.querySelector<HTMLElement>(".opencode-session-view__rewind-boundary")?.dataset.rewindMessageId;
+    const boundaryMismatch = mountedBoundary !== this.revertMessageId();
+    if (hasStaleRows || boundaryMismatch) {
+      await this.renderStreamingTimeline();
+      return;
+    }
     const lastRenderedIndex = this.latestMessageIndex(visibleMessages, renderedIds);
     if (lastRenderedIndex === -1) {
       await this.renderStreamingTimeline();
@@ -903,15 +995,15 @@ export class SessionView extends ItemView {
 
     const timeline = shell.createDiv({ cls: "opencode-session-view__timeline" });
     this.renderHistoryBoundary(timeline);
-    const sorted = [...messages].sort((a, b) => this.messageTime(a) - this.messageTime(b));
-    const visibleMessages = sorted.filter((message) => this.messageRenderKind(message) !== "none");
+    const visibleMessages = this.visibleTimelineMessages(messages);
     for (let index = 0; index < visibleMessages.length; index += 1) {
       const message = visibleMessages[index];
       const row = timeline.createDiv({ cls: "opencode-session-view__message-row", attr: { "data-message-id": this.messageId(message) } });
       await this.renderMessage(row, message, this.messageRenderOptions(visibleMessages, index));
     }
 
-    if (visibleMessages.length === 0) timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
+    this.renderRewindBoundary(timeline);
+    if (visibleMessages.length === 0 && !this.revertMessageId()) timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
     this.renderComposer(shell, session, options.initialLoad && visibleMessages.length === 0);
     this.restoreComposerDomState(composerState);
     this.renderJumpToBottomButton();
@@ -1017,11 +1109,58 @@ export class SessionView extends ItemView {
     }
   }
 
+  /** Follows opaque v1 cursors until a rewound timeline includes a visible message before its boundary. */
+  private async loadMessageWindow(firstPage: OpenCodeMessagePage, boundary?: string): Promise<OpenCodeMessagePage> {
+    if (!this.sessionId) return firstPage;
+    const service = this.plugin.requireOpenCodeService();
+    const pages = [firstPage];
+    let page = firstPage;
+    const seenCursors = new Set<string>();
+    while (
+      boundary &&
+      !pages.some((candidate) => candidate.messages.some((message) => this.messageId(message) < boundary)) &&
+      page.olderCursor &&
+      !seenCursors.has(page.olderCursor)
+    ) {
+      const cursor = page.olderCursor;
+      seenCursors.add(cursor);
+      page = await service.listMessagePage(this.sessionId, { limit: OLDER_MESSAGE_LIMIT, cursor });
+      pages.push(page);
+    }
+    return {
+      messages: pages.reduce((messages, candidate) => this.mergeMessages(messages, candidate.messages), [] as OpenCodeMessageBundle[]),
+      olderCursor: page.olderCursor,
+      newerCursor: page.newerCursor,
+      complete: page.complete,
+    };
+  }
+
   /** Merges message pages by message id; referenced by refresh and loadOlderMessages. */
   private mergeMessages(left: OpenCodeMessageBundle[], right: OpenCodeMessageBundle[]): OpenCodeMessageBundle[] {
     const merged = new Map<string, OpenCodeMessageBundle>();
     for (const message of [...left, ...right]) merged.set(this.messageId(message), message);
     return [...merged.values()].sort((a, b) => this.messageTime(a) - this.messageTime(b));
+  }
+
+  /** Returns chronologically renderable messages before the server-authoritative rewind boundary. */
+  private visibleTimelineMessages(messages: OpenCodeMessageBundle[]): OpenCodeMessageBundle[] {
+    const boundary = this.revertMessageId();
+    return [...messages]
+      .sort((left, right) => this.messageTime(left) - this.messageTime(right))
+      .filter((message) => this.messageRenderKind(message) !== "none")
+      .filter((message) => !boundary || this.messageId(message) < boundary);
+  }
+
+  /** Reads the active v1 rewind marker from a session response or current session state. */
+  private revertMessageId(session: JsonObject | undefined = this.currentSession): string | undefined {
+    const revert = session ? this.readObject(session, "revert") : undefined;
+    return revert ? this.readString(revert, ["messageID", "messageId"]) : undefined;
+  }
+
+  /** Parses the aggregate affected-file patch retained with a v1 rewind marker. */
+  private revertDiffFilesFromSession(session: JsonObject): DiffFileSummary[] {
+    const revert = this.readObject(session, "revert");
+    return diffFilesFromUnifiedPatch(revert ? this.readString(revert, ["diff"]) : undefined);
   }
 
   /** Reads a stable message id for data attributes and pagination merging. */
@@ -1173,7 +1312,9 @@ export class SessionView extends ItemView {
     const titleLine = titleWrap.createDiv({ cls: "opencode-session-view__title-line" });
     const indicator = titleLine.createDiv({ cls: "opencode-session-view__state-indicator" });
     this.paintSessionStateIndicator(indicator, this.sessionVisualStatus(), normalizeWorkingAnimation(this.plugin.settings.workingAnimation));
-    titleLine.createDiv({ text: this.sessionTitleFromSession(session), cls: "opencode-session-view__title" });
+    const title = titleLine.createDiv({ text: this.sessionTitleFromSession(session), cls: "opencode-session-view__title" });
+    title.title = "Rename session";
+    title.addEventListener("click", () => this.beginInlineTitleRename(title));
     titleWrap.createDiv({ text: this.sessionId ?? "", cls: "opencode-session-view__subtitle" });
 
     const actions = header.createDiv({ cls: "opencode-session-view__actions" });
@@ -1993,6 +2134,136 @@ export class SessionView extends ItemView {
     await this.refreshComposerOnly();
   }
 
+  /** Forks the current session and opens the resulting session tab. */
+  private async forkCurrentSession(messageId?: string): Promise<void> {
+    if (!this.sessionId) return;
+    try {
+      const forked = await this.plugin.requireOpenCodeService().forkSession(this.sessionId, this.sessionDirectory, messageId);
+      await this.plugin.refreshAgentPanels({ showLoading: false });
+      await this.plugin.openSessionTab(forked.id, forked.title);
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Unable to fork OpenCode session.");
+    }
+  }
+
+  /** Stages a rewind before confirmation and clears it again if the user cancels. */
+  private async requestMessageRewind(bundle: OpenCodeMessageBundle): Promise<void> {
+    if (this.rewindInFlight || this.submittingPrompt) return;
+    const messageId = this.messageId(bundle);
+    const preview = this.rewindMessagePreview(bundle);
+    this.rewindInFlight = true;
+    try {
+      await this.stageSessionRewind(messageId);
+      const confirmed = await confirmSessionRewind(this.app, preview);
+      // v1 commits by retaining the staged revert marker; it has no separate commit endpoint.
+      if (!confirmed) {
+        try {
+          await this.cancelStagedRewind();
+        } catch (error) {
+          await this.refresh();
+          if (this.revertMessageId()) {
+            const detail = error instanceof Error ? error.message : "Unknown error";
+            new Notice(`Unable to cancel the staged session rewind. The rewind remains staged; use Redo to retry. ${detail}`);
+          }
+        }
+      }
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Unable to rewind OpenCode session.");
+    } finally {
+      this.rewindInFlight = false;
+      this.scheduleCanonicalSync(100);
+    }
+  }
+
+  /** Applies the v1 revert marker, refreshes affected files, and re-renders from the new head. */
+  private async stageSessionRewind(messageId: string): Promise<void> {
+    if (!this.sessionId) return;
+    const service = this.plugin.requireOpenCodeService();
+    const directory = this.sessionDirectory;
+    if (this.sessionBusy) await service.abortSession(this.sessionId, directory).catch(() => false);
+    const session = await service.revertSession(this.sessionId, { messageID: messageId }, directory);
+    const rewindMessageId = this.revertMessageId(session);
+    if (!rewindMessageId) throw new Error("OpenCode did not create a rewind boundary for this message.");
+    this.currentSession = session;
+    this.sessionDirectory = this.sessionDirectoryFromSession(session) ?? directory;
+    this.revertDiffFiles = this.revertDiffFilesFromSession(session);
+    await this.renderStreamingTimeline().catch((error) => console.warn("[opencode-plugin:rewind] timeline render failed", error));
+    await this.plugin.updateDiffPanelContext(this.diffPanelContext(), { force: true }).catch((error) => console.warn("[opencode-plugin:rewind] diff panel refresh failed", error));
+  }
+
+  /** Restores every message and file hidden by the current v1 rewind marker. */
+  private async clearSessionRewind(): Promise<void> {
+    if (!this.sessionId) return;
+    const session = await this.plugin.requireOpenCodeService().unrevertSession(this.sessionId, this.sessionDirectory);
+    this.currentSession = session;
+    this.revertDiffFiles = [];
+    await this.renderStreamingTimeline().catch((error) => console.warn("[opencode-plugin:rewind] timeline render failed", error));
+    await this.plugin.updateDiffPanelContext(this.diffPanelContext(), { force: true }).catch((error) => console.warn("[opencode-plugin:rewind] diff panel refresh failed", error));
+  }
+
+  /** Retries v1 unrevert so dismissing the confirmation does not leave a transient staged rollback behind. */
+  private async cancelStagedRewind(): Promise<void> {
+    let failure: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.clearSessionRewind();
+        return;
+      } catch (error) {
+        failure = error;
+        if (attempt < 2) await new Promise<void>((resolve) => window.setTimeout(resolve, 150 * (attempt + 1)));
+      }
+    }
+    throw failure;
+  }
+
+  /** Handles the boundary redo action without allowing concurrent rewind mutations. */
+  private async redoSessionRewind(): Promise<void> {
+    if (this.rewindInFlight) return;
+    this.rewindInFlight = true;
+    try {
+      const nextMessageId = this.nextRewoundUserMessageId();
+      if (nextMessageId) await this.stageSessionRewind(nextMessageId);
+      else await this.clearSessionRewind();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Unable to restore rewound messages.");
+    } finally {
+      this.rewindInFlight = false;
+      this.scheduleCanonicalSync(100);
+    }
+  }
+
+  /** Builds the bounded user-message preview shown by the rewind confirmation. */
+  private rewindMessagePreview(bundle: OpenCodeMessageBundle): string {
+    const text = this.userMessageText(bundle).replace(/\s+/g, " ").trim();
+    const fallback = this.imageAttachments(bundle).map((attachment) => attachment.name).join(", ") || "User message";
+    const preview = text || fallback;
+    return preview.length > 180 ? `${preview.slice(0, 177)}...` : preview;
+  }
+
+  /** Finds the latest user message before the current boundary for the `/undo` command. */
+  private previousUserMessageId(): string | undefined {
+    const boundary = this.revertMessageId();
+    const messages = [...this.loadedMessages].sort((left, right) => this.messageTime(left) - this.messageTime(right));
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      const messageId = this.messageId(message);
+      if (this.messageRole(message) === "user" && (!boundary || messageId < boundary)) return messageId;
+    }
+    return undefined;
+  }
+
+  /** Finds the next hidden user turn so redo advances one boundary at a time before fully unreverting. */
+  private nextRewoundUserMessageId(): string | undefined {
+    const boundary = this.revertMessageId();
+    if (!boundary) return undefined;
+    const messages = [...this.loadedMessages].sort((left, right) => this.messageTime(left) - this.messageTime(right));
+    for (const message of messages) {
+      const messageId = this.messageId(message);
+      if (this.messageRole(message) === "user" && messageId > boundary) return messageId;
+    }
+    return undefined;
+  }
+
   /** Handles keyboard send, interrupt, and prompt-history navigation in the composer textarea. */
   private handleComposerKeydown(event: KeyboardEvent): void {
     const textarea = event.currentTarget as HTMLTextAreaElement;
@@ -2040,10 +2311,28 @@ export class SessionView extends ItemView {
     void this.sendComposerPrompt();
   };
 
+  /** Applies the user's current native rename/delete-file hotkeys to the active session view. */
+  private handleNativeSessionHotkeys = (event: KeyboardEvent): void => {
+    if (!this.sessionId || this.app.workspace.activeLeaf !== this.leaf || event.repeat) return;
+    const target = event.target instanceof Element ? event.target : undefined;
+    if (target?.closest(".view-header-title-input, .opencode-session-view__title-input, .modal")) return;
+    if (matchesObsidianCommandHotkey(this.app, RENAME_CURRENT_FILE_COMMANDS, event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void this.plugin.requestSessionRename(this.sessionId, this.getDisplayText(), this.sessionDirectory);
+      return;
+    }
+    if (matchesObsidianCommandHotkey(this.app, DELETE_CURRENT_FILE_COMMANDS, event)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void this.plugin.requestSessionArchive(this.sessionId, this.sessionDirectory);
+    }
+  };
+
   /** Sends the current composer prompt through OpenCode prompt/command endpoints. */
   private async sendComposerPrompt(): Promise<void> {
     const composerKey = this.composerStorageKey();
-    if (!composerKey || this.submittingPrompt || this.isComposerBlocked()) return;
+    if (!composerKey || this.submittingPrompt || this.rewindInFlight || this.isComposerBlocked()) return;
     const text = this.composerTextarea?.value.trim() ?? "";
     if (!text) return;
     // Per spec: while streaming, the composer stays enabled and prompts queue server-side.
@@ -2262,11 +2551,24 @@ export class SessionView extends ItemView {
       case "compact":
         await service.summarizeSession(sessionId, directory);
         break;
-      case "undo":
-        await service.revertSession(sessionId, directory);
+      case "undo": {
+        const messageId = this.previousUserMessageId();
+        if (!messageId) {
+          new Notice("No user message is available to rewind.");
+          break;
+        }
+        if (this.rewindInFlight) break;
+        this.rewindInFlight = true;
+        try {
+          await this.stageSessionRewind(messageId);
+        } finally {
+          this.rewindInFlight = false;
+          this.scheduleCanonicalSync(100);
+        }
         break;
+      }
       case "redo":
-        await service.unrevertSession(sessionId, directory);
+        await this.redoSessionRewind();
         break;
       case "share":
         await service.shareSession(sessionId, directory);
@@ -2424,6 +2726,16 @@ export class SessionView extends ItemView {
     return this.readString(session, ["title", "name", "slug"]) ?? this.sessionId ?? "OpenCode session";
   }
 
+  /** Applies a renamed title to this open view; referenced by OpenCodePlugin.renameSession and session events. */
+  applySessionTitle(title: string): void {
+    this.sessionTitle = title;
+    if (this.currentSession) this.currentSession.title = title;
+    const mountedTitle = this.contentEl.querySelector<HTMLElement>(".opencode-session-view__title");
+    if (mountedTitle) mountedTitle.setText(title);
+    this.refreshLeafTitle();
+    void this.plugin.updateDiffPanelContext(this.diffPanelContext());
+  }
+
   /** Reads the workspace directory used for directory-scoped agent and prompt APIs. */
   private sessionDirectoryFromSession(session: JsonObject): string | undefined {
     return this.readString(session, ["directory", "cwd"]);
@@ -2439,6 +2751,65 @@ export class SessionView extends ItemView {
     this.containerEl.closest(".workspace-leaf")?.querySelector(".view-header-title")?.replaceChildren(title);
     this.app.workspace.trigger("layout-change");
     this.decorateSessionHeader();
+    this.bindNativeTitleRename();
+  }
+
+  /** Binds click-to-rename to Obsidian's native view header title without duplicate listeners. */
+  private bindNativeTitleRename(): void {
+    const title = this.containerEl.closest(".workspace-leaf")?.querySelector<HTMLElement>(".view-header-title") ?? undefined;
+    if (title === this.nativeTitleEl) return;
+    this.nativeTitleEl?.removeEventListener("click", this.handleNativeTitleClick);
+    this.nativeTitleEl = title;
+    this.nativeTitleEl?.addEventListener("click", this.handleNativeTitleClick);
+  }
+
+  /** Starts inline rename when the native Obsidian title is clicked. */
+  private handleNativeTitleClick = (event: MouseEvent): void => {
+    if (!this.nativeTitleEl || event.target instanceof HTMLInputElement) return;
+    this.beginInlineTitleRename(this.nativeTitleEl, true);
+  };
+
+  /** Replaces a title handle with an inline editor that saves on Enter/blur and cancels on Escape. */
+  private beginInlineTitleRename(container: HTMLElement, native = false): void {
+    if (!this.sessionId || container.querySelector("input")) return;
+    const original = this.getDisplayText();
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = native ? "view-header-title-input" : "opencode-session-view__title-input";
+    input.value = original;
+    container.replaceChildren(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const finish = async (save: boolean): Promise<void> => {
+      if (settled) return;
+      settled = true;
+      const next = input.value.trim();
+      if (!save || !next || next === original) {
+        this.applySessionTitle(original);
+        return;
+      }
+      input.disabled = true;
+      try {
+        await this.plugin.renameSession(this.sessionId!, next, this.sessionDirectory);
+      } catch (error) {
+        this.applySessionTitle(original);
+        new Notice(error instanceof Error ? error.message : "Unable to rename OpenCode session.");
+      }
+    };
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void finish(true);
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void finish(false);
+      }
+    });
+    input.addEventListener("blur", () => void finish(true));
   }
 
   /** Applies status data attributes to the native view header icon for CSS animation. */
@@ -2475,7 +2846,6 @@ export class SessionView extends ItemView {
 
     const text = this.userMessageText(bundle);
     const images = this.imageAttachments(bundle);
-    if (!text.trim() && images.length === 0) return;
 
     const wrapper = container.createDiv({ cls: "opencode-session-view__user-message-wrap" });
     const article = wrapper.createDiv({ cls: `opencode-session-view__message opencode-session-view__message--${role}` });
@@ -2501,24 +2871,69 @@ export class SessionView extends ItemView {
     return { showAssistantMeta, assistantTurnText };
   }
 
-  /** Renders a muted metadata row plus a message-level copy button. */
+  /** Renders message metadata plus role-specific copy and rewind actions. */
   private renderMessageMeta(container: HTMLElement, bundle: OpenCodeMessageBundle, role: "assistant" | "user", copyText: string): void {
     const items = role === "assistant" ? this.assistantMetaItems(bundle) : this.userMetaItems(bundle);
-    if (items.length === 0 && !copyText.trim()) return;
 
     const meta = container.createDiv({ cls: `opencode-session-view__message-meta opencode-session-view__message-meta--${role}` });
     if (items.length > 0) meta.createSpan({ text: items.join(" · "), cls: "opencode-session-view__message-meta-text" });
     if (role === "user" && this.queuedMessageIds.has(this.messageId(bundle))) meta.createSpan({ text: "QUEUED", cls: "opencode-session-view__queued-badge is-visible" });
-    if (!copyText.trim()) return;
+    if (copyText.trim()) {
+      const copy = meta.createEl("button", { attr: { "aria-label": `Copy ${role} message` }, cls: "opencode-session-view__message-action clickable-icon" });
+      setIcon(copy, "copy");
+      copy.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        await navigator.clipboard.writeText(copyText);
+        setIcon(copy, "check");
+        window.setTimeout(() => setIcon(copy, "copy"), 1400);
+      });
+    }
+    if (role === "assistant") {
+      const fork = meta.createEl("button", { attr: { "aria-label": "Fork session after this assistant turn" }, cls: "opencode-session-view__message-action clickable-icon" });
+      setIcon(fork, "git-fork");
+      fork.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void this.forkCurrentSession(this.messageId(bundle));
+      });
+    }
+    if (role === "user") {
+      const rewind = meta.createEl("button", { attr: { "aria-label": "Rewind session to this message" }, cls: "opencode-session-view__message-action clickable-icon" });
+      setIcon(rewind, "undo-2");
+      rewind.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void this.requestMessageRewind(bundle);
+      });
+    }
+  }
 
-    const copy = meta.createEl("button", { attr: { "aria-label": `Copy ${role} message` }, cls: "opencode-session-view__message-copy clickable-icon" });
-    setIcon(copy, "copy");
-    copy.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      await navigator.clipboard.writeText(copyText);
-      setIcon(copy, "check");
-      window.setTimeout(() => setIcon(copy, "copy"), 1400);
-    });
+  /** Renders the v1 rewind boundary, affected files, and redo action after the visible timeline head. */
+  private renderRewindBoundary(container: HTMLElement): void {
+    const messageId = this.revertMessageId();
+    if (!messageId) return;
+    const boundary = container.createDiv({ cls: "opencode-session-view__rewind-boundary", attr: { "data-rewind-message-id": messageId } });
+    const header = boundary.createDiv({ cls: "opencode-session-view__rewind-header" });
+    const title = header.createDiv({ cls: "opencode-session-view__rewind-title" });
+    const icon = title.createSpan({ cls: "opencode-session-view__rewind-icon" });
+    setIcon(icon, "undo-2");
+    title.createSpan({ text: "Session rewound" });
+
+    const redo = header.createEl("button", { cls: "opencode-session-view__rewind-redo", attr: { "aria-label": "Restore the next rewound turn" } });
+    setIcon(redo, "redo-2");
+    redo.createSpan({ text: "Redo" });
+    redo.addEventListener("click", () => void this.redoSessionRewind());
+
+    if (this.revertDiffFiles.length === 0) {
+      boundary.createDiv({ text: "No files affected", cls: "opencode-session-view__rewind-empty" });
+      return;
+    }
+    const files = boundary.createDiv({ cls: "opencode-session-view__rewind-files" });
+    for (const file of this.revertDiffFiles) {
+      const row = files.createDiv({ cls: "opencode-session-view__rewind-file" });
+      row.createSpan({ text: file.file, cls: "opencode-session-view__rewind-file-path", attr: { title: file.file } });
+      const stats = row.createSpan({ cls: "opencode-session-view__rewind-file-stats" });
+      if (file.additions > 0) stats.createSpan({ text: `+${file.additions}`, cls: "opencode-session-view__rewind-file-additions" });
+      if (file.deletions > 0) stats.createSpan({ text: `-${file.deletions}`, cls: "opencode-session-view__rewind-file-deletions" });
+    }
   }
 
   /** Builds the lean user-message metadata fields from message time. */

@@ -1,3 +1,5 @@
+import { PluginSettingTab, Setting, type App } from "obsidian";
+import type OpenCodePlugin from "../main";
 import type { OpenCodeServerConfig } from "./services/opencode-service";
 import { DEFAULT_WORKING_ANIMATION, type WorkingAnimation } from "./session-state";
 
@@ -7,6 +9,7 @@ export interface OpenCodePluginSettings {
   groupContextTools: boolean;
   showReasoningBlocks: boolean;
   interruptConfirmSeconds: number;
+  archiveConfirmation: boolean;
   sessionScroll: Record<string, { top: number; atBottom: boolean }>;
   sessionDrafts: Record<string, string>;
   sessionPromptHistory: Record<string, string[]>;
@@ -28,6 +31,7 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   groupContextTools: false,
   showReasoningBlocks: true,
   interruptConfirmSeconds: 3,
+  archiveConfirmation: true,
   sessionScroll: {},
   sessionDrafts: {},
   sessionPromptHistory: {},
@@ -40,3 +44,26 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   workingAnimation: DEFAULT_WORKING_ANIMATION,
   favoriteModels: [],
 };
+
+export class OpenCodeSettingTab extends PluginSettingTab {
+  constructor(
+    app: App,
+    private readonly plugin: OpenCodePlugin,
+  ) {
+    super(app, plugin);
+  }
+
+  /** Renders the plugin settings currently exposed by the product specification. */
+  display(): void {
+    this.containerEl.empty();
+    new Setting(this.containerEl)
+      .setName("Confirm session archival")
+      .setDesc("Show the affected session and all descendants before archiving them.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.archiveConfirmation).onChange(async (value) => {
+          this.plugin.settings.archiveConfirmation = value;
+          await this.plugin.saveSettings();
+        }),
+      );
+  }
+}

@@ -53,7 +53,76 @@ export function readNumber(source: JsonObject | undefined, keys: string[]): numb
 export function diffFilesFromMessage(bundle: OpenCodeMessageBundle): DiffFileSummary[] {
   const summary = readObject(bundle.info, "summary");
   const candidates = [...readObjectArray(summary, "diffs"), ...readObjectArray(bundle.info, "diffs")];
-  return candidates.flatMap(normalizeDiffFile);
+  return diffFilesFromRecords(candidates);
+}
+
+/** Normalizes raw OpenCode file-diff records; referenced by rewind boundaries and the diff panel. */
+export function diffFilesFromRecords(records: JsonObject[]): DiffFileSummary[] {
+  return records.flatMap(normalizeDiffFile);
+}
+
+/** Parses the aggregate unified patch stored in `session.revert.diff`; referenced when a rewind is loaded or staged. */
+export function diffFilesFromUnifiedPatch(patch: string | undefined): DiffFileSummary[] {
+  if (!patch) return [];
+  const files: DiffFileSummary[] = [];
+  let current: { oldPath?: string; newPath?: string; additions: number; deletions: number; inHunk: boolean } | undefined;
+
+  const finish = (): void => {
+    if (!current) return;
+    const file = current.newPath && current.newPath !== "/dev/null" ? current.newPath : current.oldPath;
+    if (file && file !== "/dev/null") {
+      files.push({
+        file,
+        additions: current.additions,
+        deletions: current.deletions,
+        status: current.oldPath === "/dev/null" ? "added" : current.newPath === "/dev/null" ? "deleted" : "modified",
+      });
+    }
+    current = undefined;
+  };
+
+  for (const line of patch.replace(/\r\n?/g, "\n").split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      finish();
+      const paths = diffHeaderPaths(line);
+      current = { oldPath: paths?.oldPath, newPath: paths?.newPath, additions: 0, deletions: 0, inHunk: false };
+      continue;
+    }
+    if (line.startsWith("--- ")) {
+      current ??= { additions: 0, deletions: 0, inHunk: false };
+      current.oldPath = normalizePatchPath(line.slice(4));
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      current ??= { additions: 0, deletions: 0, inHunk: false };
+      current.newPath = normalizePatchPath(line.slice(4));
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith("rename from ")) {
+      current.oldPath = normalizePatchPath(line.slice(12));
+      continue;
+    }
+    if (line.startsWith("rename to ")) {
+      current.newPath = normalizePatchPath(line.slice(10));
+      continue;
+    }
+    const binary = line.match(/^Binary files (.+) and (.+) differ$/);
+    if (binary) {
+      current.oldPath = normalizePatchPath(binary[1]);
+      current.newPath = normalizePatchPath(binary[2]);
+      continue;
+    }
+    if (line.startsWith("@@")) {
+      current.inHunk = true;
+      continue;
+    }
+    if (!current.inHunk) continue;
+    if (line.startsWith("+")) current.additions += 1;
+    if (line.startsWith("-")) current.deletions += 1;
+  }
+  finish();
+  return files.sort((left, right) => left.file.localeCompare(right.file));
 }
 
 /** Finds the latest user message id even when no diffs are attached; referenced by empty-turn panel copy. */
@@ -119,4 +188,27 @@ function countPatchStats(patch: string): { additions: number; deletions: number 
     if (line.startsWith("-")) deletions += 1;
   }
   return { additions, deletions };
+}
+
+/** Normalizes one `---`/`+++` patch path while preserving spaces. */
+function normalizePatchPath(raw: string): string {
+  const path = raw.split("\t", 1)[0].trim();
+  let unquoted = path;
+  if (path.startsWith('"') && path.endsWith('"')) {
+    try {
+      unquoted = JSON.parse(path) as string;
+    } catch {
+      unquoted = path.slice(1, -1);
+    }
+  }
+  return unquoted.replace(/^[ab]\//, "");
+}
+
+/** Reads ordinary paths from a `diff --git` header for binary/rename patches without `---` markers. */
+function diffHeaderPaths(line: string): { oldPath: string; newPath: string } | undefined {
+  const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+  if (match) return { oldPath: normalizePatchPath(`a/${match[1]}`), newPath: normalizePatchPath(`b/${match[2]}`) };
+  const quoted = line.match(/^diff --git ("(?:\\.|[^"])+") ("(?:\\.|[^"])+")$/);
+  if (!quoted) return undefined;
+  return { oldPath: normalizePatchPath(quoted[1]), newPath: normalizePatchPath(quoted[2]) };
 }

@@ -168,7 +168,7 @@ export class DiffPanelView extends ItemView {
     const message = messages.find((item) => messageId(item) === turnMessageId);
     const summaryDiffs = message ? diffFilesFromMessage(message) : [];
     if (summaryDiffs.length > 0) return summaryDiffs;
-    const endpointDiffs = await this.plugin.requireOpenCodeService().getSessionDiff(this.context.sessionId, turnMessageId);
+    const endpointDiffs = await this.plugin.requireOpenCodeService().getSessionDiff(this.context.sessionId, turnMessageId, this.context.sessionDirectory);
     return endpointDiffs.flatMap((item) => this.normalizeEndpointDiff(item));
   }
 

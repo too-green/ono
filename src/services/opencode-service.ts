@@ -17,7 +17,9 @@ import type {
   OpenCodePromptInput,
   OpenCodeQuestionAnswer,
   OpenCodeQuestionRequest,
+  OpenCodeRevertSessionInput,
   OpenCodeSession,
+  OpenCodeUpdateSessionInput,
 } from "./opencode-types";
 
 export interface OpenCodeServerConfig {
@@ -101,13 +103,23 @@ export class OpenCodeService {
   }
 
   /** Reads one session from `GET /session/:id`. */
-  getSession(sessionId: string): Promise<OpenCodeSession> {
-    return this.http.get<OpenCodeSession>(`/session/${encodeURIComponent(sessionId)}`);
+  getSession(sessionId: string, directory?: string): Promise<OpenCodeSession> {
+    return this.http.get<OpenCodeSession>(`/session/${encodeURIComponent(sessionId)}`, { directory });
   }
 
   /** Creates a session through `POST /session`; referenced by the agents panel new-session placeholder. */
   createSession(input?: OpenCodeCreateSessionInput, directory?: string): Promise<OpenCodeSession> {
     return this.http.post<OpenCodeSession>("/session", input ?? {}, { directory });
+  }
+
+  /** Updates a session through v1 `PATCH /session/:id`; referenced by rename and archival actions. */
+  updateSession(sessionId: string, input: OpenCodeUpdateSessionInput, directory?: string): Promise<OpenCodeSession> {
+    return this.http.patch<OpenCodeSession>(`/session/${encodeURIComponent(sessionId)}`, input, { directory });
+  }
+
+  /** Sets v1 session archival metadata; recursive descendant traversal remains a client responsibility. */
+  archiveSession(sessionId: string, archivedAt: number, directory?: string): Promise<OpenCodeSession> {
+    return this.updateSession(sessionId, { time: { archived: archivedAt } }, directory);
   }
 
   /** Sends a non-blocking prompt through `POST /session/:id/prompt_async`; referenced by the composer. */
@@ -130,14 +142,14 @@ export class OpenCodeService {
     return this.http.post<JsonObject>(`/session/${encodeURIComponent(sessionId)}/summarize`, {}, { directory });
   }
 
-  /** Reverts the last message pair via `POST /session/:id/revert`; referenced by the `/undo` built-in command. */
-  revertSession(sessionId: string, directory?: string): Promise<JsonObject> {
-    return this.http.post<JsonObject>(`/session/${encodeURIComponent(sessionId)}/revert`, {}, { directory });
+  /** Stages a v1 rewind at one message and applies its file rollback; referenced by message rewind and `/undo`. */
+  revertSession(sessionId: string, input: OpenCodeRevertSessionInput, directory?: string): Promise<OpenCodeSession> {
+    return this.http.post<OpenCodeSession>(`/session/${encodeURIComponent(sessionId)}/revert`, input, { directory });
   }
 
-  /** Restores the last reverted message pair via `POST /session/:id/unrevert`; referenced by the `/redo` built-in command. */
-  unrevertSession(sessionId: string, directory?: string): Promise<JsonObject> {
-    return this.http.post<JsonObject>(`/session/${encodeURIComponent(sessionId)}/unrevert`, {}, { directory });
+  /** Clears a v1 rewind marker and restores its messages/files; referenced by rewind cancel and redo. */
+  unrevertSession(sessionId: string, directory?: string): Promise<OpenCodeSession> {
+    return this.http.post<OpenCodeSession>(`/session/${encodeURIComponent(sessionId)}/unrevert`, {}, { directory });
   }
 
   /** Shares a session via `POST /session/:id/share`; referenced by the `/share` built-in command. */
@@ -151,8 +163,12 @@ export class OpenCodeService {
   }
 
   /** Forks a session via `POST /session/:id/fork`; referenced by the `/fork` built-in command. */
-  forkSession(sessionId: string, directory?: string): Promise<OpenCodeSession> {
-    return this.http.post<OpenCodeSession>(`/session/${encodeURIComponent(sessionId)}/fork`, {}, { directory });
+  forkSession(sessionId: string, directory?: string, messageId?: string): Promise<OpenCodeSession> {
+    return this.http.post<OpenCodeSession>(
+      `/session/${encodeURIComponent(sessionId)}/fork`,
+      messageId ? { messageID: messageId } : {},
+      { directory },
+    );
   }
 
   /** Lists pending permission requests from `GET /permission`; referenced by the session permission dock. */
@@ -181,8 +197,8 @@ export class OpenCodeService {
   }
 
   /** Lists child sessions from `GET /session/:id/children`. */
-  listSessionChildren(sessionId: string): Promise<OpenCodeSession[]> {
-    return this.http.get<OpenCodeSession[]>(`/session/${encodeURIComponent(sessionId)}/children`);
+  listSessionChildren(sessionId: string, directory?: string): Promise<OpenCodeSession[]> {
+    return this.http.get<OpenCodeSession[]>(`/session/${encodeURIComponent(sessionId)}/children`, { directory });
   }
 
   /** Reads a session todo list from `GET /session/:id/todo`. */
@@ -190,9 +206,9 @@ export class OpenCodeService {
     return this.http.get<JsonObject[]>(`/session/${encodeURIComponent(sessionId)}/todo`);
   }
 
-  /** Reads session diff metadata from `GET /session/:id/diff`. */
-  getSessionDiff(sessionId: string, messageId?: string): Promise<JsonObject[]> {
-    return this.http.get<JsonObject[]>(`/session/${encodeURIComponent(sessionId)}/diff`, { messageID: messageId });
+  /** Reads directory-scoped session diff metadata from `GET /session/:id/diff`. */
+  getSessionDiff(sessionId: string, messageId?: string, directory?: string): Promise<JsonObject[]> {
+    return this.http.get<JsonObject[]>(`/session/${encodeURIComponent(sessionId)}/diff`, { messageID: messageId, directory });
   }
 
   /** Lists all message bundles from `GET /session/:id/message`; referenced by full-session side panels. */
@@ -203,7 +219,7 @@ export class OpenCodeService {
 
   /** Reads one normalized cursor page from `GET /session/:id/message`; referenced by lazy session timelines. */
   async listMessagePage(sessionId: string, params?: OpenCodeListMessagesParams): Promise<OpenCodeMessagePage> {
-    const query = { limit: params?.limit, before: params?.before ?? params?.cursor };
+    const query = { limit: params?.limit, before: params?.cursor };
     const response = await this.http.getResponse<OpenCodeMessageBundle[] | { data?: OpenCodeMessageBundle[]; cursor?: { previous?: string; next?: string } }>(
       `/session/${encodeURIComponent(sessionId)}/message`,
       query,

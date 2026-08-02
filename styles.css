@@ -62,6 +62,17 @@
   white-space: nowrap;
 }
 
+.opencode-agent-panel__rename-input {
+  background: var(--background-primary);
+  border: var(--border-width) solid var(--interactive-accent);
+  border-radius: var(--input-radius);
+  color: var(--text-normal);
+  font: inherit;
+  min-width: 0;
+  padding: 0 var(--size-2-1);
+  width: 100%;
+}
+
 .opencode-agent-panel__project-avatar {
   align-items: center;
   background: color-mix(in srgb, var(--opencode-project-avatar-color) 22%, transparent);
@@ -443,6 +454,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.opencode-session-view__title-input {
+  background: var(--background-primary);
+  border: var(--border-width) solid var(--interactive-accent);
+  border-radius: var(--input-radius);
+  color: var(--text-normal);
+  font: inherit;
+  font-weight: var(--font-semibold);
+  min-width: 0;
+  width: 100%;
 }
 
 .opencode-session-view__subtitle {
@@ -1250,11 +1272,92 @@
   white-space: nowrap;
 }
 
-.opencode-session-view__message-copy {
+.opencode-session-view__message-action {
   color: var(--text-faint) !important;
   flex: 0 0 auto;
   height: calc(var(--size-4-5) + var(--size-2-1));
   width: calc(var(--size-4-5) + var(--size-2-1));
+}
+
+.opencode-session-view__rewind-boundary {
+  background: var(--background-secondary);
+  border-radius: var(--radius-m);
+  border-top: calc(var(--border-width) * 2) solid var(--interactive-accent);
+  margin: var(--size-4-8) 0;
+  padding: var(--size-4-3) var(--size-4-4);
+}
+
+.opencode-session-view__rewind-header,
+.opencode-session-view__rewind-title,
+.opencode-session-view__rewind-redo,
+.opencode-session-view__rewind-file,
+.opencode-session-view__rewind-file-stats {
+  align-items: center;
+  display: flex;
+}
+
+.opencode-session-view__rewind-header {
+  gap: var(--size-4-3);
+  justify-content: space-between;
+}
+
+.opencode-session-view__rewind-title {
+  color: var(--text-normal);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  gap: var(--size-2-2);
+}
+
+.opencode-session-view__rewind-icon {
+  color: var(--interactive-accent);
+  display: inline-flex;
+}
+
+.opencode-session-view__rewind-redo {
+  gap: var(--size-2-2);
+}
+
+.opencode-session-view__rewind-files {
+  border-top: var(--border-width) solid var(--background-modifier-border);
+  margin-top: var(--size-4-3);
+  padding-top: var(--size-4-2);
+}
+
+.opencode-session-view__rewind-file {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  gap: var(--size-4-3);
+  justify-content: space-between;
+  min-height: var(--size-4-6);
+}
+
+.opencode-session-view__rewind-file-path {
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-session-view__rewind-file-stats {
+  flex: 0 0 auto;
+  gap: var(--size-2-2);
+}
+
+.opencode-session-view__rewind-file-additions {
+  color: var(--text-success);
+}
+
+.opencode-session-view__rewind-file-deletions {
+  color: var(--text-error);
+}
+
+.opencode-session-view__rewind-empty {
+  color: var(--text-faint);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-smaller);
+  margin-top: var(--size-4-2);
 }
 
 .opencode-session-view__image-modal {

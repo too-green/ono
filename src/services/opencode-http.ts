@@ -58,8 +58,15 @@ export class OpenCodeHttpClient {
   /** Performs a JSON POST request; referenced by mutating OpenCode session actions. */
   async post<T>(path: string, payload?: unknown, query?: object, signal?: AbortSignal): Promise<T> {
     if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
-    if (!this.config.fetchImpl) return this.postWithObsidianRequestUrl<T>(path, payload, query);
-    return this.postWithFetch<T>(path, payload, query, signal);
+    if (!this.config.fetchImpl) return this.mutateWithObsidianRequestUrl<T>("POST", path, payload, query);
+    return this.mutateWithFetch<T>("POST", path, payload, query, signal);
+  }
+
+  /** Performs a JSON PATCH request; referenced by session rename and archival. */
+  async patch<T>(path: string, payload: unknown, query?: object, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+    if (!this.config.fetchImpl) return this.mutateWithObsidianRequestUrl<T>("PATCH", path, payload, query);
+    return this.mutateWithFetch<T>("PATCH", path, payload, query, signal);
   }
 
   /** Performs a JSON DELETE request; referenced by session unshare. */
@@ -108,8 +115,8 @@ export class OpenCodeHttpClient {
     return { json: response.json as T, headers: response.headers };
   }
 
-  /** Performs POST through Obsidian's network helper to avoid renderer CORS failures. */
-  private async postWithObsidianRequestUrl<T>(path: string, payload?: unknown, query?: object): Promise<T> {
+  /** Performs a JSON body mutation through Obsidian's network helper to avoid renderer CORS failures. */
+  private async mutateWithObsidianRequestUrl<T>(method: "POST" | "PATCH", path: string, payload?: unknown, query?: object): Promise<T> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     new Headers(this.headers()).forEach((value, key) => {
       headers[key] = value;
@@ -117,13 +124,13 @@ export class OpenCodeHttpClient {
 
     const response = await requestUrl({
       url: this.url(path, query),
-      method: "POST",
+      method,
       headers,
       body: JSON.stringify(payload ?? {}),
     });
 
     if (response.status < 200 || response.status >= 300) {
-      throw new OpenCodeHttpError(`OpenCode POST ${path} failed with ${response.status}`, response.status, response.text);
+      throw new OpenCodeHttpError(`OpenCode ${method} ${path} failed with ${response.status}`, response.status, response.text);
     }
 
     return (response.text ? response.json : undefined) as T;
@@ -171,10 +178,10 @@ export class OpenCodeHttpClient {
     return { json, headers };
   }
 
-  /** Performs POST with an injected fetch implementation for tests or non-Obsidian contexts. */
-  private async postWithFetch<T>(path: string, payload?: unknown, query?: object, signal?: AbortSignal): Promise<T> {
+  /** Performs a JSON body mutation with an injected fetch implementation for tests or non-Obsidian contexts. */
+  private async mutateWithFetch<T>(method: "POST" | "PATCH", path: string, payload?: unknown, query?: object, signal?: AbortSignal): Promise<T> {
     const response = await this.fetchImpl(this.url(path, query), {
-      method: "POST",
+      method,
       headers: this.headers({ "content-type": "application/json" }),
       body: JSON.stringify(payload ?? {}),
       signal,
@@ -182,7 +189,7 @@ export class OpenCodeHttpClient {
 
     if (!response.ok) {
       const responseText = await response.text();
-      throw new OpenCodeHttpError(`OpenCode POST ${path} failed with ${response.status}`, response.status, responseText);
+      throw new OpenCodeHttpError(`OpenCode ${method} ${path} failed with ${response.status}`, response.status, responseText);
     }
 
     if (response.status === 204) return undefined as T;

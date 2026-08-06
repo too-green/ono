@@ -1,8 +1,22 @@
-.opencode-agent-panel {
+.opencode-sidebar-panel {
   color: var(--text-normal);
-  background: var(--background-secondary);
+  /* The workspace leaf owns the sidebar surface, including translucent-window compositing. */
+  display: flex;
+  flex-direction: column;
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
   padding: var(--size-4-1) 0;
+}
+
+.opencode-sidebar-panel__header {
+  flex: 0 0 auto;
+}
+
+.opencode-sidebar-panel__content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .opencode-agent-panel__header {
@@ -32,7 +46,7 @@
   padding: 0 var(--size-4-1);
 }
 
-.opencode-agent-panel .tree-item-self {
+.opencode-sidebar-panel--agents .tree-item-self {
   align-items: center;
   border-radius: var(--radius-s);
   color: var(--nav-item-color);
@@ -41,22 +55,22 @@
   padding-inline-end: var(--size-2-2);
 }
 
-.opencode-agent-panel .tree-item-self:hover {
+.opencode-sidebar-panel--agents .tree-item-self:hover {
   background-color: var(--nav-item-background-hover);
   color: var(--nav-item-color-hover);
 }
 
-.opencode-agent-panel .tree-item-self.is-active {
+.opencode-sidebar-panel--agents .tree-item-self.is-active {
   background-color: var(--nav-item-background-active);
   color: var(--nav-item-color-active);
 }
 
-.opencode-agent-panel .tree-item-self.opencode-agent-panel__row-highlighted:not(.is-active) {
+.opencode-sidebar-panel--agents .tree-item-self.opencode-agent-panel__row-highlighted:not(.is-active) {
   background-color: var(--background-modifier-hover);
   box-shadow: inset 0 0 0 var(--border-width) var(--background-modifier-border-hover);
 }
 
-.opencode-agent-panel .tree-item-inner {
+.opencode-sidebar-panel--agents .tree-item-inner {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -583,6 +597,38 @@
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
   padding: var(--size-2-1) var(--size-2-2);
+}
+
+.opencode-session-view__request-owner {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--text-muted);
+  display: inline-flex;
+  flex: 0 1 auto;
+  font-size: var(--font-ui-smaller);
+  gap: var(--size-2-1);
+  max-width: 50%;
+  min-width: 0;
+  padding: var(--size-2-1) var(--size-2-2);
+}
+
+.opencode-session-view__request-owner:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.opencode-session-view__request-owner-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-session-view__request-owner-icon,
+.opencode-session-view__request-owner-icon svg {
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-session-view__request-summary {
@@ -1590,6 +1636,24 @@
   transform: rotate(90deg);
 }
 
+.opencode-session-view__tool--static > .opencode-session-view__tool-summary {
+  cursor: default;
+}
+
+.opencode-session-view__tool--static > .opencode-session-view__tool-summary:hover {
+  background: transparent;
+}
+
+.opencode-session-view__tool--static > .opencode-session-view__tool-summary::after {
+  display: none;
+}
+
+.opencode-session-view__patch-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+}
+
 .opencode-session-view__tool-icon {
   align-items: center;
   color: var(--text-faint);
@@ -1640,6 +1704,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.opencode-session-view__move-source {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
 }
 
 .opencode-session-view__tool-status,
@@ -1913,14 +1984,6 @@
   border-top-color: var(--text-muted);
   height: var(--size-4-5);
   width: var(--size-4-5);
-}
-
-.opencode-diff-panel {
-  background: var(--background-secondary);
-  color: var(--text-normal);
-  height: 100%;
-  overflow: auto;
-  padding: var(--size-4-1) 0;
 }
 
 .opencode-diff-panel__header {

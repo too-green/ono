@@ -15,6 +15,11 @@
 import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef, OpenCodePermissionRequest, OpenCodeQuestionRequest } from "../../services/opencode-types";
 import type { DiffFileSummary } from "../../diff-utils";
 
+export interface DescendantSessionInfo {
+  title: string;
+  directory?: string;
+}
+
 export class SessionViewModel {
   // ---- identity
   /** Active session id; undefined while showing a draft or before first load. */
@@ -77,6 +82,16 @@ export class SessionViewModel {
   pendingPermissions: OpenCodePermissionRequest[] = [];
   /** Pending question requests surfaced by the request dock. */
   pendingQuestions: OpenCodeQuestionRequest[] = [];
+  /** Directory requests awaiting ancestry discovery; never rendered until their owner enters this tree. */
+  unscopedPendingPermissions: OpenCodePermissionRequest[] = [];
+  /** Directory questions awaiting ancestry discovery; never rendered until their owner enters this tree. */
+  unscopedPendingQuestions: OpenCodeQuestionRequest[] = [];
+  /** Descendant session metadata used to route child-owned requests through this view. */
+  descendantSessions = new Map<string, DescendantSessionInfo>();
+  /** Monotonic request-state revision used to reconcile stream events with canonical GET snapshots. */
+  pendingRequestRevision = 0;
+  /** Latest request-state revision by request id; referenced by canonical request reconciliation. */
+  pendingRequestRevisionById = new Map<string, number>();
 
   // ---- queue
   /** Server-assigned ids of queued user messages awaiting processing. */

@@ -3,7 +3,7 @@ import type OpenCodePlugin from "../../main";
 import { DELETE_CURRENT_FILE_COMMANDS, RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
 import type { OpenCodeEventSubscription } from "../services/opencode-events";
 import { logServiceError } from "../services/opencode-http";
-import type { JsonObject, OpenCodeEvent, OpenCodeSession } from "../services/opencode-types";
+import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "../services/opencode-types";
 import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
 
 export const VIEW_TYPE_OPENCODE_AGENT_PANEL = "opencode-agent-panel";
@@ -28,6 +28,7 @@ interface AgentPanelSession {
   directory: string;
   status: SessionVisualStatus;
   muted: boolean;
+  requiresAttention: boolean;
   children: AgentPanelSession[];
 }
 
@@ -59,9 +60,18 @@ export class AgentPanelView extends ItemView {
   private eventSubscriptionDirectoriesKey = "";
   private visibleRows: AgentPanelVisibleRow[] = [];
   private loading = false;
+  private refreshQueued = false;
   private refreshTimer?: number;
   private lastRenderedTreeSignature = "";
   private lastKnownSessionStatuses = new Map<string, string>();
+  private requestAttentionSessionIds = new Set<string>();
+  private sessionParentIds = new Map<string, string>();
+  private sessionChildrenCache = new Map<string, OpenCodeSession[]>();
+  private sessionListCache = new Map<string, OpenCodeSession[]>();
+  private permissionRequestCache = new Map<string, OpenCodePermissionRequest[]>();
+  private questionRequestCache = new Map<string, OpenCodeQuestionRequest[]>();
+  private transientLoadFailure = false;
+  private refreshRetryDelay = 1_000;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -87,7 +97,8 @@ export class AgentPanelView extends ItemView {
 
   /** Builds the panel shell and loads read-only OpenCode data when opened. */
   async onOpen(): Promise<void> {
-    this.contentEl.addClass("opencode-agent-panel");
+    this.contentEl.addClass("opencode-sidebar-panel");
+    this.contentEl.addClass("opencode-sidebar-panel--agents");
     this.contentEl.tabIndex = 0;
     this.contentEl.addEventListener("keydown", this.handleKeydown);
     this.syncEventSubscriptions(this.plugin.getOpenedDirectories());
@@ -146,18 +157,22 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Debounces event-driven reloads to avoid rendering every streaming event individually. */
-  private scheduleRefresh(): void {
+  private scheduleRefresh(delay = 250): void {
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = undefined;
       void this.refresh({ showLoading: false });
-    }, 250);
+    }, delay);
   }
 
   /** Reloads projects, sessions, and statuses using only OpenCode GET endpoints. */
   async refresh(options: { showLoading?: boolean } = {}): Promise<void> {
-    if (this.loading) return;
+    if (this.loading) {
+      this.refreshQueued = true;
+      return;
+    }
     this.loading = true;
+    this.transientLoadFailure = false;
     if (options.showLoading !== false || !this.contentEl.hasChildNodes()) this.renderLoading();
 
     try {
@@ -173,10 +188,10 @@ export class AgentPanelView extends ItemView {
             project: await service.getCurrentProject(directory).catch(logServiceError(undefined, "getCurrentProject", directory)),
           })),
         ),
-        Promise.all(openedDirectories.map((directory) => service.listSessions({ directory, limit: 100 }).catch(logServiceError([], "listSessions", directory)))),
+        Promise.all(openedDirectories.map((directory) => this.listSessions(directory))),
         service.getSessionStatus().catch(logServiceError(undefined, "getSessionStatus")),
-        Promise.all(openedDirectories.map((directory) => service.listPermissionRequests(directory).catch(logServiceError([], "listPermissionRequests", directory)))),
-        Promise.all(openedDirectories.map((directory) => service.listQuestionRequests(directory).catch(logServiceError([], "listQuestionRequests", directory)))),
+        Promise.all(openedDirectories.map((directory) => this.listPermissionRequests(directory))),
+        Promise.all(openedDirectories.map((directory) => this.listQuestionRequests(directory))),
       ]);
       const sessionDirectoryById = new Map<string, string>();
       sessionGroups.forEach((sessionsForDirectory, index) => {
@@ -185,11 +200,20 @@ export class AgentPanelView extends ItemView {
         sessionsForDirectory.forEach((session) => sessionDirectoryById.set(session.id, directory));
       });
       const sessions = this.uniqueSessions(sessionGroups.flat()).filter((session) => !this.isArchived(session));
+      this.sessionParentIds = new Map(
+        sessions.flatMap((session) => {
+          const parentId = this.readString(session, ["parentID", "parentId"]);
+          return parentId ? [[session.id, parentId] as const] : [];
+        }),
+      );
       const statusSnapshot = statuses && typeof statuses === "object" && !Array.isArray(statuses) ? (statuses as JsonObject) : {};
+      const requestOwnerIds = new Set<string>();
       for (const request of [...permissionGroups.flat(), ...questionGroups.flat()]) {
         const sessionId = this.readString(request, ["sessionID", "sessionId"]);
-        if (sessionId) statusSnapshot[sessionId] = { type: "attention" };
+        if (sessionId) requestOwnerIds.add(sessionId);
       }
+      if (this.transientLoadFailure) this.requestAttentionSessionIds.forEach((sessionId) => requestOwnerIds.add(sessionId));
+      this.propagateRequestAttentionToAncestors(requestOwnerIds, sessions);
       if (statuses) this.reconcileSessionStatusSnapshot(statusSnapshot);
       const tree = await this.buildProjectTree(
         [...(Array.isArray(projects) ? projects : []), ...openedContexts.flatMap((context) => (context.project ? [context.project] : []))],
@@ -197,7 +221,11 @@ export class AgentPanelView extends ItemView {
         statusSnapshot,
         openedContexts,
         sessionDirectoryById,
+        requestOwnerIds,
       );
+      const nextRequestAttentionIds = this.collectRequestAttentionIds(tree);
+      if (this.transientLoadFailure) this.requestAttentionSessionIds.forEach((sessionId) => nextRequestAttentionIds.add(sessionId));
+      this.requestAttentionSessionIds = nextRequestAttentionIds;
       const treeSignature = JSON.stringify(tree);
       if (treeSignature === this.lastRenderedTreeSignature) return;
       this.lastRenderedTreeSignature = treeSignature;
@@ -207,6 +235,16 @@ export class AgentPanelView extends ItemView {
       this.renderDisconnected(error);
     } finally {
       this.loading = false;
+      if (this.transientLoadFailure) {
+        this.scheduleRefresh(this.refreshRetryDelay);
+        this.refreshRetryDelay = Math.min(this.refreshRetryDelay * 2, 30_000);
+      } else {
+        this.refreshRetryDelay = 1_000;
+      }
+      if (this.refreshQueued) {
+        this.refreshQueued = false;
+        void this.refresh({ showLoading: false });
+      }
     }
   }
 
@@ -217,6 +255,7 @@ export class AgentPanelView extends ItemView {
     statuses: JsonObject,
     openedContexts: OpenedDirectoryContext[],
     sessionDirectoryById: Map<string, string>,
+    requestOwnerIds: Set<string>,
   ): Promise<AgentPanelProject[]> {
     const sessionsByProject = new Map<string, Map<string, OpenCodeSession[]>>();
     const knownProjects = new Map<string, OpenCodeProjectMeta>();
@@ -264,7 +303,7 @@ export class AgentPanelView extends ItemView {
             id: worktreeId,
             name: this.basename(worktreeId),
             path: worktreeId,
-            sessions: await this.buildSessionNodes(worktreeSessions, statuses),
+            sessions: await this.buildSessionNodes(worktreeSessions, statuses, requestOwnerIds),
           })),
         ),
       })),
@@ -272,27 +311,94 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Recursively hydrates session children for a project branch. */
-  private async buildSessionNodes(sessions: OpenCodeSession[], statuses: JsonObject): Promise<AgentPanelSession[]> {
+  private async buildSessionNodes(sessions: OpenCodeSession[], statuses: JsonObject, requestOwnerIds: Set<string>): Promise<AgentPanelSession[]> {
     const roots = sessions.filter((session) => !this.readString(session, ["parentID", "parentId"]));
     const sortedRoots = roots.length > 0 ? roots : sessions;
-    return Promise.all(sortedRoots.sort((a, b) => this.sessionTitle(a).localeCompare(this.sessionTitle(b))).map((session) => this.buildSessionNode(session, statuses)));
+    return Promise.all(sortedRoots.sort((a, b) => this.sessionTitle(a).localeCompare(this.sessionTitle(b))).map((session) => this.buildSessionNode(session, statuses, requestOwnerIds)));
   }
 
   /** Hydrates a single session node and its OpenCode child sessions. */
-  private async buildSessionNode(session: OpenCodeSession, statuses: JsonObject): Promise<AgentPanelSession> {
+  private async buildSessionNode(session: OpenCodeSession, statuses: JsonObject, requestOwnerIds: Set<string>): Promise<AgentPanelSession> {
     const service = this.plugin.requireOpenCodeService();
     const id = session.id;
     const directory = this.effectiveDirectoryForSession(session);
-    const children = await service.listSessionChildren(id, directory).catch(logServiceError([], "listSessionChildren", id));
+    const fallback = this.sessionChildrenCache.get(id) ?? [];
+    const children = await service.listSessionChildren(id, directory).catch((error) => {
+      this.transientLoadFailure = true;
+      return logServiceError(fallback, "listSessionChildren", id)(error);
+    });
+    this.sessionChildrenCache.set(id, children);
+    children.forEach((child) => this.sessionParentIds.set(child.id, id));
+    const childNodes = await Promise.all(children.filter((child) => !this.isArchived(child)).map((child) => this.buildSessionNode(child, statuses, requestOwnerIds)));
+    const requiresAttention = requestOwnerIds.has(id) || childNodes.some((child) => child.requiresAttention);
 
     return {
       id,
       title: this.sessionTitle(session),
       directory,
-      status: this.visualStatusFor(id, statuses),
+      status: this.visualStatusFor(id, statuses, requiresAttention),
       muted: this.plugin.settings.sessionMute[id] === true,
-      children: await Promise.all(children.filter((child) => !this.isArchived(child)).map((child) => this.buildSessionNode(child, statuses))),
+      requiresAttention,
+      children: childNodes,
     };
+  }
+
+  /** Adds every known ancestor of a request owner so parent rows retain attention during child-fetch failures. */
+  private propagateRequestAttentionToAncestors(requestOwnerIds: Set<string>, sessions: OpenCodeSession[]): void {
+    const parentById = new Map(sessions.map((session) => [session.id, this.readString(session, ["parentID", "parentId"])]));
+    for (const ownerId of [...requestOwnerIds]) {
+      const visited = new Set<string>();
+      let parentId = parentById.get(ownerId);
+      while (parentId && !visited.has(parentId)) {
+        visited.add(parentId);
+        requestOwnerIds.add(parentId);
+        parentId = parentById.get(parentId);
+      }
+    }
+  }
+
+  /** Lists permissions with the last successful directory snapshot as a transient-failure fallback. */
+  private async listPermissionRequests(directory: string): Promise<OpenCodePermissionRequest[]> {
+    const fallback = this.permissionRequestCache.get(directory) ?? [];
+    const requests = await this.plugin.requireOpenCodeService().listPermissionRequests(directory).catch((error) => {
+      this.transientLoadFailure = true;
+      return logServiceError(fallback, "listPermissionRequests", directory)(error);
+    });
+    this.permissionRequestCache.set(directory, requests);
+    return requests;
+  }
+
+  /** Lists questions with the last successful directory snapshot as a transient-failure fallback. */
+  private async listQuestionRequests(directory: string): Promise<OpenCodeQuestionRequest[]> {
+    const fallback = this.questionRequestCache.get(directory) ?? [];
+    const requests = await this.plugin.requireOpenCodeService().listQuestionRequests(directory).catch((error) => {
+      this.transientLoadFailure = true;
+      return logServiceError(fallback, "listQuestionRequests", directory)(error);
+    });
+    this.questionRequestCache.set(directory, requests);
+    return requests;
+  }
+
+  /** Lists sessions with the last successful directory snapshot as a transient-failure fallback. */
+  private async listSessions(directory: string): Promise<OpenCodeSession[]> {
+    const fallback = this.sessionListCache.get(directory) ?? [];
+    const sessions = await this.plugin.requireOpenCodeService().listSessions({ directory, limit: 100 }).catch((error) => {
+      this.transientLoadFailure = true;
+      return logServiceError(fallback, "listSessions", directory)(error);
+    });
+    this.sessionListCache.set(directory, sessions);
+    return sessions;
+  }
+
+  /** Collects owner and ancestor ids whose rows must retain attention over live status events. */
+  private collectRequestAttentionIds(projects: AgentPanelProject[]): Set<string> {
+    const ids = new Set<string>();
+    const collect = (session: AgentPanelSession): void => {
+      if (session.requiresAttention) ids.add(session.id);
+      session.children.forEach(collect);
+    };
+    projects.forEach((project) => project.worktrees.forEach((worktree) => worktree.sessions.forEach(collect)));
+    return ids;
   }
 
   /** Renders a centered loading state that matches Obsidian empty-state styling. */
@@ -322,7 +428,7 @@ export class AgentPanelView extends ItemView {
     this.visibleRows = [];
     this.renderHeader();
 
-    const nav = this.contentEl.createDiv({ cls: "nav-files-container node-insert-event opencode-agent-panel__tree" });
+    const nav = this.contentEl.createDiv({ cls: "nav-files-container node-insert-event opencode-sidebar-panel__content opencode-agent-panel__tree" });
     const root = nav.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__root" });
 
     if (projects.length === 0) {
@@ -339,7 +445,7 @@ export class AgentPanelView extends ItemView {
 
   /** Renders the panel header with native clickable-icon affordances. */
   private renderHeader(): void {
-    const header = this.contentEl.createDiv({ cls: "opencode-agent-panel__header" });
+    const header = this.contentEl.createDiv({ cls: "opencode-sidebar-panel__header opencode-agent-panel__header" });
     header.createDiv({ text: "OpenCode", cls: "opencode-agent-panel__title" });
     const actions = header.createDiv({ cls: "opencode-agent-panel__actions" });
     const openDirectory = actions.createEl("button", { attr: { "aria-label": "Open directory in OpenCode" }, cls: "clickable-icon" });
@@ -480,6 +586,11 @@ export class AgentPanelView extends ItemView {
   private applyLiveSessionEvent(event: OpenCodeEvent): void {
     const properties = event.properties;
     if (!properties) return;
+    if (event.type === "permission.asked" || event.type === "question.asked") {
+      const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
+      if (sessionId) this.applyLiveRequestAttention(sessionId);
+      return;
+    }
     if (event.type === "session.status") {
       const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
       const status = this.readObject(properties, "status");
@@ -490,6 +601,20 @@ export class AgentPanelView extends ItemView {
     if (event.type === "session.idle" || event.type === "session.error") {
       const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
       if (sessionId) this.applyLiveSessionStatus(sessionId, "idle");
+    }
+  }
+
+  /** Paints an asked request's owner and every known ancestor without waiting for GET snapshots. */
+  private applyLiveRequestAttention(ownerSessionId: string): void {
+    const visited = new Set<string>();
+    let sessionId: string | undefined = ownerSessionId;
+    while (sessionId && !visited.has(sessionId)) {
+      visited.add(sessionId);
+      this.requestAttentionSessionIds.add(sessionId);
+      const row = this.contentEl.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(sessionId)}"]`);
+      const slot = row?.querySelector<HTMLElement>(".opencode-agent-panel__status");
+      if (slot) this.paintStatusIndicator(slot, "attention");
+      sessionId = this.sessionParentIds.get(sessionId);
     }
   }
 
@@ -656,7 +781,8 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Converts raw OpenCode status payloads into the panel's visual states. */
-  private visualStatusFor(sessionId: string, statuses: JsonObject): SessionVisualStatus {
+  private visualStatusFor(sessionId: string, statuses: JsonObject, requiresAttention = this.requestAttentionSessionIds.has(sessionId)): SessionVisualStatus {
+    if (requiresAttention) return "attention";
     const status = statuses[sessionId];
     const type = status && typeof status === "object" && !Array.isArray(status) ? this.readString(status as JsonObject, ["type", "status", "state"]) : this.lastKnownSessionStatuses.get(sessionId);
     return visualStatusForSession(type, this.plugin.settings.sessionUnread[sessionId] === true);

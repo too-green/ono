@@ -36,6 +36,7 @@ describe("toolTitle", () => {
     expect(toolTitle("shell", empty)).toBe("Shell");
     expect(toolTitle("edit", empty)).toBe("Edit");
     expect(toolTitle("write", empty)).toBe("Write");
+    expect(toolTitle("apply_patch", empty)).toBe("Patch");
     expect(toolTitle("todo", empty)).toBe("Todos");
     expect(toolTitle("todowrite", empty)).toBe("Todos");
   });

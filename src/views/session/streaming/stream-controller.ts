@@ -66,7 +66,15 @@ export class StreamController {
     this.subscriptionDirectory = directory;
     this.subscription = this.deps.subscribeToEvents({
       onEvent: (event) => {
-        if (this.disposed || version !== this.workVersion || !eventReferencesSession(event.properties, this.deps.model.sessionId)) return;
+        if (this.disposed || version !== this.workVersion) return;
+        if (this.isRequestEvent(event.type)) {
+          this.applyEvent(event);
+          return;
+        }
+        if (!eventReferencesSession(event.properties, this.deps.model.sessionId)) {
+          this.reconcileDescendantSessionEvent(event);
+          return;
+        }
         this.applyEvent(event);
       },
       onOpen: () => {
@@ -74,6 +82,23 @@ export class StreamController {
         if (this.deps.model.renderedSessionId === this.deps.model.sessionId) this.scheduleCanonicalSync(0);
       },
     }, directory);
+  }
+
+  /** Returns true for directory-scoped request events that every session view must route by ownership. */
+  private isRequestEvent(type: string): boolean {
+    return type === "permission.asked" || type === "permission.replied" || type === "question.asked" || type === "question.replied" || type === "question.rejected";
+  }
+
+  /** Refreshes descendant identity after a relevant child session is created, updated, or deleted. */
+  private reconcileDescendantSessionEvent(event: OpenCodeEvent): void {
+    if (event.type !== "session.created" && event.type !== "session.updated" && event.type !== "session.deleted") return;
+    const properties = event.properties;
+    const info = jsonHelpers.readObject(properties ?? {}, "info");
+    const eventSessionId = jsonHelpers.readString(properties ?? {}, ["sessionID", "sessionId"]) ?? (info ? jsonHelpers.readString(info, ["id", "sessionID", "sessionId"]) : undefined);
+    const parentId = info ? jsonHelpers.readString(info, ["parentID", "parentId"]) : undefined;
+    const inTree = !!eventSessionId && this.deps.model.descendantSessions.has(eventSessionId);
+    const parentInTree = !!parentId && (parentId === this.deps.model.sessionId || this.deps.model.descendantSessions.has(parentId));
+    if (inTree || parentInTree) this.scheduleCanonicalSync(event.type === "session.created" ? 0 : 500);
   }
 
   /** Closes the current subscription and cancels work associated with the previous session binding. */

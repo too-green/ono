@@ -7,6 +7,7 @@ import {
   type UnifiedDiffRow,
 } from "../diff-parsing";
 import { readNumber, readObject, readObjectArray, readString } from "../json-helpers";
+import { displayPath } from "../path-utils";
 import {
   renderCodeBlock,
   renderHighlightedCodeLine,
@@ -16,6 +17,9 @@ import {
 
 export interface EditDiff {
   file?: string;
+  sourcePath?: string;
+  targetPath?: string;
+  operation?: "add" | "update" | "delete" | "move";
   patch: string;
   additions?: number;
   deletions?: number;
@@ -47,6 +51,22 @@ export async function renderEditTool(
   if (output && diffs.length === 0 && !content) await renderMarkdownSection(container, "Result", output, ctx);
 }
 
+/** Renders one apply-patch file diff and its target-specific diagnostics; referenced by tool-renderer.renderPatchFileCall. */
+export async function renderEditDiff(
+  container: HTMLElement,
+  diff: EditDiff,
+  state: JsonObject,
+  ctx: BlockRenderCtx,
+): Promise<void> {
+  if (diff.operation === "move" && diff.sourcePath) {
+    const move = container.createDiv({ cls: "opencode-session-view__move-source" });
+    move.createSpan({ text: "Moved from", cls: "opencode-session-view__tool-section-title" });
+    move.createSpan({ text: displayPath(diff.sourcePath, ctx.sessionDirectory), cls: "opencode-session-view__tool-path" });
+  }
+  if (diff.patch.trim()) await renderDiffSection(container, diff, ctx);
+  renderDiagnostics(container, diff.targetPath ?? diff.file, state, false);
+}
+
 /** Renders one unified diff block with an optional affected-file label. */
 export async function renderDiffSection(container: HTMLElement, diff: EditDiff, ctx: BlockRenderCtx): Promise<void> {
   const table = container.createDiv({ cls: "opencode-session-view__diff-table" });
@@ -62,8 +82,8 @@ export async function renderDiffSection(container: HTMLElement, diff: EditDiff, 
 }
 
 /** Renders LSP diagnostic errors reported in edit/write/apply_patch metadata. */
-export function renderDiagnostics(container: HTMLElement, filePath: string | undefined, state: JsonObject): void {
-  const diagnostics = diagnosticsFromTool(filePath, state);
+export function renderDiagnostics(container: HTMLElement, filePath: string | undefined, state: JsonObject, allowFallback = true): void {
+  const diagnostics = diagnosticsFromTool(filePath, state, allowFallback);
   if (diagnostics.length === 0) return;
 
   const section = container.createDiv({ cls: "opencode-session-view__diagnostics" });
@@ -98,17 +118,40 @@ export function diffsFromEditTool(tool: string, input: JsonObject, state: JsonOb
 /** Converts apply_patch metadata files into renderable unified diff blocks. */
 export function patchFilesFromMetadata(metadata: JsonObject): EditDiff[] {
   return readObjectArray(metadata, "files").flatMap((file) => {
-    const path = readString(file, ["relativePath", "filePath", "path", "file"]);
-    const patch = readString(file, ["patch", "diff"]);
+    const relativePath = readString(file, ["relativePath"]);
+    const sourcePath = readString(file, ["filePath", "path", "file"]);
+    const movePath = readString(file, ["movePath"]);
+    const path = relativePath ?? movePath ?? sourcePath;
+    const operation = patchOperation(readString(file, ["type", "status"]));
+    const patch = optionalText(file, ["patch", "diff"]);
     const additions = readNumber(file, ["additions"]);
     const deletions = readNumber(file, ["deletions"]);
-    if (patch) return [{ file: path, patch, additions, deletions }];
+    const identity: Omit<EditDiff, "patch"> = { additions, deletions };
+    if (path) identity.file = path;
+    if (sourcePath) identity.sourcePath = sourcePath;
+    if (movePath ?? sourcePath) identity.targetPath = movePath ?? sourcePath;
+    if (operation) identity.operation = operation;
+    if (patch !== undefined) return [{ ...identity, patch }];
 
-    const before = readString(file, ["before"]);
-    const after = readString(file, ["after"]);
+    const before = optionalText(file, ["before"]);
+    const after = optionalText(file, ["after"]);
     if (before === undefined && after === undefined) return [];
-    return [{ file: path, patch: beforeAfterDiff(before ?? "", after ?? "", path), additions, deletions }];
+    return [{ ...identity, patch: beforeAfterDiff(before ?? "", after ?? "", path) }];
   });
+}
+
+/** Reads text metadata without discarding valid empty strings such as pure-move diffs. */
+function optionalText(source: JsonObject, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
+/** Narrows apply-patch operation metadata to the supported v1 operation set. */
+function patchOperation(value: string | undefined): EditDiff["operation"] {
+  return value === "add" || value === "update" || value === "delete" || value === "move" ? value : undefined;
 }
 
 /** Creates a single unified diff from edit metadata or old/new strings. */
@@ -141,11 +184,11 @@ export function postStateFromTool(tool: string, input: JsonObject, state: JsonOb
 }
 
 /** Extracts severity-1 diagnostics from OpenCode edit/write metadata. */
-export function diagnosticsFromTool(filePath: string | undefined, state: JsonObject): DiagnosticEntry[] {
+export function diagnosticsFromTool(filePath: string | undefined, state: JsonObject, allowFallback = true): DiagnosticEntry[] {
   const metadata = readObject(state, "metadata") ?? {};
   const diagnosticsByFile = readObject(metadata, "diagnostics");
   if (!diagnosticsByFile) return [];
-  const key = filePath && diagnosticsByFile[filePath] ? filePath : Object.keys(diagnosticsByFile)[0];
+  const key = filePath && diagnosticsByFile[filePath] ? filePath : allowFallback ? Object.keys(diagnosticsByFile)[0] : undefined;
   const raw = key ? diagnosticsByFile[key] : undefined;
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((item) => {

@@ -1,7 +1,7 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { DEFAULT_OPENCODE_SETTINGS, OpenCodeSettingTab, type OpenCodePluginSettings } from "./src/settings";
 import { OpenCodeService } from "./src/services/opencode-service";
-import type { OpenCodeSession } from "./src/services/opencode-types";
+import type { OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./src/services/opencode-types";
 import { confirmSessionArchive, requestSessionTitle, type SessionArchiveNode } from "./src/session-actions";
 import { AgentPanelView, VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./src/views/AgentPanelView";
 import { DiffPanelView, VIEW_TYPE_OPENCODE_DIFF_PANEL, type DiffPanelContext } from "./src/views/DiffPanelView";
@@ -13,6 +13,7 @@ export default class OpenCodePlugin extends Plugin {
   opencode?: OpenCodeService;
   private diffPanelContext: DiffPanelContext = {};
   private archivingSessionIds = new Set<string>();
+  private respondingSessionRequestIds = new Set<string>();
 
   /** Initializes plugin settings and the OpenCode API service used by future UI views. */
   async onload(): Promise<void> {
@@ -394,6 +395,56 @@ export default class OpenCodePlugin extends Plugin {
   notifySessionStatusChanged(sessionId: string, statusType: string): void {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL)) {
       if (leaf.view instanceof AgentPanelView) leaf.view.applyLiveSessionStatus(sessionId, statusType);
+    }
+  }
+
+  /** Routes one permission request to every open session view that contains its owning session. */
+  routePermissionRequest(request: OpenCodePermissionRequest): void {
+    // TODO(notification-routing): emit at most one notification per permission request ID. Decide whether clicking it opens the surfaced parent or the owning child session.
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
+      if (leaf.view instanceof SessionView) leaf.view.ingestPermissionRequest(request);
+    }
+  }
+
+  /** Routes one question request to every open session view that contains its owning session. */
+  routeQuestionRequest(request: OpenCodeQuestionRequest): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
+      if (leaf.view instanceof SessionView) leaf.view.ingestQuestionRequest(request);
+    }
+  }
+
+  /** Claims one request response globally so parent and child controls cannot submit concurrently. */
+  beginSessionRequestResponse(requestId: string): boolean {
+    if (this.respondingSessionRequestIds.has(requestId)) return false;
+    this.respondingSessionRequestIds.add(requestId);
+    this.refreshSessionRequestDocks();
+    return true;
+  }
+
+  /** Releases a failed request response and re-enables every visible copy of its controls. */
+  finishSessionRequestResponse(requestId: string): void {
+    this.respondingSessionRequestIds.delete(requestId);
+    this.refreshSessionRequestDocks();
+  }
+
+  /** Returns whether either a parent or child view is currently responding to one request. */
+  isSessionRequestResponding(requestId: string): boolean {
+    return this.respondingSessionRequestIds.has(requestId);
+  }
+
+  /** Removes a settled request from every visible parent and child view. */
+  settleSessionRequest(requestId: string | undefined): void {
+    if (!requestId) return;
+    this.respondingSessionRequestIds.delete(requestId);
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
+      if (leaf.view instanceof SessionView) leaf.view.settleSessionRequest(requestId);
+    }
+  }
+
+  /** Re-renders request controls across all open session views after shared response state changes. */
+  private refreshSessionRequestDocks(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
+      if (leaf.view instanceof SessionView) leaf.view.refreshSessionRequestDocks();
     }
   }
 

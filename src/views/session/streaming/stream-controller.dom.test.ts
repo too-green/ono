@@ -212,6 +212,29 @@ describe("StreamController", () => {
     expect(deps.onQuestionSettled).toHaveBeenCalledWith("question-1");
   });
 
+  it("routes directory request events while ignoring foreign timeline data and refreshing relevant descendants", () => {
+    const { model, handlers, deps } = setup();
+    emit(handlers, "permission.asked", { sessionID: "child", id: "permission-child" });
+    emit(handlers, "question.asked", { sessionID: "foreign", id: "question-foreign" });
+    expect(deps.onPermissionAsked).toHaveBeenCalledWith(expect.objectContaining({ id: "permission-child" }));
+    expect(deps.onQuestionAsked).toHaveBeenCalledWith(expect.objectContaining({ id: "question-foreign" }));
+
+    emit(handlers, "message.updated", { sessionID: "foreign", info: { id: "ignored", role: "assistant" } });
+    expect(model.loadedMessages).toEqual([]);
+
+    emit(handlers, "session.created", { info: { id: "child", parentID: "s1" } });
+    vi.runOnlyPendingTimers();
+    expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
+
+    model.descendantSessions.set("child", { title: "Child", directory: "/workspace" });
+    emit(handlers, "session.updated", { info: { id: "child", title: "Renamed child" } });
+    vi.advanceTimersByTime(499);
+    expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(1);
+    expect(deps.requestCanonicalSync).toHaveBeenCalledTimes(2);
+    expect(deps.onSessionUpdated).not.toHaveBeenCalled();
+  });
+
   it("queues a follow-up render for a directly patched delta received during an in-flight render", async () => {
     const { model, handlers, deps } = setup();
     let releaseFirst: (() => void) | undefined;

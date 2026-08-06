@@ -4,7 +4,15 @@ import type { JsonObject } from "../../../services/opencode-types";
 import { inlineValue, languageFromPath } from "../diff-parsing";
 import { readObject, readString } from "../json-helpers";
 import { displayPath as displayPathRaw, splitPath } from "../path-utils";
-import { renderEditTool, diffsFromEditTool, toolPath, patchToolPath } from "./edit-tool";
+import {
+  renderEditDiff,
+  renderEditTool,
+  diffsFromEditTool,
+  patchFilesFromMetadata,
+  toolPath,
+  patchToolPath,
+  type EditDiff,
+} from "./edit-tool";
 import {
   renderBashTool,
   renderReadTool,
@@ -32,6 +40,24 @@ export async function renderToolCall(container: HTMLElement, part: JsonObject, c
   const status = readString(state, ["status"]) ?? "unknown";
   const info = toolInfo(tool, input, state);
 
+  if (tool === "apply_patch" && status === "completed") {
+    const metadata = readObject(state, "metadata") ?? {};
+    const files = patchFilesFromMetadata(metadata);
+    if (files.length > 0) {
+      const group = container.createDiv({
+        cls: "opencode-session-view__patch-files",
+        attr: { role: "group", "aria-label": "Patched files" },
+      });
+      for (const file of files) renderPatchFileCall(group, file, state, ctx);
+      return;
+    }
+  }
+
+  if (tool === "apply_patch" && (status === "pending" || status === "running")) {
+    renderPendingPatchCall(container, status);
+    return;
+  }
+
   const details = container.createEl("details", { cls: `opencode-session-view__tool opencode-session-view__tool--${status}` });
   const summary = details.createEl("summary", { cls: "opencode-session-view__tool-summary" });
   if (hasToolIcon(tool)) {
@@ -48,6 +74,46 @@ export async function renderToolCall(container: HTMLElement, part: JsonObject, c
   if (status !== "completed" && status !== "error") summary.createSpan({ text: status, cls: "opencode-session-view__tool-status" });
 
   renderLazyDetailsBody(details, "opencode-session-view__tool-body", async (body) => renderToolBody(body, tool, input, output, state, info.tags, ctx));
+}
+
+/** Renders a non-expandable placeholder while apply_patch has no authoritative per-file metadata. */
+function renderPendingPatchCall(container: HTMLElement, status: string): void {
+  const block = container.createDiv({ cls: `opencode-session-view__tool opencode-session-view__tool--${status} opencode-session-view__tool--static` });
+  const summary = block.createDiv({ cls: "opencode-session-view__tool-summary" });
+  const icon = summary.createSpan({ cls: "opencode-session-view__tool-icon" });
+  setIcon(icon, "pencil");
+  summary.createSpan({ text: "Patching files…", cls: "opencode-session-view__tool-title" });
+  summary.createSpan({ text: status, cls: "opencode-session-view__tool-status" });
+}
+
+/** Renders one completed apply-patch file as an independently collapsible edit-style block. */
+function renderPatchFileCall(container: HTMLElement, diff: EditDiff, state: JsonObject, ctx: BlockRenderCtx): void {
+  const details = container.createEl("details", {
+    cls: "opencode-session-view__tool opencode-session-view__tool--completed opencode-session-view__tool--patch-file",
+  });
+  const summary = details.createEl("summary", { cls: "opencode-session-view__tool-summary" });
+  const icon = summary.createSpan({ cls: "opencode-session-view__tool-icon" });
+  setIcon(icon, "pencil");
+  renderPatchFileSummary(summary, diff, ctx);
+  renderDiffTotals(summary, [diff]);
+  const operation = patchOperationLabel(diff.operation);
+  if (operation) summary.createSpan({ text: operation, cls: "opencode-session-view__tool-status" });
+  renderLazyDetailsBody(details, "opencode-session-view__tool-body", async (body) => renderEditDiff(body, diff, state, ctx));
+}
+
+/** Renders operation-aware source and target paths for one completed patch file. */
+function renderPatchFileSummary(summary: HTMLElement, diff: EditDiff, ctx: BlockRenderCtx): void {
+  const path = diff.targetPath ?? diff.file ?? diff.sourcePath;
+  if (path) renderDisplayPath(summary, path, ctx.sessionDirectory);
+  else summary.createSpan({ text: "Patched file", cls: "opencode-session-view__tool-title" });
+}
+
+/** Returns the operation label that distinguishes non-update patch results. */
+function patchOperationLabel(operation: EditDiff["operation"]): string | undefined {
+  if (operation === "add") return "Created";
+  if (operation === "delete") return "Deleted";
+  if (operation === "move") return "Moved";
+  return undefined;
 }
 
 /** Renders the specialized expanded body for a tool once its disclosure has been opened. */
@@ -108,7 +174,8 @@ export function isContextLocationTool(tool: string): boolean {
 function renderPathToolSummary(summary: HTMLElement, tool: string, input: JsonObject, state: JsonObject, ctx: BlockRenderCtx): void {
   const rawPath = toolPath(input) ?? patchToolPath(input, state);
   if (!rawPath) {
-    summary.createSpan({ text: toolTitle(tool, input), cls: "opencode-session-view__tool-title" });
+    const failedPatch = tool === "apply_patch" && readString(state, ["status"]) === "error";
+    summary.createSpan({ text: failedPatch ? "Patch failed" : toolTitle(tool, input), cls: "opencode-session-view__tool-title" });
     return;
   }
 
@@ -119,7 +186,12 @@ function renderPathToolSummary(summary: HTMLElement, tool: string, input: JsonOb
 /** Appends edit/write/apply_patch additions/deletions to the collapsed row. */
 function renderDiffStats(summary: HTMLElement, tool: string, input: JsonObject, state: JsonObject): void {
   if (tool !== "edit" && tool !== "write" && tool !== "apply_patch") return;
-  const totals = diffsFromEditTool(tool, input, state).reduce(
+  renderDiffTotals(summary, diffsFromEditTool(tool, input, state));
+}
+
+/** Appends aggregate additions/deletions for the supplied file changes. */
+function renderDiffTotals(summary: HTMLElement, diffs: EditDiff[]): void {
+  const totals = diffs.reduce(
     (acc, diff) => ({ additions: acc.additions + (diff.additions ?? 0), deletions: acc.deletions + (diff.deletions ?? 0) }),
     { additions: 0, deletions: 0 },
   );
@@ -164,6 +236,7 @@ export function toolTitle(tool: string, input: JsonObject): string {
   if (tool === "bash" || tool === "shell") return "Shell";
   if (tool === "edit") return "Edit";
   if (tool === "write") return "Write";
+  if (tool === "apply_patch") return "Patch";
   if (tool === "task") return readString(input, ["description"]) ?? "Task";
   if (tool.startsWith("todo")) return "Todos";
   return tool;

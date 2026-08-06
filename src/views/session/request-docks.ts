@@ -1,4 +1,4 @@
-import { Notice } from "obsidian";
+import { Notice, setIcon } from "obsidian";
 import type OpenCodePlugin from "../../../main";
 import type { SessionViewModel } from "./session-view-model";
 import type { OpenCodePermissionReply, OpenCodePermissionRequest, OpenCodeQuestionAnswer, OpenCodeQuestionRequest } from "../../services/opencode-types";
@@ -15,6 +15,7 @@ export interface RequestDocksDeps {
   plugin: OpenCodePlugin;
   model: SessionViewModel;
   onChanged: () => void;
+  requestCanonicalSync: () => void;
 }
 
 /**
@@ -30,7 +31,6 @@ export interface RequestDocksDeps {
  */
 export class RequestDocksController {
   private requestDockEl?: HTMLElement;
-  private respondingRequestIds = new Set<string>();
 
   constructor(private readonly deps: RequestDocksDeps) {}
 
@@ -45,18 +45,22 @@ export class RequestDocksController {
   /** Drops DOM references so a closed view cannot leak dock updates; called by `SessionView.onClose`. */
   dispose(): void {
     this.requestDockEl = undefined;
-    this.respondingRequestIds.clear();
   }
 
   // ---- stream-event ingestion (replaces inline shell blocks in applyStreamingEvent)
 
   /** Applies a `permission.asked` event: silently auto-reply if enabled, otherwise surface a dock. */
   ingestPermissionAsked(request: OpenCodePermissionRequest): void {
-    if (this.shouldAutoApprove()) {
-      void this.autoReplyPermission(request);
+    if (!this.requestBelongsToVisibleTree(request.sessionID)) {
+      this.upsertUnscopedPermission(request);
+      this.deps.requestCanonicalSync();
       return;
     }
     this.upsertPendingPermission(request);
+    if (this.isAutoApproveEnabledFor(request.sessionID)) {
+      void this.autoReplyPermission(request);
+      return;
+    }
     this.refresh();
   }
 
@@ -68,6 +72,11 @@ export class RequestDocksController {
 
   /** Applies a `question.asked` event: surface a question dock. */
   ingestQuestionAsked(request: OpenCodeQuestionRequest): void {
+    if (!this.requestBelongsToVisibleTree(request.sessionID)) {
+      this.upsertUnscopedQuestion(request);
+      this.deps.requestCanonicalSync();
+      return;
+    }
     this.upsertPendingQuestion(request);
     this.refresh();
   }
@@ -96,11 +105,22 @@ export class RequestDocksController {
   /** Auto-replies to all visible pending permissions if the composer auto-approve toggle is enabled. */
   async autoApprovePending(): Promise<void> {
     const { model } = this.deps;
-    if (!this.shouldAutoApprove() || model.pendingPermissions.length === 0) return;
-    const requests = [...model.pendingPermissions];
-    model.pendingPermissions = [];
-    this.refresh();
+    const requests = model.pendingPermissions.filter((request) => this.isAutoApproveEnabledFor(request.sessionID));
+    if (requests.length === 0) return;
     await Promise.all(requests.map((request) => this.autoReplyPermission(request)));
+  }
+
+  /** Promotes held directory requests after canonical descendant discovery confirms their ownership. */
+  reconcileRequestScope(): void {
+    const { model } = this.deps;
+    const permissions = model.unscopedPendingPermissions.filter((request) => this.requestBelongsToVisibleTree(request.sessionID));
+    const questions = model.unscopedPendingQuestions.filter((request) => this.requestBelongsToVisibleTree(request.sessionID));
+    const permissionIds = new Set(permissions.map((request) => request.id));
+    const questionIds = new Set(questions.map((request) => request.id));
+    model.unscopedPendingPermissions = model.unscopedPendingPermissions.filter((request) => !permissionIds.has(request.id));
+    model.unscopedPendingQuestions = model.unscopedPendingQuestions.filter((request) => !questionIds.has(request.id));
+    permissions.forEach((request) => this.upsertPendingPermission(request));
+    questions.forEach((request) => this.upsertPendingQuestion(request));
   }
 
   /** Re-renders the dock DOM and emits `onChanged` so the shell refreshes composer + indicator + scroll. */
@@ -116,20 +136,42 @@ export class RequestDocksController {
 
   /** Adds or replaces one pending permission request from the event stream. */
   private upsertPendingPermission(request: OpenCodePermissionRequest): void {
-    if (!request.id || request.sessionID !== this.deps.model.sessionId) return;
+    if (!request.id || !this.requestBelongsToVisibleTree(request.sessionID)) return;
     const list = this.deps.model.pendingPermissions;
     const index = list.findIndex((item) => item.id === request.id);
     if (index >= 0) list[index] = request;
     else list.push(request);
+    this.recordRequestMutation(request.id);
   }
 
   /** Adds or replaces one pending question request from the event stream. */
   private upsertPendingQuestion(request: OpenCodeQuestionRequest): void {
-    if (!request.id || request.sessionID !== this.deps.model.sessionId) return;
+    if (!request.id || !this.requestBelongsToVisibleTree(request.sessionID)) return;
     const list = this.deps.model.pendingQuestions;
     const index = list.findIndex((item) => item.id === request.id);
     if (index >= 0) list[index] = request;
     else list.push(request);
+    this.recordRequestMutation(request.id);
+  }
+
+  /** Holds one permission until canonical session discovery can confirm its owner belongs to this tree. */
+  private upsertUnscopedPermission(request: OpenCodePermissionRequest): void {
+    if (!request.id) return;
+    const list = this.deps.model.unscopedPendingPermissions;
+    const index = list.findIndex((item) => item.id === request.id);
+    if (index >= 0) list[index] = request;
+    else list.push(request);
+    this.recordRequestMutation(request.id);
+  }
+
+  /** Holds one question until canonical session discovery can confirm its owner belongs to this tree. */
+  private upsertUnscopedQuestion(request: OpenCodeQuestionRequest): void {
+    if (!request.id) return;
+    const list = this.deps.model.unscopedPendingQuestions;
+    const index = list.findIndex((item) => item.id === request.id);
+    if (index >= 0) list[index] = request;
+    else list.push(request);
+    this.recordRequestMutation(request.id);
   }
 
   /** Removes any settled permission/question request by id. */
@@ -138,7 +180,26 @@ export class RequestDocksController {
     const { model } = this.deps;
     model.pendingPermissions = model.pendingPermissions.filter((item) => item.id !== requestId);
     model.pendingQuestions = model.pendingQuestions.filter((item) => item.id !== requestId);
-    this.respondingRequestIds.delete(requestId);
+    model.unscopedPendingPermissions = model.unscopedPendingPermissions.filter((item) => item.id !== requestId);
+    model.unscopedPendingQuestions = model.unscopedPendingQuestions.filter((item) => item.id !== requestId);
+    this.recordRequestMutation(requestId);
+  }
+
+  /** Returns true when a request belongs to this session or one of its loaded descendants. */
+  private requestBelongsToVisibleTree(sessionId: string): boolean {
+    return sessionId === this.deps.model.sessionId || this.deps.model.descendantSessions.has(sessionId);
+  }
+
+  /** Returns the owner session's explicit auto-approval setting without inheriting an ancestor's setting. */
+  private isAutoApproveEnabledFor(sessionId: string): boolean {
+    return this.deps.plugin.settings.sessionAutoApprove[sessionId] === true;
+  }
+
+  /** Records one live request mutation so a concurrent canonical fetch cannot overwrite it. */
+  private recordRequestMutation(requestId: string): void {
+    const revision = this.deps.model.pendingRequestRevision + 1;
+    this.deps.model.pendingRequestRevision = revision;
+    this.deps.model.pendingRequestRevisionById.set(requestId, revision);
   }
 
   // ---- rendering (private)
@@ -146,9 +207,16 @@ export class RequestDocksController {
   /** Renders pending permission and question requests into a container. */
   private renderRequestDocks(container: HTMLElement): void {
     const { model } = this.deps;
-    container.toggleClass("is-empty", model.pendingPermissions.length === 0 && model.pendingQuestions.length === 0);
-    for (const request of model.pendingPermissions) this.renderPermissionDock(container, request);
-    for (const request of model.pendingQuestions) this.renderQuestionDock(container, request);
+    const permissions = model.pendingPermissions.filter((request) => !(this.isAutoApproveEnabledFor(request.sessionID) && this.deps.plugin.isSessionRequestResponding(request.id)));
+    container.toggleClass("is-empty", permissions.length === 0 && model.pendingQuestions.length === 0);
+    for (const request of this.requestsInDisplayOrder(permissions)) this.renderPermissionDock(container, request);
+    for (const request of this.requestsInDisplayOrder(model.pendingQuestions)) this.renderQuestionDock(container, request);
+  }
+
+  /** Keeps current-session requests ahead of descendant requests while preserving arrival order. */
+  private requestsInDisplayOrder<T extends { sessionID: string }>(requests: T[]): T[] {
+    const currentSessionId = this.deps.model.sessionId;
+    return [...requests].sort((left, right) => Number(right.sessionID === currentSessionId) - Number(left.sessionID === currentSessionId));
   }
 
   /** Renders one permission decision prompt with deny, always, and once actions. */
@@ -158,13 +226,14 @@ export class RequestDocksController {
     const title = header.createDiv({ cls: "opencode-session-view__request-title" });
     title.createSpan({ text: "Permission required" });
     title.createSpan({ text: request.permission, cls: "opencode-session-view__request-badge" });
+    this.renderRequestOwner(header, request.sessionID);
     const summary = dock.createDiv({ cls: "opencode-session-view__request-summary" });
     const patterns = Array.isArray(request.patterns) ? request.patterns : [];
     if (patterns.length === 0) summary.setText("OpenCode wants to run a protected action.");
     for (const pattern of patterns) summary.createEl("code", { text: pattern });
 
     const actions = dock.createDiv({ cls: "opencode-session-view__request-actions" });
-    const responding = this.respondingRequestIds.has(request.id);
+    const responding = this.deps.plugin.isSessionRequestResponding(request.id);
     this.renderRequestButton(actions, "Deny", "", responding, () => void this.replyPermission(request, "reject"));
     this.renderRequestButton(actions, "Allow always", "", responding, () => void this.replyPermission(request, "always"));
     this.renderRequestButton(actions, "Allow once", "mod-cta", responding, () => void this.replyPermission(request, "once"));
@@ -175,6 +244,7 @@ export class RequestDocksController {
     const dock = container.createDiv({ cls: "opencode-session-view__request-dock opencode-session-view__request-dock--question" });
     const header = dock.createDiv({ cls: "opencode-session-view__request-header" });
     header.createDiv({ text: "Question from OpenCode", cls: "opencode-session-view__request-title" });
+    this.renderRequestOwner(header, request.sessionID);
     const form = dock.createDiv({ cls: "opencode-session-view__question-form" });
     const answerControls: Array<() => string[]> = [];
 
@@ -198,9 +268,23 @@ export class RequestDocksController {
     });
 
     const actions = dock.createDiv({ cls: "opencode-session-view__request-actions" });
-    const responding = this.respondingRequestIds.has(request.id);
+    const responding = this.deps.plugin.isSessionRequestResponding(request.id);
     this.renderRequestButton(actions, "Reject", "", responding, () => void this.rejectQuestion(request));
     this.renderRequestButton(actions, "Answer", "mod-cta", responding, () => void this.replyQuestion(request, answerControls.map((readAnswer) => readAnswer())));
+  }
+
+  /** Renders a compact owner chip that opens the child session responsible for a routed request. */
+  private renderRequestOwner(container: HTMLElement, sessionId: string): void {
+    if (sessionId === this.deps.model.sessionId) return;
+    const title = this.deps.model.descendantSessions.get(sessionId)?.title ?? sessionId;
+    const owner = container.createEl("button", {
+      cls: "opencode-session-view__request-owner",
+      attr: { type: "button", "aria-label": `Open subagent session ${title}`, title: `Open subagent session ${title}` },
+    });
+    owner.createSpan({ text: `Subagent: ${title}`, cls: "opencode-session-view__request-owner-label" });
+    const icon = owner.createSpan({ cls: "opencode-session-view__request-owner-icon" });
+    setIcon(icon, "external-link");
+    owner.addEventListener("click", () => void this.deps.plugin.openSessionTab(sessionId, title));
   }
 
   /** Creates a dock action button with common disabled handling. */
@@ -215,68 +299,59 @@ export class RequestDocksController {
 
   /** Sends a permission reply and removes the dock optimistically on success. */
   private async replyPermission(request: OpenCodePermissionRequest, reply: OpenCodePermissionReply): Promise<void> {
-    if (this.respondingRequestIds.has(request.id)) return;
-    this.respondingRequestIds.add(request.id);
-    this.refresh();
+    if (!this.deps.plugin.beginSessionRequestResponse(request.id)) return;
     try {
-      await this.deps.plugin.requireOpenCodeService().replyPermission(request.id, reply, this.deps.model.sessionDirectory ?? this.deps.model.draftDirectory);
-      this.removePendingRequest(request.id);
-      this.refresh();
+      await this.deps.plugin.requireOpenCodeService().replyPermission(request.id, reply, this.requestDirectory(request.sessionID));
+      this.deps.plugin.settleSessionRequest(request.id);
     } catch (error) {
-      this.respondingRequestIds.delete(request.id);
-      this.refresh();
+      this.deps.plugin.finishSessionRequestResponse(request.id);
       new Notice(error instanceof Error ? error.message : "Unable to reply to permission request.");
     }
   }
 
   /** Sends answers for a question request and removes the dock optimistically on success. */
   private async replyQuestion(request: OpenCodeQuestionRequest, answers: OpenCodeQuestionAnswer[]): Promise<void> {
-    if (this.respondingRequestIds.has(request.id)) return;
     if (answers.some((answer) => answer.length === 0)) {
       new Notice("Answer each question before submitting.");
       return;
     }
-    this.respondingRequestIds.add(request.id);
-    this.refresh();
+    if (!this.deps.plugin.beginSessionRequestResponse(request.id)) return;
     try {
-      await this.deps.plugin.requireOpenCodeService().replyQuestion(request.id, answers, this.deps.model.sessionDirectory ?? this.deps.model.draftDirectory);
-      this.removePendingRequest(request.id);
-      this.refresh();
+      await this.deps.plugin.requireOpenCodeService().replyQuestion(request.id, answers, this.requestDirectory(request.sessionID));
+      this.deps.plugin.settleSessionRequest(request.id);
     } catch (error) {
-      this.respondingRequestIds.delete(request.id);
-      this.refresh();
+      this.deps.plugin.finishSessionRequestResponse(request.id);
       new Notice(error instanceof Error ? error.message : "Unable to answer question request.");
     }
   }
 
   /** Rejects a question request and removes the dock optimistically on success. */
   private async rejectQuestion(request: OpenCodeQuestionRequest): Promise<void> {
-    if (this.respondingRequestIds.has(request.id)) return;
-    this.respondingRequestIds.add(request.id);
-    this.refresh();
+    if (!this.deps.plugin.beginSessionRequestResponse(request.id)) return;
     try {
-      await this.deps.plugin.requireOpenCodeService().rejectQuestion(request.id, this.deps.model.sessionDirectory ?? this.deps.model.draftDirectory);
-      this.removePendingRequest(request.id);
-      this.refresh();
+      await this.deps.plugin.requireOpenCodeService().rejectQuestion(request.id, this.requestDirectory(request.sessionID));
+      this.deps.plugin.settleSessionRequest(request.id);
     } catch (error) {
-      this.respondingRequestIds.delete(request.id);
-      this.refresh();
+      this.deps.plugin.finishSessionRequestResponse(request.id);
       new Notice(error instanceof Error ? error.message : "Unable to reject question request.");
     }
   }
 
   /** Sends a client-side auto-approval reply without surfacing a permission dock. */
   private async autoReplyPermission(request: OpenCodePermissionRequest): Promise<void> {
-    if (!request.id || request.sessionID !== this.deps.model.sessionId || this.respondingRequestIds.has(request.id)) return;
-    this.respondingRequestIds.add(request.id);
+    if (!request.id || !this.requestBelongsToVisibleTree(request.sessionID) || !this.isAutoApproveEnabledFor(request.sessionID) || !this.deps.plugin.beginSessionRequestResponse(request.id)) return;
     try {
-      await this.deps.plugin.requireOpenCodeService().replyPermission(request.id, "once", this.deps.model.sessionDirectory ?? this.deps.model.draftDirectory);
-      this.removePendingRequest(request.id);
+      await this.deps.plugin.requireOpenCodeService().replyPermission(request.id, "once", this.requestDirectory(request.sessionID));
+      this.deps.plugin.settleSessionRequest(request.id);
     } catch (error) {
-      this.respondingRequestIds.delete(request.id);
-      this.upsertPendingPermission(request);
-      this.refresh();
+      this.deps.plugin.finishSessionRequestResponse(request.id);
       new Notice(error instanceof Error ? error.message : "Unable to auto-approve permission request.");
     }
+  }
+
+  /** Resolves API instance routing from the request owner rather than whichever ancestor displays it. */
+  private requestDirectory(sessionId: string): string | undefined {
+    if (sessionId === this.deps.model.sessionId) return this.deps.model.sessionDirectory ?? this.deps.model.draftDirectory;
+    return this.deps.model.descendantSessions.get(sessionId)?.directory ?? this.deps.model.sessionDirectory ?? this.deps.model.draftDirectory;
   }
 }

@@ -32,7 +32,14 @@ describe("diffsFromEditTool", () => {
     const diffs = diffsFromEditTool("apply_patch", empty, state);
     expect(diffs).toHaveLength(2);
     expect(diffs[0]).toEqual({ file: "src/a.ts", patch: "--- a\n+++ b\n@@\n-x\n+y\n", additions: 1, deletions: 1 });
-    expect(diffs[1]).toEqual({ file: "src/b.ts", patch: "--- c\n+++ d\n", additions: 0, deletions: 0 });
+    expect(diffs[1]).toEqual({
+      file: "src/b.ts",
+      sourcePath: "src/b.ts",
+      targetPath: "src/b.ts",
+      patch: "--- c\n+++ d\n",
+      additions: 0,
+      deletions: 0,
+    });
   });
 
   it("falls back to filediff metadata when no files array", () => {
@@ -104,6 +111,30 @@ describe("patchFilesFromMetadata", () => {
     expect(diff.patch).toContain("+b");
     expect(diff.patch).toContain("-a");
   });
+
+  it("preserves move operation and source/target paths", () => {
+    const metadata: JsonObject = {
+      files: [{
+        filePath: "/work/src/old.ts",
+        relativePath: "src/new.ts",
+        movePath: "/work/src/new.ts",
+        type: "move",
+        patch: "@@ -1 +1 @@\n-old\n+new",
+        additions: 1,
+        deletions: 1,
+      }],
+    };
+
+    expect(patchFilesFromMetadata(metadata)).toEqual([{
+      file: "src/new.ts",
+      sourcePath: "/work/src/old.ts",
+      targetPath: "/work/src/new.ts",
+      operation: "move",
+      patch: "@@ -1 +1 @@\n-old\n+new",
+      additions: 1,
+      deletions: 1,
+    }]);
+  });
 });
 
 describe("diffFromTool", () => {
@@ -174,6 +205,7 @@ describe("diagnosticsFromTool", () => {
       },
     };
     expect(diagnosticsFromTool("a.ts", state)).toEqual([{ location: undefined, message: "fallback" }]);
+    expect(diagnosticsFromTool("a.ts", state, false)).toEqual([]);
   });
 });
 

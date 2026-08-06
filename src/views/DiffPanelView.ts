@@ -41,7 +41,8 @@ export class DiffPanelView extends ItemView {
 
   /** Initializes panel DOM and adopts the plugin's current active-session context. */
   async onOpen(): Promise<void> {
-    this.contentEl.addClass("opencode-diff-panel");
+    this.contentEl.addClass("opencode-sidebar-panel");
+    this.contentEl.addClass("opencode-sidebar-panel--diffs");
     this.context = this.plugin.getDiffPanelContext();
     await this.refresh();
   }
@@ -119,7 +120,7 @@ export class DiffPanelView extends ItemView {
   /** Renders the full session and latest-turn diff sections. */
   private renderDiffs(input: { sessionTitle?: string; sessionDirectory?: string; turnMessageId?: string; sessionDiffs: DiffFileSummary[]; turnDiffs: DiffFileSummary[] }): void {
     this.contentEl.empty();
-    const header = this.contentEl.createDiv({ cls: "opencode-diff-panel__header" });
+    const header = this.contentEl.createDiv({ cls: "opencode-sidebar-panel__header opencode-diff-panel__header" });
     const titleWrap = header.createDiv({ cls: "opencode-diff-panel__title-wrap" });
     titleWrap.createDiv({ text: input.sessionTitle ?? this.context.sessionId ?? "Active session", cls: "opencode-diff-panel__title" });
     if (input.sessionDirectory) titleWrap.createDiv({ text: input.sessionDirectory, cls: "opencode-diff-panel__subtitle" });
@@ -127,13 +128,14 @@ export class DiffPanelView extends ItemView {
     setIcon(refresh, "refresh-cw");
     refresh.addEventListener("click", () => void this.refresh());
 
-    this.renderSection("Session changes", input.sessionDiffs, input.sessionDirectory, "No summarized file changes for this session yet.");
-    this.renderSection("Latest turn changes", input.turnDiffs, input.sessionDirectory, input.turnMessageId ? "No file changes summarized for the latest turn." : "No user turn found.");
+    const content = this.contentEl.createDiv({ cls: "opencode-sidebar-panel__content opencode-diff-panel__content" });
+    this.renderSection(content, "Session changes", input.sessionDiffs, input.sessionDirectory, "No summarized file changes for this session yet.");
+    this.renderSection(content, "Latest turn changes", input.turnDiffs, input.sessionDirectory, input.turnMessageId ? "No file changes summarized for the latest turn." : "No user turn found.");
   }
 
   /** Renders one compact Outline-like diff section with file rows and addition/deletion columns. */
-  private renderSection(title: string, diffs: DiffFileSummary[], sessionDirectory: string | undefined, emptyText: string): void {
-    const section = this.contentEl.createDiv({ cls: "opencode-diff-panel__section" });
+  private renderSection(container: HTMLElement, title: string, diffs: DiffFileSummary[], sessionDirectory: string | undefined, emptyText: string): void {
+    const section = container.createDiv({ cls: "opencode-diff-panel__section" });
     const heading = section.createDiv({ cls: "opencode-diff-panel__section-heading" });
     heading.createSpan({ text: title });
 

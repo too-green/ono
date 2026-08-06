@@ -5,13 +5,21 @@ import { DELETE_CURRENT_FILE_COMMANDS, RENAME_CURRENT_FILE_COMMANDS, matchesObsi
 import { diffFilesFromUnifiedPatch, type DiffFileSummary } from "../diff-utils";
 import { confirmSessionRewind } from "../session-actions";
 import { logServiceError } from "../services/opencode-http";
-import type { JsonObject, OpenCodeMessageBundle, OpenCodeMessagePage } from "../services/opencode-types";
+import type {
+  JsonObject,
+  OpenCodeMessageBundle,
+  OpenCodeMessagePage,
+  OpenCodePermissionRequest,
+  OpenCodeQuestionRequest,
+  OpenCodeSession,
+} from "../services/opencode-types";
 import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
 import * as jsonHelpers from "./session/json-helpers";
 import * as messageHelpers from "./session/message-helpers";
 import { SessionViewModel } from "./session/session-view-model";
 import { ScrollController } from "./session/scroll-controller";
 import { RequestDocksController } from "./session/request-docks";
+import { reconcilePendingRequests } from "./session/request-state";
 import { SlashMenuController } from "./session/composer/slash-menu";
 import { ModelVariantsController } from "./session/composer/model-variants";
 import { ComposerController } from "./session/composer/composer-controller";
@@ -47,6 +55,9 @@ export class SessionView extends ItemView {
   private canonicalRequestVersion = 0;
   private loadingSessionId?: string;
   private nativeTitleEl?: HTMLElement;
+  private descendantChildrenCache = new Map<string, OpenCodeSession[]>();
+  private descendantDiscoveryIncomplete = false;
+  private descendantDiscoveryRetryDelay = 1_000;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -106,10 +117,10 @@ export class SessionView extends ItemView {
         this.model.revertDiffFiles = diffs;
       },
       onStatusChange: (status) => this.applySessionStatus(status, true),
-      onPermissionAsked: (request) => this.docks.ingestPermissionAsked(request),
-      onPermissionReplied: (requestId) => this.docks.ingestPermissionReplied(requestId),
-      onQuestionAsked: (request) => this.docks.ingestQuestionAsked(request),
-      onQuestionSettled: (requestId) => this.docks.ingestQuestionReplied(requestId),
+      onPermissionAsked: (request) => this.plugin.routePermissionRequest(request),
+      onPermissionReplied: (requestId) => this.plugin.settleSessionRequest(requestId),
+      onQuestionAsked: (request) => this.plugin.routeQuestionRequest(request),
+      onQuestionSettled: (requestId) => this.plugin.settleSessionRequest(requestId),
       requestTimelineRender: () => this.timeline.renderStreaming(),
       requestDiffPanelRefresh: (force) => this.plugin.updateDiffPanelContext(this.diffPanelContext(), force ? { force: true } : undefined),
       requestComposerProgressRefresh: () => this.composer.updateProgressBar(),
@@ -119,6 +130,7 @@ export class SessionView extends ItemView {
       plugin: this.plugin,
       model: this.model,
       onChanged: () => this.onRequestDocksChanged(),
+      requestCanonicalSync: () => this.stream.scheduleCanonicalSync(0),
     });
     this.slash = new SlashMenuController({
       model: this.model,
@@ -347,6 +359,14 @@ export class SessionView extends ItemView {
     this.model.loadingOlder = false;
     this.model.pendingPermissions = [];
     this.model.pendingQuestions = [];
+    this.model.unscopedPendingPermissions = [];
+    this.model.unscopedPendingQuestions = [];
+    this.model.descendantSessions.clear();
+    this.model.pendingRequestRevision = 0;
+    this.model.pendingRequestRevisionById.clear();
+    this.descendantChildrenCache.clear();
+    this.descendantDiscoveryIncomplete = false;
+    this.descendantDiscoveryRetryDelay = 1_000;
     this.model.queuedMessageIds.clear();
     this.model.pendingQueuedUserMessages = 0;
     this.scroll.clearJumpButtonReference();
@@ -401,14 +421,19 @@ export class SessionView extends ItemView {
     const effectivePage = await this.loadMessageWindow(page, rewindMessageId, sessionId);
     if (!isCurrentRequest()) return undefined;
     const directory = this.sessionDirectoryFromSession(session);
-    const [agents, models, commands, config, permissions, questions, statuses] = await Promise.all([
+    const pendingRequestRevision = this.model.pendingRequestRevision;
+    this.descendantDiscoveryIncomplete = false;
+    const permissionFallback = [...this.model.pendingPermissions, ...this.model.unscopedPendingPermissions];
+    const questionFallback = [...this.model.pendingQuestions, ...this.model.unscopedPendingQuestions];
+    const [agents, models, commands, config, permissions, questions, statuses, descendants] = await Promise.all([
       service.listAgents(directory),
       service.listModels(directory).catch(logServiceError([], "listModels", directory)),
       service.listCommands(directory).catch(logServiceError([], "listCommands", directory)),
       service.getConfig().catch(logServiceError({}, "getConfig", directory)),
-      service.listPermissionRequests(directory).catch(logServiceError([], "listPermissionRequests", directory)),
-      service.listQuestionRequests(directory).catch(logServiceError([], "listQuestionRequests", directory)),
+      service.listPermissionRequests(directory).catch(logServiceError(permissionFallback, "listPermissionRequests", directory)),
+      service.listQuestionRequests(directory).catch(logServiceError(questionFallback, "listQuestionRequests", directory)),
       service.getSessionStatus().catch(logServiceError({}, "getSessionStatus", directory)),
+      this.loadSessionDescendants(sessionId, directory).catch(logServiceError([], "listSessionDescendants", sessionId)),
     ]);
     if (!isCurrentRequest()) return undefined;
 
@@ -416,8 +441,26 @@ export class SessionView extends ItemView {
     this.model.availableModels = models;
     this.model.availableCommands = commands;
     this.model.serverConfig = config;
-    this.model.pendingPermissions = permissions.filter((item) => item.sessionID === sessionId);
-    this.model.pendingQuestions = questions.filter((item) => item.sessionID === sessionId);
+    this.model.descendantSessions = new Map(descendants.map((item) => [item.id, {
+      title: jsonHelpers.readString(item, ["title", "name", "slug"]) ?? item.id,
+      directory: this.sessionDirectoryFromSession(item) ?? directory,
+    }]));
+    this.docks.reconcileRequestScope();
+    const visibleSessionIds = new Set([sessionId, ...this.model.descendantSessions.keys()]);
+    this.model.pendingPermissions = reconcilePendingRequests(
+      permissions.filter((item) => visibleSessionIds.has(item.sessionID)),
+      this.model.pendingPermissions,
+      pendingRequestRevision,
+      this.model.pendingRequestRevision,
+      this.model.pendingRequestRevisionById,
+    );
+    this.model.pendingQuestions = reconcilePendingRequests(
+      questions.filter((item) => visibleSessionIds.has(item.sessionID)),
+      this.model.pendingQuestions,
+      pendingRequestRevision,
+      this.model.pendingRequestRevision,
+      this.model.pendingRequestRevisionById,
+    );
     if (replaceMessages || previousRewindMessageId !== rewindMessageId) {
       this.model.loadedMessages = effectivePage.messages;
       this.model.olderCursor = effectivePage.olderCursor;
@@ -429,7 +472,27 @@ export class SessionView extends ItemView {
     this.applyCanonicalSession(session);
     this.applySessionStatusSnapshot(statuses);
     await this.docks.autoApprovePending();
+    if (this.descendantDiscoveryIncomplete) {
+      this.stream.scheduleCanonicalSync(this.descendantDiscoveryRetryDelay);
+      this.descendantDiscoveryRetryDelay = Math.min(this.descendantDiscoveryRetryDelay * 2, 30_000);
+    } else {
+      this.descendantDiscoveryRetryDelay = 1_000;
+    }
     return isCurrentRequest() ? session : undefined;
+  }
+
+  /** Loads the full descendant tree used by canonical request routing in this session view. */
+  private async loadSessionDescendants(sessionId: string, directory: string | undefined, visited = new Set<string>()): Promise<OpenCodeSession[]> {
+    if (visited.has(sessionId)) return [];
+    visited.add(sessionId);
+    const fallback = this.descendantChildrenCache.get(sessionId) ?? [];
+    const children = await this.plugin.requireOpenCodeService().listSessionChildren(sessionId, directory).catch((error) => {
+      this.descendantDiscoveryIncomplete = true;
+      return logServiceError(fallback, "listSessionChildren", sessionId)(error);
+    });
+    this.descendantChildrenCache.set(sessionId, children);
+    const nested = await Promise.all(children.map((child) => this.loadSessionDescendants(child.id, child.directory ?? directory, visited)));
+    return [...children, ...nested.flat()];
   }
 
   /** Hydrates canonical session identity and chrome state without rebuilding the shell. */
@@ -730,6 +793,26 @@ export class SessionView extends ItemView {
     this.refreshSessionStateIndicator();
     this.composer.onDocksChanged();
     if (this.scroll.isNearBottom()) this.scroll.scrollToBottom(false);
+  }
+
+  /** Receives a globally routed permission request and surfaces it when its owner is in this view's tree. */
+  ingestPermissionRequest(request: OpenCodePermissionRequest): void {
+    this.docks.ingestPermissionAsked(request);
+  }
+
+  /** Receives a globally routed question request and surfaces it when its owner is in this view's tree. */
+  ingestQuestionRequest(request: OpenCodeQuestionRequest): void {
+    this.docks.ingestQuestionAsked(request);
+  }
+
+  /** Removes a globally settled request from this view; referenced by OpenCodePlugin. */
+  settleSessionRequest(requestId: string): void {
+    this.docks.ingestPermissionReplied(requestId);
+  }
+
+  /** Re-renders this view's request controls after shared response state changes. */
+  refreshSessionRequestDocks(): void {
+    this.docks.refresh();
   }
 
   /** Toggles client-side auto-approval and immediately clears existing permission docks when enabled. */

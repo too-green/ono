@@ -17,5 +17,6 @@
     "lib": ["DOM", "ES2022"],
     "types": ["node", "obsidian"]
   },
-  "include": ["src/**/*.ts", "main.ts", "esbuild.config.mjs"]
+  "include": ["src/**/*.ts", "main.ts", "esbuild.config.mjs"],
+  "exclude": ["src/**/*.test.ts", "vitest.config.ts", "coverage/**", "node_modules/**"]
 }

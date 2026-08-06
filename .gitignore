@@ -7,6 +7,7 @@ main.js
 *.map
 dist/
 build/
+coverage/
 
 # Obsidian local vault/plugin state
 .obsidian/

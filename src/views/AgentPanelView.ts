@@ -59,10 +59,13 @@ export class AgentPanelView extends ItemView {
   private eventSubscriptions: OpenCodeEventSubscription[] = [];
   private eventSubscriptionDirectoriesKey = "";
   private visibleRows: AgentPanelVisibleRow[] = [];
+  private rowParentKey = new Map<string, string | undefined>();
   private loading = false;
   private refreshQueued = false;
   private refreshTimer?: number;
   private lastRenderedTreeSignature = "";
+  private lastTree: AgentPanelProject[] = [];
+  private sessionAncestorMap = new Map<string, string[]>();
   private lastKnownSessionStatuses = new Map<string, string>();
   private requestAttentionSessionIds = new Set<string>();
   private sessionParentIds = new Map<string, string>();
@@ -104,7 +107,12 @@ export class AgentPanelView extends ItemView {
     this.contentEl.tabIndex = 0;
     this.contentEl.addEventListener("keydown", this.handleKeydown);
     this.syncEventSubscriptions(this.plugin.getOpenedDirectories());
+    // Capture the active session before the async refresh — by the time refresh
+    // resolves the panel itself may be the active leaf, making getActiveSessionId
+    // return undefined and wiping the reveal.
+    const activeSessionId = this.plugin.getActiveSessionId();
     await this.refresh();
+    this.setActiveSession(activeSessionId);
   }
 
   /** Clears the panel when Obsidian closes the view. */
@@ -240,7 +248,7 @@ export class AgentPanelView extends ItemView {
       if (this.transientLoadFailure) this.requestAttentionSessionIds.forEach((sessionId) => nextRequestAttentionIds.add(sessionId));
       this.requestAttentionSessionIds = nextRequestAttentionIds;
       const treeSignature = JSON.stringify(tree);
-      if (treeSignature === this.lastRenderedTreeSignature) return;
+      if (treeSignature === this.lastRenderedTreeSignature && this.contentEl.querySelector(".opencode-agent-panel__tree")) return;
       this.lastRenderedTreeSignature = treeSignature;
       this.renderTree(tree);
     } catch (error) {
@@ -422,6 +430,7 @@ export class AgentPanelView extends ItemView {
 
   /** Renders a centered loading state that matches Obsidian empty-state styling. */
   private renderLoading(): void {
+    this.clearTreeState();
     this.contentEl.empty();
     this.renderHeader();
     const state = this.contentEl.createDiv({ cls: "opencode-agent-panel__state" });
@@ -431,6 +440,7 @@ export class AgentPanelView extends ItemView {
 
   /** Renders the disconnected state specified for missing or stopped OpenCode servers. */
   private renderDisconnected(error: unknown): void {
+    this.clearTreeState();
     this.contentEl.empty();
     this.renderHeader();
     const state = this.contentEl.createDiv({ cls: "opencode-agent-panel__state" });
@@ -443,8 +453,11 @@ export class AgentPanelView extends ItemView {
 
   /** Renders the full project tree using Obsidian's native nav/tree class vocabulary. */
   private renderTree(projects: AgentPanelProject[]): void {
+    this.lastTree = projects;
+    this.sessionAncestorMap = this.buildSessionAncestorMap(projects);
     this.contentEl.empty();
     this.visibleRows = [];
+    this.rowParentKey.clear();
     this.renderHeader();
 
     const nav = this.contentEl.createDiv({ cls: "nav-files-container node-insert-event opencode-sidebar-panel__content opencode-agent-panel__tree" });
@@ -485,8 +498,9 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Renders one project branch and its passive new-session placeholder. */
-  private renderProject(container: HTMLElement, project: AgentPanelProject): void {
+  private renderProject(container: HTMLElement, project: AgentPanelProject, parentKey?: string): void {
     const key = `project:${project.id}`;
+    this.rowParentKey.set(key, parentKey);
     const collapsed = this.collapsed.has(key);
     const item = container.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__project" });
     const title = item.createDiv({ cls: "tree-item-self nav-folder-title is-clickable" });
@@ -501,19 +515,20 @@ export class AgentPanelView extends ItemView {
     if (collapsed) return;
     const children = item.createDiv({ cls: "tree-item-children nav-folder-children" });
     if (project.worktrees.length > 1) {
-      for (const worktree of project.worktrees) this.renderWorktree(children, worktree);
+      for (const worktree of project.worktrees) this.renderWorktree(children, worktree, key);
       return;
     }
 
     const worktree = project.worktrees[0];
     if (!worktree) return;
-    for (const session of worktree.sessions) this.renderSession(children, session, 0);
-    this.renderNewSessionPlaceholder(children, project.id, worktree.path);
+    for (const session of worktree.sessions) this.renderSession(children, session, 0, key);
+    this.renderNewSessionPlaceholder(children, project.id, worktree.path, key);
   }
 
   /** Renders the optional worktree/directory level when a project has multiple roots. */
-  private renderWorktree(container: HTMLElement, worktree: AgentPanelWorktree): void {
+  private renderWorktree(container: HTMLElement, worktree: AgentPanelWorktree, parentKey?: string): void {
     const key = `worktree:${worktree.id}`;
+    this.rowParentKey.set(key, parentKey);
     const collapsed = this.collapsed.has(key);
     const item = container.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__worktree" });
     const title = item.createDiv({ cls: "tree-item-self nav-folder-title is-clickable" });
@@ -527,13 +542,14 @@ export class AgentPanelView extends ItemView {
 
     if (collapsed) return;
     const children = item.createDiv({ cls: "tree-item-children nav-folder-children" });
-    for (const session of worktree.sessions) this.renderSession(children, session, 0);
-    this.renderNewSessionPlaceholder(children, worktree.id, worktree.path);
+    for (const session of worktree.sessions) this.renderSession(children, session, 0, key);
+    this.renderNewSessionPlaceholder(children, worktree.id, worktree.path, key);
   }
 
   /** Renders a recursive session branch with left status and right notification slots. */
-  private renderSession(container: HTMLElement, session: AgentPanelSession, depth: number): void {
+  private renderSession(container: HTMLElement, session: AgentPanelSession, depth: number, parentKey?: string): void {
     const key = `session:${session.id}`;
+    this.rowParentKey.set(key, parentKey);
     const collapsed = this.collapsed.has(key);
     const item = container.createDiv({ cls: "tree-item nav-file opencode-agent-panel__session" });
     item.style.setProperty("--opencode-depth", String(depth));
@@ -550,12 +566,13 @@ export class AgentPanelView extends ItemView {
 
     if (session.children.length === 0 || collapsed) return;
     const children = item.createDiv({ cls: "tree-item-children nav-folder-children" });
-    for (const child of session.children) this.renderSession(children, child, depth + 1);
+    for (const child of session.children) this.renderSession(children, child, depth + 1, key);
   }
 
   /** Renders the client-only new-session draft entry for a project directory. */
-  private renderNewSessionPlaceholder(container: HTMLElement, projectId: string, directory: string): void {
+  private renderNewSessionPlaceholder(container: HTMLElement, projectId: string, directory: string, parentKey?: string): void {
     const key = `new-session:${projectId}:${directory}`;
+    this.rowParentKey.set(key, parentKey);
     const row = container.createDiv({ cls: "tree-item nav-file opencode-agent-panel__new-session" });
     const title = row.createDiv({ cls: "tree-item-self nav-file-title is-clickable" });
     this.registerRow(key, "new-session", title, undefined, directory);
@@ -664,11 +681,88 @@ export class AgentPanelView extends ItemView {
     void this.plugin.openSessionTab(session.id, session.title);
   }
 
-  /** Toggles a tree branch and refreshes DOM from the current server snapshot. */
-  private toggleCollapsed(key: string, refresh = true): void {
+  /**
+   * Mirrors the focused session tab into the panel; referenced by OpenCodePlugin's
+   * active-leaf-change handler and the "Open agents panel" command so the panel
+   * behaves like Obsidian's "Reveal current file in navigation" instead of just
+   * "Show file explorer". Expands collapsed ancestors so the row is revealed,
+   * then applies is-active and the keyboard highlight.
+   */
+  setActiveSession(sessionId: string | undefined): void {
+    this.activeSessionId = sessionId;
+    if (!sessionId) {
+      this.renderActiveOnly();
+      return;
+    }
+    const key = `session:${sessionId}`;
+    const ancestors = this.sessionAncestorMap.get(sessionId) ?? [];
+    const needsExpand = ancestors.some((ancestorKey) => this.collapsed.has(ancestorKey));
+    if (needsExpand) {
+      for (const ancestorKey of ancestors) this.collapsed.delete(ancestorKey);
+      this.highlightedKey = key;
+      this.rerenderTree();
+      this.applyHighlight();
+      return;
+    }
+    // Only move the keyboard highlight when the row is actually visible so an
+    // unknown/draft session id does not strand focus on a non-existent row.
+    if (this.visibleRows.some((row) => row.key === key)) this.highlightedKey = key;
+    this.renderActiveOnly();
+  }
+
+  /**
+   * Builds a session-id → ancestor collapse-key map from the full tree structure,
+   * independent of collapsed state so setActiveSession can expand ancestors of
+   * sessions that are currently hidden inside collapsed project/worktree nodes.
+   */
+  private buildSessionAncestorMap(projects: AgentPanelProject[]): Map<string, string[]> {
+    const map = new Map<string, string[]>();
+    for (const project of projects) {
+      const projectKey = `project:${project.id}`;
+      const multiWorktree = project.worktrees.length > 1;
+      for (const worktree of project.worktrees) {
+        const baseAncestors = multiWorktree ? [projectKey, `worktree:${worktree.id}`] : [projectKey];
+        this.indexSessionAncestors(worktree.sessions, baseAncestors, map);
+      }
+    }
+    return map;
+  }
+
+  /** Recursively maps each session to its ancestor collapse-key chain. */
+  private indexSessionAncestors(sessions: AgentPanelSession[], ancestors: string[], map: Map<string, string[]>): void {
+    for (const session of sessions) {
+      map.set(session.id, ancestors);
+      if (session.children.length > 0) this.indexSessionAncestors(session.children, [...ancestors, `session:${session.id}`], map);
+    }
+  }
+
+  /**
+   * Moves DOM focus onto the panel container so the focus-gated keydown handler
+   * receives arrow-key navigation immediately; referenced by the OpenCodePlugin
+   * "Open agents panel" command to mirror Obsidian's "Reveal current file in navigation".
+   */
+  focusContent(): void {
+    this.contentEl.focus();
+  }
+
+  /** Re-renders the cached tree for local-only state changes like collapse/expand. */
+  private rerenderTree(): void {
+    if (this.lastTree.length > 0) this.renderTree(this.lastTree);
+  }
+
+  /** Clears cached tree/row state so keyboard nav cannot resurrect stale data on loading/disconnected screens. */
+  private clearTreeState(): void {
+    this.lastTree = [];
+    this.visibleRows = [];
+    this.rowParentKey.clear();
+    this.sessionAncestorMap.clear();
+  }
+
+  /** Toggles a tree branch and re-renders locally without a server round-trip. */
+  private toggleCollapsed(key: string, rerender = true): void {
     if (this.collapsed.has(key)) this.collapsed.delete(key);
     else this.collapsed.add(key);
-    if (refresh) void this.refresh();
+    if (rerender) this.rerenderTree();
   }
 
   /** Refreshes the row state after a local-only active selection changes. */
@@ -748,12 +842,21 @@ export class AgentPanelView extends ItemView {
     row?.element.scrollIntoView({ block: "nearest" });
   }
 
-  /** Collapses the highlighted branch, or moves from a leaf to its nearest branch later. */
+  /** Collapses the highlighted branch, or moves to and collapses a leaf's parent. */
   private collapseHighlighted(): void {
     const row = this.visibleRows.find((candidate) => candidate.key === this.highlightedKey);
-    if (!row || row.kind === "session" || row.kind === "new-session") return;
+    if (!row) return;
+    // File-explorer parity: pressing Left on a leaf collapses and focuses its parent node.
+    if (row.kind === "session" || row.kind === "new-session") {
+      const parentKey = this.rowParentKey.get(row.key);
+      if (!parentKey) return;
+      this.collapsed.add(parentKey);
+      this.highlightedKey = parentKey;
+      this.rerenderTree();
+      return;
+    }
     this.collapsed.add(row.key);
-    void this.refresh();
+    this.rerenderTree();
   }
 
   /** Expands a branch or activates a highlighted leaf session. */
@@ -762,7 +865,7 @@ export class AgentPanelView extends ItemView {
     if (!row) return;
     if (row.kind === "project" || row.kind === "worktree") {
       this.collapsed.delete(row.key);
-      void this.refresh();
+      this.rerenderTree();
       return;
     }
     this.activateHighlighted();

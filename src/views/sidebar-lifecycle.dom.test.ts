@@ -305,6 +305,7 @@ describe("sidebar view lifecycle", () => {
     };
     const plugin = {
       getOpenedDirectories: () => ["/workspace"],
+      getActiveSessionId: () => undefined,
       requireOpenCodeService: () => service,
     } as unknown as OpenCodePlugin;
     const view = new AgentPanelView({ app: {} } as never, plugin);

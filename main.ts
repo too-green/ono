@@ -29,6 +29,7 @@ export default class OpenCodePlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
         void this.syncDiffPanelToActiveSessionLeaf(leaf);
+        this.syncAgentPanelToActiveSessionLeaf(leaf);
       }),
     );
     void this.syncDiffPanelToActiveSessionLeaf(this.app.workspace.activeLeaf);
@@ -234,6 +235,29 @@ export default class OpenCodePlugin extends Plugin {
     await this.updateDiffPanelContext(context, { force: !sessionView, sourceLeaf: leaf });
   }
 
+  /** Pushes the focused session tab into every open agents panel so its row is revealed. */
+  private syncAgentPanelToActiveSessionLeaf(leaf: WorkspaceLeaf | null): void {
+    const sessionId = this.sessionIdFromLeaf(leaf);
+    if (!sessionId) return;
+    for (const panelLeaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL)) {
+      if (panelLeaf.view instanceof AgentPanelView) panelLeaf.view.setActiveSession(sessionId);
+    }
+  }
+
+  /** Returns the session id of the currently focused session tab, if any; referenced by AgentPanelView.onOpen. */
+  getActiveSessionId(): string | undefined {
+    return this.sessionIdFromLeaf(this.app.workspace.activeLeaf);
+  }
+
+  /** Extracts the session id from a leaf when it is an OpenCode session view. */
+  private sessionIdFromLeaf(leaf: WorkspaceLeaf | null | undefined): string | undefined {
+    if (!leaf) return undefined;
+    const state = leaf.getViewState();
+    if (state.type !== VIEW_TYPE_OPENCODE_SESSION) return undefined;
+    const sessionId = state.state?.sessionId;
+    return typeof sessionId === "string" ? sessionId : undefined;
+  }
+
   /** Persists a directory exactly like OpenCode's UI-local opened-project list. */
   async addOpenedDirectory(directory: string): Promise<void> {
     const normalized = this.normalizeDirectory(directory);
@@ -405,8 +429,10 @@ export default class OpenCodePlugin extends Plugin {
     await this.saveSettings();
   }
 
-  /** Opens or focuses the OpenCode agents panel in the left Obsidian sidebar. */
+  /** Opens or focuses the OpenCode agents panel and reveals the focused session's row. */
   private async activateAgentPanel(): Promise<void> {
+    // Capture the focused session before revealing the panel can change the active leaf.
+    const activeSessionId = this.getActiveSessionId();
     const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL);
     let leaf: WorkspaceLeaf | null = leaves[0] ?? null;
 
@@ -416,6 +442,13 @@ export default class OpenCodePlugin extends Plugin {
     }
 
     if (leaf) this.app.workspace.revealLeaf(leaf);
+
+    if (leaf?.view instanceof AgentPanelView) {
+      if (activeSessionId) leaf.view.setActiveSession(activeSessionId);
+      // Focus the panel container so arrow-key navigation works immediately, mirroring
+      // Obsidian's "Reveal current file in navigation" rather than "Show file explorer".
+      leaf.view.focusContent();
+    }
   }
 
   /** Opens or focuses the OpenCode diffs panel in the right Obsidian sidebar. */

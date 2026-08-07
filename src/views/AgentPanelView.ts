@@ -72,6 +72,7 @@ export class AgentPanelView extends ItemView {
   private questionRequestCache = new Map<string, OpenCodeQuestionRequest[]>();
   private transientLoadFailure = false;
   private refreshRetryDelay = 1_000;
+  private opened = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -97,6 +98,7 @@ export class AgentPanelView extends ItemView {
 
   /** Builds the panel shell and loads read-only OpenCode data when opened. */
   async onOpen(): Promise<void> {
+    this.opened = true;
     this.contentEl.addClass("opencode-sidebar-panel");
     this.contentEl.addClass("opencode-sidebar-panel--agents");
     this.contentEl.tabIndex = 0;
@@ -107,14 +109,20 @@ export class AgentPanelView extends ItemView {
 
   /** Clears the panel when Obsidian closes the view. */
   async onClose(): Promise<void> {
+    this.opened = false;
+    this.refreshQueued = false;
     this.contentEl.removeEventListener("keydown", this.handleKeydown);
     this.closeEventSubscriptions();
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = undefined;
+    this.contentEl.removeClass("opencode-sidebar-panel", "opencode-sidebar-panel--agents");
+    this.contentEl.removeAttribute("tabindex");
     this.contentEl.empty();
   }
 
   /** Subscribes to sidebar-relevant OpenCode events so token streaming does not blink the tree. */
   private syncEventSubscriptions(directories: string[]): void {
+    if (!this.opened) return;
     const key = [...directories].sort().join("\n");
     if (key === this.eventSubscriptionDirectoriesKey && this.eventSubscriptions.length > 0) return;
     this.closeEventSubscriptions();
@@ -158,6 +166,7 @@ export class AgentPanelView extends ItemView {
 
   /** Debounces event-driven reloads to avoid rendering every streaming event individually. */
   private scheduleRefresh(delay = 250): void {
+    if (!this.opened) return;
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = undefined;
@@ -167,6 +176,7 @@ export class AgentPanelView extends ItemView {
 
   /** Reloads projects, sessions, and statuses using only OpenCode GET endpoints. */
   async refresh(options: { showLoading?: boolean } = {}): Promise<void> {
+    if (!this.opened) return;
     if (this.loading) {
       this.refreshQueued = true;
       return;
@@ -178,6 +188,7 @@ export class AgentPanelView extends ItemView {
     try {
       const service = this.plugin.requireOpenCodeService();
       await service.health();
+      if (!this.opened) return;
       const openedDirectories = this.plugin.getOpenedDirectories();
       this.syncEventSubscriptions(openedDirectories);
       const [projects, openedContexts, sessionGroups, statuses, permissionGroups, questionGroups] = await Promise.all([
@@ -193,6 +204,7 @@ export class AgentPanelView extends ItemView {
         Promise.all(openedDirectories.map((directory) => this.listPermissionRequests(directory))),
         Promise.all(openedDirectories.map((directory) => this.listQuestionRequests(directory))),
       ]);
+      if (!this.opened) return;
       const sessionDirectoryById = new Map<string, string>();
       sessionGroups.forEach((sessionsForDirectory, index) => {
         const directory = openedDirectories[index];
@@ -223,6 +235,7 @@ export class AgentPanelView extends ItemView {
         sessionDirectoryById,
         requestOwnerIds,
       );
+      if (!this.opened) return;
       const nextRequestAttentionIds = this.collectRequestAttentionIds(tree);
       if (this.transientLoadFailure) this.requestAttentionSessionIds.forEach((sessionId) => nextRequestAttentionIds.add(sessionId));
       this.requestAttentionSessionIds = nextRequestAttentionIds;
@@ -231,10 +244,16 @@ export class AgentPanelView extends ItemView {
       this.lastRenderedTreeSignature = treeSignature;
       this.renderTree(tree);
     } catch (error) {
-      this.lastRenderedTreeSignature = "";
-      this.renderDisconnected(error);
+      if (this.opened) {
+        this.lastRenderedTreeSignature = "";
+        this.renderDisconnected(error);
+      }
     } finally {
       this.loading = false;
+      if (!this.opened) {
+        this.refreshQueued = false;
+        return;
+      }
       if (this.transientLoadFailure) {
         this.scheduleRefresh(this.refreshRetryDelay);
         this.refreshRetryDelay = Math.min(this.refreshRetryDelay * 2, 30_000);

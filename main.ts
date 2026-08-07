@@ -12,6 +12,7 @@ export default class OpenCodePlugin extends Plugin {
   settings: OpenCodePluginSettings = DEFAULT_OPENCODE_SETTINGS;
   opencode?: OpenCodeService;
   private diffPanelContext: DiffPanelContext = {};
+  private diffPanelSourceLeaf?: WorkspaceLeaf;
   private archivingSessionIds = new Set<string>();
   private respondingSessionRequestIds = new Set<string>();
 
@@ -30,6 +31,7 @@ export default class OpenCodePlugin extends Plugin {
         void this.syncDiffPanelToActiveSessionLeaf(leaf);
       }),
     );
+    void this.syncDiffPanelToActiveSessionLeaf(this.app.workspace.activeLeaf);
 
     this.addRibbonIcon("bot", "OpenCode agents", () => {
       void this.activateAgentPanel();
@@ -73,8 +75,11 @@ export default class OpenCodePlugin extends Plugin {
     });
   }
 
-  /** Releases service resources when Obsidian unloads the plugin. */
+  /** Detaches plugin-owned views before releasing service resources during unload or reload. */
   onunload(): void {
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_SESSION);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_DIFF_PANEL);
     this.opencode?.dispose();
   }
 
@@ -114,6 +119,34 @@ export default class OpenCodePlugin extends Plugin {
     const draftId = crypto.randomUUID();
     await leaf.setViewState({ type: VIEW_TYPE_OPENCODE_SESSION, state: { draftId, draftDirectory: directory }, active: true });
     this.app.workspace.revealLeaf(leaf);
+  }
+
+  /** Returns server session ids retained by loaded or deferred OpenCode tabs. */
+  getOpenSessionIds(excludedLeaf?: WorkspaceLeaf): Set<string> {
+    const sessionIds = new Set<string>();
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
+      if (leaf === excludedLeaf) continue;
+      const sessionId = leaf.getViewState().state?.sessionId;
+      if (typeof sessionId === "string") sessionIds.add(sessionId);
+    }
+    return sessionIds;
+  }
+
+  /** Evicts closed-session state after the last workspace tab for that session closes. */
+  notifySessionViewClosed(leaf: WorkspaceLeaf, sessionId: string | undefined): void {
+    if (this.diffPanelSourceLeaf === leaf) this.diffPanelSourceLeaf = undefined;
+    if (!sessionId || this.getOpenSessionIds(leaf).has(sessionId)) return;
+    if (this.diffPanelContext.sessionId === sessionId) this.diffPanelContext = {};
+    for (const diffLeaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_DIFF_PANEL)) {
+      if (diffLeaf.view instanceof DiffPanelView) diffLeaf.view.evictSnapshot(sessionId);
+    }
+  }
+
+  /** Marks cached summaries stale when a session emits new diff state. */
+  markDiffPanelSessionDirty(sessionId: string): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_DIFF_PANEL)) {
+      if (leaf.view instanceof DiffPanelView) leaf.view.markSessionDirty(sessionId);
+    }
   }
 
   /** Prompts for a title and applies the v1 session rename; referenced by menu-based rename entry points. */
@@ -171,18 +204,34 @@ export default class OpenCodePlugin extends Plugin {
     return { ...this.diffPanelContext };
   }
 
-  /** Updates the right-sidebar diff panel context; referenced by SessionView render and turn selection. */
-  async updateDiffPanelContext(context: DiffPanelContext, options?: { force?: boolean }): Promise<void> {
+  /** Updates diffs only when the requesting session leaf still owns the panel context. */
+  async updateDiffPanelContext(context: DiffPanelContext, options?: { force?: boolean; sourceLeaf?: WorkspaceLeaf }): Promise<void> {
+    if (options?.sourceLeaf) {
+      if (this.diffPanelSourceLeaf && this.diffPanelSourceLeaf !== options.sourceLeaf) return;
+      if (!this.diffPanelSourceLeaf && this.app.workspace.activeLeaf !== options.sourceLeaf) return;
+      this.diffPanelSourceLeaf = options.sourceLeaf;
+    }
     const next = { ...this.diffPanelContext, ...context };
     if (!options?.force && JSON.stringify(this.diffPanelContext) === JSON.stringify(next)) return;
     this.diffPanelContext = next;
-    await this.refreshDiffPanels();
+    await this.refreshDiffPanels(options?.force === true);
   }
 
   /** Mirrors native Outline behavior by rebinding the diff panel to the focused OpenCode session tab. */
   private async syncDiffPanelToActiveSessionLeaf(leaf: WorkspaceLeaf | null): Promise<void> {
-    if (!(leaf?.view instanceof SessionView)) return;
-    await this.updateDiffPanelContext(leaf.view.diffPanelContext(), { force: true });
+    if (!leaf) return;
+    const state = leaf.getViewState();
+    if (state.type !== VIEW_TYPE_OPENCODE_SESSION) return;
+    this.diffPanelSourceLeaf = leaf;
+    const sessionView = leaf.view instanceof SessionView ? leaf.view : undefined;
+    const context = sessionView
+      ? sessionView.diffPanelContext()
+      : {
+          sessionId: typeof state.state?.sessionId === "string" ? state.state.sessionId : undefined,
+          sessionTitle: typeof state.state?.sessionTitle === "string" ? state.state.sessionTitle : undefined,
+          sessionDirectory: undefined,
+        };
+    await this.updateDiffPanelContext(context, { force: !sessionView, sourceLeaf: leaf });
   }
 
   /** Persists a directory exactly like OpenCode's UI-local opened-project list. */
@@ -449,10 +498,10 @@ export default class OpenCodePlugin extends Plugin {
   }
 
   /** Refreshes every visible diff panel after active session or turn context changes. */
-  private async refreshDiffPanels(): Promise<void> {
+  private async refreshDiffPanels(force = false): Promise<void> {
     await Promise.all(
       this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_DIFF_PANEL).map(async (leaf) => {
-        if (leaf.view instanceof DiffPanelView) await leaf.view.setContext(this.diffPanelContext);
+        if (leaf.view instanceof DiffPanelView) await leaf.view.setContext(this.diffPanelContext, { force });
       }),
     );
   }

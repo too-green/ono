@@ -122,7 +122,7 @@ export class SessionView extends ItemView {
       onQuestionAsked: (request) => this.plugin.routeQuestionRequest(request),
       onQuestionSettled: (requestId) => this.plugin.settleSessionRequest(requestId),
       requestTimelineRender: () => this.timeline.renderStreaming(),
-      requestDiffPanelRefresh: (force) => this.plugin.updateDiffPanelContext(this.diffPanelContext(), force ? { force: true } : undefined),
+      requestDiffPanelRefresh: (force) => this.syncDiffPanel(force),
       requestComposerProgressRefresh: () => this.composer.updateProgressBar(),
       requestCanonicalSync: () => this.syncCanonicalMessages(),
     });
@@ -290,6 +290,7 @@ export class SessionView extends ItemView {
 
   /** Releases event streams and timers when the tab closes. */
   async onClose(): Promise<void> {
+    this.plugin.notifySessionViewClosed(this.leaf, this.model.sessionId);
     this.composer.persistDraft();
     this.sessionBindingVersion += 1;
     this.loadingSessionId = undefined;
@@ -303,6 +304,10 @@ export class SessionView extends ItemView {
     this.nativeTitleEl?.removeEventListener("click", this.handleNativeTitleClick);
     this.nativeTitleEl = undefined;
     this.docks.dispose();
+    this.clearSessionHeaderDecoration();
+    this.contentEl.removeClass("opencode-session-view");
+    this.containerEl.removeClass("opencode-session-view-container");
+    this.contentEl.empty();
   }
 
   /** Reloads session data; initial/manual loads rebuild the shell, while active-session refreshes reconcile incrementally. */
@@ -334,7 +339,7 @@ export class SessionView extends ItemView {
         await this.timeline.reconcileAppendOnly(this.model.loadedMessages);
       }
       if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
-      await this.plugin.updateDiffPanelContext(this.diffPanelContext(), { force: true });
+      await this.syncDiffPanel(true);
     } catch (error) {
       if (this.isCurrentSessionBinding(sessionId, bindingVersion)) this.renderError(error);
     } finally {
@@ -383,6 +388,12 @@ export class SessionView extends ItemView {
     return { sessionId: this.model.sessionId, sessionTitle: this.model.sessionTitle, sessionDirectory: this.model.sessionDirectory };
   }
 
+  /** Synchronizes this session's diff context only while its leaf owns the panel context. */
+  private syncDiffPanel(force = false): Promise<void> {
+    if (force && this.model.sessionId) this.plugin.markDiffPanelSessionDirty(this.model.sessionId);
+    return this.plugin.updateDiffPanelContext(this.diffPanelContext(), { force, sourceLeaf: this.leaf });
+  }
+
   /** Fetches canonical session data after idle and reconciles only the timeline tail. */
   private async syncCanonicalMessages(): Promise<void> {
     const sessionId = this.model.sessionId;
@@ -400,7 +411,7 @@ export class SessionView extends ItemView {
       this.docks.refresh();
       await this.timeline.reconcileAppendOnly(this.model.loadedMessages);
       if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
-      await this.plugin.updateDiffPanelContext(this.diffPanelContext());
+      await this.syncDiffPanel();
     } catch (error) {
       if (this.isCurrentSessionBinding(sessionId, bindingVersion)) console.warn("[opencode-plugin:session-stream] canonical sync failed", error);
     }
@@ -514,7 +525,7 @@ export class SessionView extends ItemView {
   private applySessionUpdate(session: JsonObject): void {
     this.canonicalRequestVersion += 1;
     this.applyCanonicalSession(session);
-    void this.plugin.updateDiffPanelContext(this.diffPanelContext());
+    void this.syncDiffPanel();
   }
 
   /** Applies the current session's status from the global v1 status snapshot. */
@@ -898,7 +909,7 @@ export class SessionView extends ItemView {
     this.model.revertDiffFiles = this.revertDiffFilesFromSession(session);
     await this.timeline.renderStreaming().catch((error) => console.warn("[opencode-plugin:rewind] timeline render failed", error));
     if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return false;
-    await this.plugin.updateDiffPanelContext(this.diffPanelContext(), { force: true }).catch((error) => console.warn("[opencode-plugin:rewind] diff panel refresh failed", error));
+    await this.syncDiffPanel(true).catch((error) => console.warn("[opencode-plugin:rewind] diff panel refresh failed", error));
     return this.isCurrentSessionBinding(sessionId, bindingVersion);
   }
 
@@ -913,7 +924,7 @@ export class SessionView extends ItemView {
     this.model.revertDiffFiles = [];
     await this.timeline.renderStreaming().catch((error) => console.warn("[opencode-plugin:rewind] timeline render failed", error));
     if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return false;
-    await this.plugin.updateDiffPanelContext(this.diffPanelContext(), { force: true }).catch((error) => console.warn("[opencode-plugin:rewind] diff panel refresh failed", error));
+    await this.syncDiffPanel(true).catch((error) => console.warn("[opencode-plugin:rewind] diff panel refresh failed", error));
     return this.isCurrentSessionBinding(sessionId, bindingVersion);
   }
 
@@ -1055,7 +1066,7 @@ export class SessionView extends ItemView {
   /** Promotes this Obsidian draft leaf to a normal server-backed session leaf. */
   private async promoteDraftView(sessionId: string, sessionTitle?: string): Promise<void> {
     await this.leaf.setViewState({ type: VIEW_TYPE_OPENCODE_SESSION, state: { sessionId, sessionTitle }, active: true });
-    await this.plugin.updateDiffPanelContext(this.diffPanelContext(), { force: true });
+    await this.syncDiffPanel(true);
   }
 
   /** Extracts the user-facing session title used by the Obsidian tab and in-view header. */
@@ -1070,7 +1081,7 @@ export class SessionView extends ItemView {
     const mountedTitle = this.contentEl.querySelector<HTMLElement>(".opencode-session-view__title");
     if (mountedTitle) mountedTitle.setText(title);
     this.refreshLeafTitle();
-    void this.plugin.updateDiffPanelContext(this.diffPanelContext());
+    void this.syncDiffPanel();
   }
 
   /** Reads the workspace directory used for directory-scoped agent and prompt APIs. */
@@ -1164,6 +1175,17 @@ export class SessionView extends ItemView {
       tabIcon.dataset.opencodeSessionState = status;
       tabIcon.dataset.workingAnimation = animation;
     }
+  }
+
+  /** Removes plugin status attributes from native chrome before Obsidian reuses the leaf. */
+  private clearSessionHeaderDecoration(): void {
+    const headerIcon = this.containerEl.querySelector<HTMLElement>(".view-header-icon");
+    headerIcon?.removeAttribute("data-opencode-session-state");
+    headerIcon?.removeAttribute("data-working-animation");
+    const leaf = this.leaf as WorkspaceLeaf & { tabHeaderEl?: HTMLElement | null };
+    const tabIcon = leaf.tabHeaderEl?.querySelector<HTMLElement>(".workspace-tab-header-inner-icon");
+    tabIcon?.removeAttribute("data-opencode-session-state");
+    tabIcon?.removeAttribute("data-working-animation");
   }
 
   /** Copies the active session id to clipboard for debugging and API testing. */

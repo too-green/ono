@@ -11,11 +11,32 @@ export interface DiffPanelContext {
   sessionDirectory?: string;
 }
 
+const MAX_CACHED_SESSIONS = 40;
+
+interface DiffPanelSnapshot {
+  sessionTitle?: string;
+  sessionDirectory?: string;
+  turnMessageId?: string;
+  sessionDiffs: DiffFileSummary[];
+  turnDiffs: DiffFileSummary[];
+}
+
+interface DiffPanelCacheEntry {
+  dirty: boolean;
+  snapshot: DiffPanelSnapshot;
+}
+
+/** Removes raw patches from diff records before they enter the summary cache. */
+export function compactDiffSummaries(diffs: DiffFileSummary[]): DiffFileSummary[] {
+  return diffs.map(({ file, additions, deletions, status }) => ({ file, additions, deletions, status }));
+}
+
 /** Renders session-level and latest-turn file diffs in Obsidian's right sidebar. */
 export class DiffPanelView extends ItemView {
   private context: DiffPanelContext = {};
-  private loading = false;
   private refreshSerial = 0;
+  private snapshots = new Map<string, DiffPanelCacheEntry>();
+  private revisions = new Map<string, number>();
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -47,49 +68,84 @@ export class DiffPanelView extends ItemView {
     await this.refresh();
   }
 
-  /** Releases no external resources; required by Obsidian ItemView lifecycle. */
+  /** Invalidates pending loads and clears cached/plugin DOM before Obsidian reuses the leaf. */
   async onClose(): Promise<void> {
     this.refreshSerial += 1;
+    this.snapshots.clear();
+    this.revisions.clear();
+    this.contentEl.removeClass("opencode-sidebar-panel", "opencode-sidebar-panel--diffs");
+    this.contentEl.empty();
   }
 
-  /** Applies active session context from SessionView and reloads the displayed diff summaries. */
-  async setContext(context: DiffPanelContext): Promise<void> {
+  /** Removes one snapshot when its final session workspace tab closes. */
+  evictSnapshot(sessionId: string): void {
+    this.snapshots.delete(sessionId);
+    this.revisions.delete(sessionId);
+    if (this.context.sessionId === sessionId) {
+      this.refreshSerial += 1;
+      this.context = {};
+      this.renderEmpty();
+    }
+  }
+
+  /** Marks one retained snapshot for revalidation on its next focus or forced refresh. */
+  markSessionDirty(sessionId: string): void {
+    const entry = this.snapshots.get(sessionId);
+    if (!entry && this.context.sessionId !== sessionId) return;
+    this.revisions.set(sessionId, (this.revisions.get(sessionId) ?? 0) + 1);
+    if (entry) entry.dirty = true;
+  }
+
+  /** Renders cached context immediately, then revalidates its summaries in the background. */
+  async setContext(context: DiffPanelContext, options: { force?: boolean } = {}): Promise<void> {
     const changed = JSON.stringify(this.context) !== JSON.stringify(context);
+    if (changed) this.refreshSerial += 1;
     this.context = { ...context };
-    if (changed || !this.loading) await this.refresh();
+    this.pruneSnapshots();
+    const entry = this.context.sessionId ? this.touchSnapshot(this.context.sessionId) : undefined;
+    const snapshot = entry?.snapshot;
+    if (changed && snapshot) this.renderDiffs({ ...snapshot, sessionTitle: this.context.sessionTitle ?? snapshot.sessionTitle });
+    else if (changed && this.context.sessionId) this.renderLoading();
+    else if (changed) this.renderEmpty();
+    if (this.context.sessionId && (options.force || !entry || entry.dirty)) await this.refresh();
   }
 
-  /** Reloads all message summaries for the active session and renders session/latest-turn diff lists. */
+  /** Reloads and caches all message summaries for the active session. */
   async refresh(): Promise<void> {
     const serial = (this.refreshSerial += 1);
-    if (!this.context.sessionId) {
+    const context = { ...this.context };
+    const sessionId = context.sessionId;
+    if (!sessionId) {
       this.renderEmpty();
       return;
     }
 
-    this.loading = true;
+    const revision = this.revisions.get(sessionId) ?? 0;
+    const hasSnapshot = this.snapshots.has(sessionId);
     if (!this.contentEl.hasChildNodes()) this.renderLoading();
     try {
       const service = this.plugin.requireOpenCodeService();
-      const [session, messages] = await Promise.all([service.getSession(this.context.sessionId), service.listMessages(this.context.sessionId)]);
+      const [session, messages] = await Promise.all([service.getSession(sessionId), service.listMessages(sessionId)]);
       if (serial !== this.refreshSerial) return;
-      const sessionDirectory = this.context.sessionDirectory ?? this.readString(session, ["directory", "cwd"]);
+      const sessionDirectory = context.sessionDirectory ?? this.readString(session, ["directory", "cwd"]);
       const chronological = [...messages].sort((a, b) => this.messageTime(a) - this.messageTime(b));
       const turnMessageId = latestUserTurnId(chronological);
       const sessionDiffs = aggregateDiffFiles(chronological.flatMap(diffFilesFromMessage));
-      const turnDiffs = await this.loadTurnDiffs(chronological, turnMessageId);
+      const turnDiffs = await this.loadTurnDiffs(chronological, turnMessageId, context);
       if (serial !== this.refreshSerial) return;
-      this.renderDiffs({
-        sessionTitle: this.context.sessionTitle ?? this.readString(session, ["title"]),
+      if (!this.plugin.getOpenSessionIds().has(sessionId)) return;
+      const snapshot: DiffPanelSnapshot = {
+        sessionTitle: context.sessionTitle ?? this.readString(session, ["title"]),
         sessionDirectory,
         turnMessageId,
-        sessionDiffs,
-        turnDiffs,
-      });
+        sessionDiffs: compactDiffSummaries(sessionDiffs),
+        turnDiffs: compactDiffSummaries(turnDiffs),
+      };
+      this.storeSnapshot(sessionId, snapshot, revision !== (this.revisions.get(sessionId) ?? 0));
+      this.pruneSnapshots();
+      this.renderDiffs(snapshot);
     } catch (error) {
-      if (serial === this.refreshSerial) this.renderError(error);
-    } finally {
-      if (serial === this.refreshSerial) this.loading = false;
+      if (serial === this.refreshSerial && !hasSnapshot) this.renderError(error);
     }
   }
 
@@ -118,7 +174,7 @@ export class DiffPanelView extends ItemView {
   }
 
   /** Renders the full session and latest-turn diff sections. */
-  private renderDiffs(input: { sessionTitle?: string; sessionDirectory?: string; turnMessageId?: string; sessionDiffs: DiffFileSummary[]; turnDiffs: DiffFileSummary[] }): void {
+  private renderDiffs(input: DiffPanelSnapshot): void {
     this.contentEl.empty();
     const header = this.contentEl.createDiv({ cls: "opencode-sidebar-panel__header opencode-diff-panel__header" });
     const titleWrap = header.createDiv({ cls: "opencode-diff-panel__title-wrap" });
@@ -165,13 +221,50 @@ export class DiffPanelView extends ItemView {
   }
 
   /** Loads turn diffs from message summaries, falling back to the OpenCode message-diff endpoint. */
-  private async loadTurnDiffs(messages: OpenCodeMessageBundle[], turnMessageId: string | undefined): Promise<DiffFileSummary[]> {
-    if (!turnMessageId || !this.context.sessionId) return [];
+  private async loadTurnDiffs(messages: OpenCodeMessageBundle[], turnMessageId: string | undefined, context: DiffPanelContext): Promise<DiffFileSummary[]> {
+    if (!turnMessageId || !context.sessionId) return [];
     const message = messages.find((item) => messageId(item) === turnMessageId);
     const summaryDiffs = message ? diffFilesFromMessage(message) : [];
     if (summaryDiffs.length > 0) return summaryDiffs;
-    const endpointDiffs = await this.plugin.requireOpenCodeService().getSessionDiff(this.context.sessionId, turnMessageId, this.context.sessionDirectory);
+    const endpointDiffs = await this.plugin.requireOpenCodeService().getSessionDiff(context.sessionId, turnMessageId, context.sessionDirectory);
     return endpointDiffs.flatMap((item) => this.normalizeEndpointDiff(item));
+  }
+
+  /** Evicts snapshots once their session no longer has an open workspace tab. */
+  private pruneSnapshots(): void {
+    const openSessionIds = this.plugin.getOpenSessionIds();
+    for (const sessionId of this.snapshots.keys()) {
+      if (!openSessionIds.has(sessionId)) this.snapshots.delete(sessionId);
+    }
+    this.pruneRevisions();
+  }
+
+  /** Reads and promotes one cache entry to the newest LRU position. */
+  private touchSnapshot(sessionId: string): DiffPanelCacheEntry | undefined {
+    const entry = this.snapshots.get(sessionId);
+    if (!entry) return undefined;
+    this.snapshots.delete(sessionId);
+    this.snapshots.set(sessionId, entry);
+    return entry;
+  }
+
+  /** Stores a snapshot and evicts least-recently-used sessions above the hard limit. */
+  private storeSnapshot(sessionId: string, snapshot: DiffPanelSnapshot, dirty: boolean): void {
+    this.snapshots.delete(sessionId);
+    this.snapshots.set(sessionId, { dirty, snapshot });
+    while (this.snapshots.size > MAX_CACHED_SESSIONS) {
+      const oldestSessionId = this.snapshots.keys().next().value as string | undefined;
+      if (!oldestSessionId) break;
+      this.snapshots.delete(oldestSessionId);
+    }
+    this.pruneRevisions();
+  }
+
+  /** Drops invalidation counters that no cached or active request can consume. */
+  private pruneRevisions(): void {
+    for (const sessionId of this.revisions.keys()) {
+      if (sessionId !== this.context.sessionId && !this.snapshots.has(sessionId)) this.revisions.delete(sessionId);
+    }
   }
 
   /** Normalizes endpoint diff objects by reusing the message-summary extraction shape. */

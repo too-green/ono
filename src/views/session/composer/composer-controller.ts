@@ -87,6 +87,7 @@ export interface ComposerDeps {
 export class ComposerController {
   private composerEl?: HTMLElement;
   private composerTextarea?: HTMLTextAreaElement;
+  private composerSendButton?: HTMLButtonElement;
   private abortingSession = false;
   private pendingInterruptConfirm = false;
   private interruptConfirmTimer?: number;
@@ -131,12 +132,17 @@ export class ComposerController {
       this.scheduleDraftSave();
       // When the agent is streaming, the send button flips between stop and send modes based on emptiness.
       const currEmpty = textarea.value.trim().length === 0;
-      if (this.deps.model.sessionBusy && currEmpty !== prevEmpty) {
-        prevEmpty = currEmpty;
-        this.pendingInterruptConfirm = false;
-        if (this.interruptConfirmTimer) window.clearTimeout(this.interruptConfirmTimer);
-        this.interruptConfirmTimer = undefined;
-        void this.refresh();
+      if (this.deps.model.sessionBusy) {
+        if (currEmpty !== prevEmpty) {
+          prevEmpty = currEmpty;
+          this.pendingInterruptConfirm = false;
+          if (this.interruptConfirmTimer) window.clearTimeout(this.interruptConfirmTimer);
+          this.interruptConfirmTimer = undefined;
+          void this.refresh();
+        }
+      } else {
+        // Idle composer: keep the send button enabled/disabled in sync with the buffer without a full remount.
+        this.syncSendButtonEnabled();
       }
     });
     textarea.addEventListener("keydown", (event) => this.handleComposerKeydown(event), { capture: true });
@@ -174,6 +180,7 @@ export class ComposerController {
     this.composerEl?.remove();
     this.composerEl = undefined;
     this.composerTextarea = undefined;
+    this.composerSendButton = undefined;
     this.progressBar.dispose();
   }
 
@@ -253,6 +260,7 @@ export class ComposerController {
   private renderSendButton(container: HTMLElement, textarea: HTMLTextAreaElement): void {
     const stopMode = this.deps.model.sessionBusy && !textarea.value.trim();
     const send = container.createEl("button", { cls: "opencode-session-view__composer-send mod-cta" });
+    this.composerSendButton = send;
     send.toggleClass("is-stop", stopMode);
     send.toggleClass("is-loading", this.deps.model.submittingPrompt || this.abortingSession);
     send.toggleClass("is-confirming", this.pendingInterruptConfirm);
@@ -272,6 +280,16 @@ export class ComposerController {
       if (stopMode) void this.abortCurrentSession();
       else void this.sendPrompt();
     });
+  }
+
+  /** Updates only the send button's disabled state from the current buffer; avoids the cost of refresh() per keystroke. Referenced by the textarea `input` listener in `mount`. */
+  private syncSendButtonEnabled(): void {
+    const send = this.composerSendButton;
+    const textarea = this.composerTextarea;
+    if (!send || !textarea) return;
+    // Stop mode (busy + empty) is only reconfigured during a full refresh, so skip it here.
+    if (this.deps.model.sessionBusy && !textarea.value.trim()) return;
+    send.disabled = this.deps.isComposerBlocked() || this.deps.model.submittingPrompt || !textarea.value.trim();
   }
 
   /** Renders one compact boolean composer control; referenced by auto-approve and mute toggles. */

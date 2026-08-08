@@ -282,10 +282,13 @@
   position: relative;
 }
 
+.view-content.opencode-session-view {
+  padding: var(--file-margins);
+}
+
 .opencode-session-view__shell {
   margin: 0 auto;
   max-width: 920px;
-  padding: var(--size-4-6) var(--size-4-8) var(--size-4-4);
 }
 
 .opencode-session-view__header {
@@ -499,7 +502,7 @@
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding-bottom: calc(var(--opencode-composer-height, 120px) + var(--size-4-4));
+  padding-bottom: calc(var(--font-text-size) * var(--line-height-normal));
 }
 
 .opencode-session-view__shell--draft {
@@ -1482,6 +1485,7 @@
 
 .opencode-session-view__assistant-markdown {
   margin: var(--size-2-1) 0;
+  padding: calc(var(--font-text-size) * var(--line-height-normal)) 0;
 }
 
 .opencode-session-view__assistant-markdown > :first-child {

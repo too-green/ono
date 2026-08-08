@@ -1,9 +1,9 @@
 {
-  "id": "opencode-plugin",
-  "name": "OpenCode",
+  "id": "ono",
+  "name": "ONO",
   "version": "0.0.1",
   "minAppVersion": "1.6.0",
-  "description": "Desktop-only OpenCode client inside Obsidian.",
+  "description": "OpenCode client with an Obsidian-native user experience. Desktop Only",
   "author": "Ahmed Yaseen",
   "isDesktopOnly": true
 }

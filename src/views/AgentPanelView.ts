@@ -821,7 +821,7 @@ export class AgentPanelView extends ItemView {
     if (event.key === "ArrowUp") this.moveHighlight(-1);
     if (event.key === "ArrowDown") this.moveHighlight(1);
     if (event.key === "ArrowLeft") this.collapseHighlighted();
-    if (event.key === "ArrowRight") this.expandOrSelectHighlighted();
+    if (event.key === "ArrowRight") this.expandHighlighted();
     if (event.key === " ") this.activateHighlighted();
   };
 
@@ -846,7 +846,13 @@ export class AgentPanelView extends ItemView {
   private collapseHighlighted(): void {
     const row = this.visibleRows.find((candidate) => candidate.key === this.highlightedKey);
     if (!row) return;
-    // File-explorer parity: pressing Left on a leaf collapses and focuses its parent node.
+    // Session rows with children behave like folders: Left collapses them before moving to parent.
+    if (row.kind === "session" && row.session?.children.length && !this.collapsed.has(row.key)) {
+      this.collapsed.add(row.key);
+      this.rerenderTree();
+      return;
+    }
+    // File-explorer parity: pressing Left on a leaf (or already-collapsed branch) collapses and focuses its parent.
     if (row.kind === "session" || row.kind === "new-session") {
       const parentKey = this.rowParentKey.get(row.key);
       if (!parentKey) return;
@@ -859,8 +865,8 @@ export class AgentPanelView extends ItemView {
     this.rerenderTree();
   }
 
-  /** Expands a branch or activates a highlighted leaf session. */
-  private expandOrSelectHighlighted(): void {
+  /** Expands the highlighted branch; sessions without children are a no-op (use Space to open). */
+  private expandHighlighted(): void {
     const row = this.visibleRows.find((candidate) => candidate.key === this.highlightedKey);
     if (!row) return;
     if (row.kind === "project" || row.kind === "worktree") {
@@ -868,7 +874,11 @@ export class AgentPanelView extends ItemView {
       this.rerenderTree();
       return;
     }
-    this.activateHighlighted();
+    // Sessions with subagent/fork children expand like folders; leaf sessions do nothing.
+    if (row.kind === "session" && row.session?.children.length && this.collapsed.has(row.key)) {
+      this.collapsed.delete(row.key);
+      this.rerenderTree();
+    }
   }
 
   /** Activates the currently highlighted row. */

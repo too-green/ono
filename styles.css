@@ -271,72 +271,22 @@
 }
 
 .view-content.opencode-session-view {
+  container-type: size;
   padding: var(--file-margins);
+  padding-bottom: var(--size-4-5);
 }
 
 .opencode-session-view__shell {
+  display: flex;
+  flex-direction: column;
   margin: 0 auto;
-  max-width: 920px;
+  max-width: none;
+  min-height: 100%;
+  width: 100%;
 }
 
-.opencode-session-view__header {
-  align-items: flex-start;
-  border-bottom: var(--border-width) solid var(--background-modifier-border);
-  display: flex;
-  gap: var(--size-4-4);
-  justify-content: space-between;
-  margin-bottom: var(--size-4-6);
-  padding-bottom: var(--size-4-3);
-}
-
-.opencode-session-view__title-wrap {
-  min-width: 0;
-}
-
-.opencode-session-view__title-line {
-  align-items: center;
-  display: flex;
-  gap: var(--size-2-2);
-  min-width: 0;
-}
-
-.opencode-session-view__state-indicator {
-  align-items: center;
-  color: var(--text-faint);
-  display: inline-flex;
-  flex: 0 0 var(--icon-m);
-  height: var(--icon-m);
-  justify-content: center;
-  width: var(--icon-m);
-}
-
-.opencode-session-view__state-indicator svg {
-  height: var(--icon-xs);
-  width: var(--icon-xs);
-}
-
-.opencode-session-view__state-indicator--attention {
-  color: var(--color-orange);
-}
-
-.opencode-session-view__state-indicator--error {
-  color: var(--text-error);
-}
-
-.opencode-session-view__state-indicator--retry {
-  animation: opencode-session-state-pulse 1.2s ease-in-out infinite;
-  color: var(--text-error);
-}
-
-.opencode-session-view__state-indicator--done span {
-  background: var(--color-green);
-  border-radius: 50%;
-  height: var(--opencode-session-done-size, var(--size-2-3));
-  width: var(--opencode-session-done-size, var(--size-2-3));
-}
-
-.opencode-session-view__state-indicator--working {
-  color: var(--text-muted);
+.opencode-session-view.is-readable-line-width .opencode-session-view__shell {
+  max-width: var(--file-line-width);
 }
 
 /* ── View header + tab header icon: working state ── */
@@ -353,7 +303,6 @@
 }
 
 .opencode-agent-panel__status--working span,
-.opencode-session-view__state-indicator--working span,
 .opencode-session-view-container .view-header-icon[data-opencode-session-state="working"]::after,
 .workspace-tab-header-inner-icon[data-opencode-session-state="working"]::after,
 .opencode-session-view__message-working-indicator {
@@ -370,7 +319,6 @@
 }
 
 .opencode-agent-panel__status--working[data-working-animation="pulse"] span,
-.opencode-session-view[data-working-animation="pulse"] .opencode-session-view__state-indicator--working span,
 .opencode-session-view[data-working-animation="pulse"] .opencode-session-view__message-working-indicator,
 .opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="pulse"]::after,
 .workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="pulse"]::after {
@@ -380,7 +328,6 @@
 }
 
 .opencode-agent-panel__status--working[data-working-animation="orbit"] span,
-.opencode-session-view[data-working-animation="orbit"] .opencode-session-view__state-indicator--working span,
 .opencode-session-view[data-working-animation="orbit"] .opencode-session-view__message-working-indicator,
 .opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="orbit"]::after,
 .workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="orbit"]::after {
@@ -392,7 +339,6 @@
 }
 
 .opencode-agent-panel__status--working[data-working-animation="scanner"] span,
-.opencode-session-view[data-working-animation="scanner"] .opencode-session-view__state-indicator--working span,
 .opencode-session-view[data-working-animation="scanner"] .opencode-session-view__message-working-indicator,
 .opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="scanner"]::after,
 .workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="scanner"]::after {
@@ -403,7 +349,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .opencode-agent-panel__status--working span,
-  .opencode-session-view__state-indicator--working span,
   .opencode-session-view-container .view-header-icon[data-opencode-session-state="working"]::after,
   .workspace-tab-header-inner-icon[data-opencode-session-state="working"]::after,
   .opencode-session-view__message-working-indicator,
@@ -465,51 +410,12 @@
   width: var(--opencode-session-done-size, var(--size-2-3));
 }
 
-.opencode-session-view__title {
-  color: var(--text-normal);
-  font-size: var(--font-ui-large);
-  font-weight: var(--font-semibold);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.opencode-session-view__title-input {
-  background: var(--background-primary);
-  border: var(--border-width) solid var(--interactive-accent);
-  border-radius: var(--input-radius);
-  color: var(--text-normal);
-  font: inherit;
-  font-weight: var(--font-semibold);
-  min-width: 0;
-  width: 100%;
-}
-
-.opencode-session-view__subtitle {
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  margin-top: var(--size-2-1);
-  user-select: text;
-}
-
-.opencode-session-view__actions {
-  align-items: center;
-  display: flex;
-  flex: 0 0 auto;
-  gap: var(--size-2-1);
-}
-
 .opencode-session-view__timeline {
   display: flex;
+  flex: 1 0 auto;
   flex-direction: column;
   gap: 0;
   padding-bottom: calc(var(--font-text-size) * var(--line-height-normal));
-}
-
-.opencode-session-view__shell--draft {
-  display: flex;
-  flex-direction: column;
-  min-height: calc(100% - var(--size-4-6));
 }
 
 .opencode-session-view__draft-body {
@@ -533,11 +439,11 @@
   background: color-mix(in srgb, var(--background-primary) 94%, transparent);
   border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-l);
-  bottom: var(--size-4-4);
+  bottom: var(--size-4-3);
   box-shadow: var(--shadow-s);
   display: flex;
   flex-direction: column;
-  gap: var(--size-2-2);
+  gap: 0;
   margin-top: var(--size-4-3);
   max-height: calc(100% - var(--size-4-8));
   padding: var(--size-2-3);
@@ -557,6 +463,11 @@
   display: flex;
   flex-direction: column;
   gap: var(--size-2-2);
+}
+
+.opencode-session-view__request-docks:not(.is-empty),
+.opencode-session-view__attachment-chips {
+  margin-bottom: var(--size-2-2);
 }
 
 .opencode-session-view__request-dock {
@@ -778,6 +689,12 @@
   box-shadow: none;
 }
 
+@container (max-height: 400px) {
+  .opencode-session-view__composer-input {
+    max-height: 44.2px;
+  }
+}
+
 .opencode-slash-menu {
   background: var(--background-primary);
   border: var(--border-width) solid var(--background-modifier-border);
@@ -824,7 +741,7 @@
   align-items: center;
   display: flex;
   justify-content: space-between;
-  padding: var(--size-2-2) var(--size-2-1) 0;
+  padding: 0 var(--size-2-1);
 }
 
 .opencode-session-view__composer-left {
@@ -839,6 +756,7 @@
   align-items: center;
   display: flex;
   gap: var(--size-4-2);
+  line-height: 1;
   min-width: 0;
   overflow: hidden;
 }
@@ -858,10 +776,13 @@
   cursor: pointer;
   display: inline-flex;
   flex: 0 1 auto;
+  font-family: var(--font-interface);
   font-size: var(--font-ui-smaller);
-  font-weight: var(--font-semibold);
+  font-weight: var(--font-medium);
   gap: var(--size-2-1);
+  line-height: 1;
   max-width: 170px;
+  min-height: 22px;
   overflow: hidden;
   padding: var(--size-2-1) var(--size-2-1);
   text-overflow: ellipsis;
@@ -873,13 +794,22 @@
   opacity: 0.75;
 }
 
-.opencode-session-view__agent-label-icon {
+.opencode-session-view__agent-label-icon,
+.opencode-session-view__model-pill-icon,
+.opencode-session-view__thinking-pill-icon {
   align-items: center;
   display: inline-flex;
-  flex: 0 0 auto;
+  flex: 0 0 var(--icon-xs);
+  height: var(--icon-xs);
+  justify-content: center;
+  line-height: 0;
+  width: var(--icon-xs);
 }
 
-.opencode-session-view__agent-label-icon svg {
+.opencode-session-view__agent-label-icon svg,
+.opencode-session-view__model-pill-icon svg,
+.opencode-session-view__thinking-pill-icon svg {
+  display: block;
   height: var(--icon-xs);
   width: var(--icon-xs);
 }
@@ -892,8 +822,11 @@
   cursor: pointer;
   display: inline-flex;
   flex: 0 1 auto;
+  font-family: var(--font-interface);
   font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
   gap: var(--size-2-1);
+  line-height: 1;
   min-height: 22px;
   padding: var(--size-2-1) var(--size-2-1);
   transition: color 100ms ease-out;
@@ -905,22 +838,10 @@
 }
 
 .opencode-session-view__model-pill {
-  font-family: var(--font-monospace);
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.opencode-session-view__model-pill-icon {
-  align-items: center;
-  display: inline-flex;
-  flex: 0 0 auto;
-}
-
-.opencode-session-view__model-pill-icon svg {
-  height: var(--icon-xs);
-  width: var(--icon-xs);
 }
 
 .opencode-session-view__thinking-pill {
@@ -931,11 +852,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.opencode-session-view__thinking-pill-icon svg {
-  height: var(--icon-xs);
-  width: var(--icon-xs);
 }
 
 .opencode-session-view__thinking-pill.is-disabled,
@@ -954,6 +870,7 @@
   flex: 0 0 auto;
   font-size: var(--font-ui-smaller);
   gap: var(--size-2-1);
+  line-height: 0;
   min-height: 26px;
   padding: var(--size-2-1);
   transition: color 150ms ease-out, background 150ms ease-out;
@@ -973,15 +890,30 @@
   color: var(--interactive-accent);
 }
 
+.opencode-session-view__composer-toggle--auto-accept.is-active {
+  color: var(--color-red);
+}
+
+.opencode-session-view__composer-toggle--auto-accept.is-active:hover {
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+  color: var(--color-red);
+}
+
 .opencode-session-view__composer-toggle svg {
   height: var(--icon-xs);
   width: var(--icon-xs);
 }
 
 .opencode-session-view__composer-toggle.is-icon-only {
-  height: auto;
+  height: var(--size-4-7);
   justify-content: center;
-  width: auto;
+  padding: var(--size-2-2);
+  width: var(--size-4-7);
+}
+
+.opencode-session-view__composer-toggle.is-icon-only svg {
+  height: var(--icon-s);
+  width: var(--icon-s);
 }
 
 .opencode-session-view__composer-icon {
@@ -992,6 +924,7 @@
   display: inline-flex;
   height: 26px;
   justify-content: center;
+  line-height: 0;
   padding: var(--size-2-1);
   transition: color 150ms ease-out, background 150ms ease-out;
   width: 26px;
@@ -1037,6 +970,7 @@
   flex: 0 0 auto;
   height: 30px;
   justify-content: center;
+  line-height: 0;
   padding: 0 var(--size-4-3);
 }
 
@@ -1085,10 +1019,6 @@
   height: var(--border-width);
   position: relative;
   transition: box-shadow 150ms ease-out;
-}
-
-.opencode-session-view__composer-progress:hover .opencode-session-view__composer-progress-track {
-  box-shadow: 0 0 var(--size-4-2) var(--border-width) color-mix(in srgb, var(--interactive-accent) 80%, transparent);
 }
 
 /* Fill acts as a mask: covers the unfilled portion of the gradient track with the border color. */

@@ -1,4 +1,4 @@
-import { ItemView, Menu, Notice, WorkspaceLeaf, type ViewStateResult, setIcon } from "obsidian";
+import { ItemView, Menu, Notice, WorkspaceLeaf, type ViewStateResult } from "obsidian";
 import type OpenCodePlugin from "../../main";
 import type { DiffPanelContext } from "./DiffPanelView";
 import { DELETE_CURRENT_FILE_COMMANDS, RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
@@ -38,6 +38,10 @@ interface SessionViewState {
   sessionTitle?: string;
   draftId?: string;
   draftDirectory?: string;
+}
+
+interface VaultWithConfig {
+  getConfig?: (key: string) => unknown;
 }
 
 /** Renders one OpenCode session in an Obsidian tab; opened from AgentPanelView session rows. */
@@ -276,7 +280,10 @@ export class SessionView extends ItemView {
   async onOpen(): Promise<void> {
     this.contentEl.addClass("opencode-session-view");
     this.containerEl.addClass("opencode-session-view-container");
+    this.syncReadableLineLength();
     this.registerDomEvent(window, "keydown", this.handleNativeSessionHotkeys, { capture: true });
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.syncReadableLineLength()));
+    this.registerEvent(this.app.workspace.on("css-change", () => this.syncReadableLineLength()));
     // Body-attached popovers (slash menu, model menu) survive tab switches because they live outside `contentEl`.
     // Hide them when this leaf loses focus so they don't float over a different session's view.
     this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => {
@@ -306,8 +313,16 @@ export class SessionView extends ItemView {
     this.docks.dispose();
     this.clearSessionHeaderDecoration();
     this.contentEl.removeClass("opencode-session-view");
+    this.contentEl.removeClass("is-readable-line-width");
     this.containerEl.removeClass("opencode-session-view-container");
     this.contentEl.empty();
+  }
+
+  /** Mirrors Obsidian's editor line-length setting onto this custom session view. */
+  private syncReadableLineLength(): void {
+    // Obsidian does not expose this editor toggle in its public API, so mirror the same config used by MarkdownView.
+    const vault = this.app.vault as typeof this.app.vault & VaultWithConfig;
+    this.contentEl.toggleClass("is-readable-line-width", vault.getConfig?.("readableLineLength") === true);
   }
 
   /** Reloads session data; initial/manual loads rebuild the shell, while active-session refreshes reconcile incrementally. */
@@ -519,7 +534,6 @@ export class SessionView extends ItemView {
     this.model.selectedAgent = this.variants.resolveAgentForSession(session);
     this.model.selectedModel = this.variants.resolveModelForSession(session, this.model.selectedAgent);
     this.model.renderedSessionId = this.model.sessionId;
-    this.contentEl.querySelector<HTMLElement>(".opencode-session-view__title")?.setText(this.model.sessionTitle);
     this.refreshLeafTitle();
     this.composer.updateInsetSoon();
   }
@@ -559,36 +573,23 @@ export class SessionView extends ItemView {
     }
     if (wasBusy && !isBusy && this.model.sessionId) this.setSessionUnread(true);
     if (this.model.sessionId) this.plugin.notifySessionStatusChanged(this.model.sessionId, nextType);
-    this.refreshSessionStateIndicator();
+    this.refreshSessionStateChrome();
     if (wasBusy !== isBusy) void this.timeline.renderStreaming().catch((error) => console.warn("[opencode-plugin:session-status] timeline render failed", error));
-    if (wasBusy !== isBusy) void this.composer.refresh();
+    if (wasBusy !== isBusy) this.composer.onSessionStatusChanged();
   }
 
-  /** Returns the visual state shared by the session tab and its in-view indicator. */
+  /** Returns the visual state shared by the native session tab and view header. */
   private sessionVisualStatus(): SessionVisualStatus {
     if (this.model.pendingPermissions.length > 0 || this.model.pendingQuestions.length > 0) return "attention";
     return visualStatusForSession(this.model.sessionStatusType, this.model.sessionId ? this.plugin.settings.sessionUnread[this.model.sessionId] === true : false);
   }
 
-  /** Updates the tab/header icon and the mounted in-view state indicator after status changes. */
-  private refreshSessionStateIndicator(): void {
+  /** Updates the native tab and view-header status treatment after status changes. */
+  private refreshSessionStateChrome(): void {
     const status = this.sessionVisualStatus();
     this.contentEl.dataset.sessionState = status;
     this.contentEl.dataset.workingAnimation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
-    const indicator = this.contentEl.querySelector<HTMLElement>(".opencode-session-view__state-indicator");
-    if (indicator) this.paintSessionStateIndicator(indicator, status);
     this.refreshLeafTitle();
-  }
-
-  /** Paints one session state indicator without rebuilding the surrounding session view. */
-  private paintSessionStateIndicator(container: HTMLElement, status: SessionVisualStatus): void {
-    container.empty();
-    container.className = `opencode-session-view__state-indicator opencode-session-view__state-indicator--${status}`;
-    if (status === "attention") setIcon(container, "megaphone");
-    if (status === "error") setIcon(container, "alert-circle");
-    if (status === "retry") setIcon(container, "rotate-cw");
-    if (status === "done") container.createSpan();
-    if (status === "working") container.createSpan();
   }
 
   /** Renders a placeholder when no session id is bound to this view. */
@@ -624,10 +625,6 @@ export class SessionView extends ItemView {
       this.stream.subscribe(directory);
       this.contentEl.empty();
       const shell = this.contentEl.createDiv({ cls: "opencode-session-view__shell opencode-session-view__shell--draft" });
-      const header = shell.createDiv({ cls: "opencode-session-view__header" });
-      const titleWrap = header.createDiv({ cls: "opencode-session-view__title-wrap" });
-      titleWrap.createDiv({ text: "New session", cls: "opencode-session-view__title" });
-      titleWrap.createDiv({ text: directory, cls: "opencode-session-view__subtitle" });
       const body = shell.createDiv({ cls: "opencode-session-view__draft-body" });
       body.createDiv({ text: "What would you like to work on?", cls: "opencode-session-view__draft-title" });
       this.composer.mount(shell, {}, true);
@@ -655,7 +652,7 @@ export class SessionView extends ItemView {
     retry.addEventListener("click", () => void this.refresh());
   }
 
-  /** Renders session chrome and the currently loaded page window using Obsidian's MarkdownRenderer. */
+  /** Renders the currently loaded timeline page and composer using Obsidian's MarkdownRenderer. */
   private async renderSession(session: JsonObject, messages: OpenCodeMessageBundle[], options: { initialLoad: boolean }): Promise<void> {
     const sessionId = this.model.sessionId;
     const bindingVersion = this.sessionBindingVersion;
@@ -663,21 +660,22 @@ export class SessionView extends ItemView {
     const followAnchor = this.scroll.captureFollowLatest();
     const interactionGeneration = this.scroll.captureInteractionGeneration();
     const wasAtBottom = !!followAnchor;
-    const composerState = this.composer.captureDomState();
-    this.composer.persistDraft();
     if (wasAtBottom) this.scroll.markProgrammaticScroll(1600);
-    this.slash.hide();
-    this.variants.hideModelMenu();
-    this.contentEl.dataset.workingAnimation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
-    this.contentEl.empty();
-    const shell = this.contentEl.createDiv({ cls: "opencode-session-view__shell" });
-    this.renderHeader(shell, session);
+    const shell = document.createElement("div");
+    shell.classList.add("opencode-session-view__shell");
 
     const timeline = shell.createDiv({ cls: "opencode-session-view__timeline" });
     const visibleMessageCount = await this.timeline.renderInto(timeline, messages);
 
-    if (!sessionId || !this.isCurrentSessionBinding(sessionId, bindingVersion) || !shell.isConnected) return;
+    if (!sessionId || !this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
 
+    const composerState = this.composer.captureDomState();
+    this.composer.persistDraft();
+    this.slash.hide();
+    this.variants.hideModelMenu();
+    this.contentEl.dataset.workingAnimation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
+    this.contentEl.replaceChildren(shell);
+    this.refreshSessionStateChrome();
     this.composer.mount(shell, session, options.initialLoad && visibleMessageCount === 0);
     this.composer.restoreDomState(composerState);
     this.scroll.renderJumpToBottomButton();
@@ -762,35 +760,14 @@ export class SessionView extends ItemView {
   private setSessionUnread(unread: boolean): void {
     if (!this.model.sessionId || (this.plugin.settings.sessionUnread[this.model.sessionId] === true) === unread) return;
     void this.plugin.rememberSessionUnread(this.model.sessionId, unread).then(() => {
-      this.refreshSessionStateIndicator();
+      this.refreshSessionStateChrome();
       void this.plugin.refreshAgentPanels({ showLoading: false });
     });
   }
 
-  /** Renders the fixed session header with refresh and copy-id actions. */
-  private renderHeader(container: HTMLElement, session: JsonObject): void {
-    const header = container.createDiv({ cls: "opencode-session-view__header" });
-    const titleWrap = header.createDiv({ cls: "opencode-session-view__title-wrap" });
-    const titleLine = titleWrap.createDiv({ cls: "opencode-session-view__title-line" });
-    const indicator = titleLine.createDiv({ cls: "opencode-session-view__state-indicator" });
-    this.paintSessionStateIndicator(indicator, this.sessionVisualStatus());
-    const title = titleLine.createDiv({ text: this.sessionTitleFromSession(session), cls: "opencode-session-view__title" });
-    title.title = "Rename session";
-    title.addEventListener("click", () => this.beginInlineTitleRename(title));
-    titleWrap.createDiv({ text: this.model.sessionId ?? "", cls: "opencode-session-view__subtitle" });
-
-    const actions = header.createDiv({ cls: "opencode-session-view__actions" });
-    const copy = actions.createEl("button", { attr: { "aria-label": "Copy session ID" }, cls: "clickable-icon" });
-    setIcon(copy, "copy");
-    copy.addEventListener("click", () => void this.copySessionId());
-    const refresh = actions.createEl("button", { attr: { "aria-label": "Refresh session" }, cls: "clickable-icon" });
-    setIcon(refresh, "refresh-cw");
-    refresh.addEventListener("click", () => void this.refresh());
-  }
-
-  /** Refreshes indicator, composer disabled state, composer inset, and scroll after the docks controller re-renders. */
+  /** Refreshes native status chrome, composer state, and scroll after the docks controller re-renders. */
   private onRequestDocksChanged(): void {
-    this.refreshSessionStateIndicator();
+    this.refreshSessionStateChrome();
     this.composer.onDocksChanged();
     if (this.scroll.isNearBottom()) this.scroll.scrollToBottom(false);
   }
@@ -989,7 +966,7 @@ export class SessionView extends ItemView {
   private handleNativeSessionHotkeys = (event: KeyboardEvent): void => {
     if (!this.model.sessionId || this.app.workspace.activeLeaf !== this.leaf || event.repeat) return;
     const target = event.target instanceof Element ? event.target : undefined;
-    if (target?.closest(".view-header-title-input, .opencode-session-view__title-input, .modal")) return;
+    if (target?.closest(".view-header-title-input, .modal")) return;
     if (matchesObsidianCommandHotkey(this.app, RENAME_CURRENT_FILE_COMMANDS, event)) {
       event.preventDefault();
       event.stopPropagation();
@@ -1058,7 +1035,7 @@ export class SessionView extends ItemView {
     await this.syncDiffPanel(true);
   }
 
-  /** Extracts the user-facing session title used by the Obsidian tab and in-view header. */
+  /** Extracts the user-facing session title used by the native Obsidian tab and view header. */
   private sessionTitleFromSession(session: JsonObject): string {
     return jsonHelpers.readString(session, ["title", "name", "slug"]) ?? this.model.sessionId ?? "OpenCode session";
   }
@@ -1067,8 +1044,6 @@ export class SessionView extends ItemView {
   applySessionTitle(title: string): void {
     this.model.sessionTitle = title;
     if (this.model.currentSession) this.model.currentSession.title = title;
-    const mountedTitle = this.contentEl.querySelector<HTMLElement>(".opencode-session-view__title");
-    if (mountedTitle) mountedTitle.setText(title);
     this.refreshLeafTitle();
     void this.syncDiffPanel();
   }
@@ -1103,16 +1078,16 @@ export class SessionView extends ItemView {
   /** Starts inline rename when the native Obsidian title is clicked. */
   private handleNativeTitleClick = (event: MouseEvent): void => {
     if (!this.nativeTitleEl || event.target instanceof HTMLInputElement) return;
-    this.beginInlineTitleRename(this.nativeTitleEl, true);
+    this.beginInlineTitleRename(this.nativeTitleEl);
   };
 
   /** Replaces a title handle with an inline editor that saves on Enter/blur and cancels on Escape. */
-  private beginInlineTitleRename(container: HTMLElement, native = false): void {
+  private beginInlineTitleRename(container: HTMLElement): void {
     if (!this.model.sessionId || container.querySelector("input")) return;
     const original = this.getDisplayText();
     const input = document.createElement("input");
     input.type = "text";
-    input.className = native ? "view-header-title-input" : "opencode-session-view__title-input";
+    input.className = "view-header-title-input";
     input.value = original;
     container.replaceChildren(input);
     input.focus();
@@ -1175,13 +1150,6 @@ export class SessionView extends ItemView {
     const tabIcon = leaf.tabHeaderEl?.querySelector<HTMLElement>(".workspace-tab-header-inner-icon");
     tabIcon?.removeAttribute("data-opencode-session-state");
     tabIcon?.removeAttribute("data-working-animation");
-  }
-
-  /** Copies the active session id to clipboard for debugging and API testing. */
-  private async copySessionId(): Promise<void> {
-    if (!this.model.sessionId) return;
-    await navigator.clipboard.writeText(this.model.sessionId);
-    new Notice(`Copied session ID: ${this.model.sessionId}`);
   }
 
 }

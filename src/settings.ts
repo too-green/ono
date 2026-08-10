@@ -13,6 +13,7 @@ export interface OpenCodePluginSettings {
   openedDirectories: string[];
   groupContextTools: boolean;
   showReasoningBlocks: boolean;
+  showContextBarThresholdLabels: boolean;
   interruptConfirmSeconds: number;
   archiveConfirmation: boolean;
   sessionScroll: Record<string, { top: number; atBottom: boolean }>;
@@ -42,6 +43,7 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   openedDirectories: [],
   groupContextTools: false,
   showReasoningBlocks: true,
+  showContextBarThresholdLabels: true,
   interruptConfirmSeconds: 3,
   archiveConfirmation: true,
   sessionScroll: {},
@@ -93,6 +95,17 @@ export class OpenCodeSettingTab extends PluginSettingTab {
         toggle.setValue(this.plugin.settings.archiveConfirmation).onChange(async (value) => {
           this.plugin.settings.archiveConfirmation = value;
           await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(this.containerEl)
+      .setName("Show context bar threshold labels")
+      .setDesc("Show token thresholds beneath the checkpoint markers on the composer context bar.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showContextBarThresholdLabels).onChange(async (value) => {
+          this.plugin.settings.showContextBarThresholdLabels = value;
+          await this.plugin.saveSettings();
+          await this.plugin.refreshSessionViews();
         }),
       );
 

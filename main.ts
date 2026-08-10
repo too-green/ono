@@ -282,6 +282,7 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.openedDirectories = Array.isArray(this.settings.openedDirectories) ? this.settings.openedDirectories : [];
     this.settings.groupContextTools = this.settings.groupContextTools === true;
     this.settings.showReasoningBlocks = this.settings.showReasoningBlocks !== false;
+    this.settings.showContextBarThresholdLabels = this.settings.showContextBarThresholdLabels !== false;
     this.settings.archiveConfirmation = this.settings.archiveConfirmation !== false;
     this.settings.sessionScroll = this.settings.sessionScroll && typeof this.settings.sessionScroll === "object" ? this.settings.sessionScroll : {};
     this.settings.sessionDrafts = this.settings.sessionDrafts && typeof this.settings.sessionDrafts === "object" ? this.settings.sessionDrafts : {};

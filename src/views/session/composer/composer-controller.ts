@@ -35,6 +35,8 @@ export interface ComposerDomState {
   value: string;
   selectionStart: number;
   selectionEnd: number;
+  selectionDirection: "forward" | "backward" | "none";
+  scrollTop: number;
   focused: boolean;
 }
 
@@ -87,8 +89,10 @@ export interface ComposerDeps {
 export class ComposerController {
   private composerEl?: HTMLElement;
   private composerTextarea?: HTMLTextAreaElement;
-  private composerSendButton?: HTMLButtonElement;
+  private composerSendButtons: HTMLButtonElement[] = [];
+  private composerQueuedBadges: HTMLElement[] = [];
   private abortingSession = false;
+  private composing = false;
   private pendingInterruptConfirm = false;
   private interruptConfirmTimer?: number;
   private historyIndex = -1;
@@ -98,7 +102,10 @@ export class ComposerController {
 
   constructor(deps: ComposerDeps) {
     this.deps = deps;
-    this.progressBar = new ContextProgressBarController({ model: deps.model });
+    this.progressBar = new ContextProgressBarController({
+      model: deps.model,
+      showThresholdLabels: () => deps.plugin.settings.showContextBarThresholdLabels,
+    });
     // Captures macOS Command+Enter before Obsidian's global hotkey layer consumes it.
     deps.register.registerDomEvent(window, "keydown", this.handleGlobalComposerSend, { capture: true });
   }
@@ -111,6 +118,8 @@ export class ComposerController {
     if (!composerKey) return;
     const composer = container.createDiv({ cls: "opencode-session-view__composer" });
     this.composerEl = composer;
+    this.composerSendButtons = [];
+    this.composerQueuedBadges = [];
     this.deps.mountDocks(composer);
     this.renderAttachmentChips(composer, composerKey);
     const inputRow = composer.createDiv({ cls: "opencode-session-view__composer-input-row" });
@@ -123,27 +132,13 @@ export class ComposerController {
     this.composerTextarea = textarea;
     this.resizeComposerInput(textarea);
 
-    let prevEmpty = textarea.value.trim().length === 0;
-    textarea.addEventListener("input", () => {
-      this.historyIndex = -1;
-      this.resizeComposerInput(textarea);
-      this.deps.onSlashUpdate(textarea);
-      this.updateInsetSoon();
-      this.scheduleDraftSave();
-      // When the agent is streaming, the send button flips between stop and send modes based on emptiness.
-      const currEmpty = textarea.value.trim().length === 0;
-      if (this.deps.model.sessionBusy) {
-        if (currEmpty !== prevEmpty) {
-          prevEmpty = currEmpty;
-          this.pendingInterruptConfirm = false;
-          if (this.interruptConfirmTimer) window.clearTimeout(this.interruptConfirmTimer);
-          this.interruptConfirmTimer = undefined;
-          void this.refresh();
-        }
-      } else {
-        // Idle composer: keep the send button enabled/disabled in sync with the buffer without a full remount.
-        this.syncSendButtonEnabled();
-      }
+    textarea.addEventListener("input", () => this.handleComposerInput(textarea));
+    textarea.addEventListener("compositionstart", () => {
+      this.composing = true;
+    });
+    textarea.addEventListener("compositionend", () => {
+      this.composing = false;
+      this.handleComposerInput(textarea);
     });
     textarea.addEventListener("keydown", (event) => this.handleComposerKeydown(event), { capture: true });
     if (shouldFocus) window.setTimeout(() => textarea.focus(), 0);
@@ -162,7 +157,8 @@ export class ComposerController {
     const right = controls.createDiv({ cls: "opencode-session-view__composer-right" });
     this.renderQueuedBadge(right);
     this.renderTogglePill(right, "", this.deps.isSessionMuted() ? "bell-off" : "bell", this.deps.isSessionMuted(), () => this.deps.onToggleMute(), "Mute notifications for this session");
-    this.renderTogglePill(right, "", "shield-check", this.deps.shouldAutoApprove(), () => this.deps.onToggleAutoApprove(), "Auto-allow permission requests once");
+    const autoApprove = this.renderTogglePill(right, "", "shield-alert", this.deps.shouldAutoApprove(), () => this.deps.onToggleAutoApprove(), "Auto-allow permission requests once");
+    autoApprove.classList.add("opencode-session-view__composer-toggle--auto-accept");
     this.renderSendButton(right, textarea);
     this.deps.onSlashUpdate(textarea);
     this.updateInsetSoon();
@@ -180,7 +176,9 @@ export class ComposerController {
     this.composerEl?.remove();
     this.composerEl = undefined;
     this.composerTextarea = undefined;
-    this.composerSendButton = undefined;
+    this.composerSendButtons = [];
+    this.composerQueuedBadges = [];
+    this.composing = false;
     this.progressBar.dispose();
   }
 
@@ -197,11 +195,12 @@ export class ComposerController {
   async refresh(): Promise<void> {
     const shell = this.deps.contentEl.querySelector<HTMLElement>(".opencode-session-view__shell");
     if (!shell) return;
-    const focused = this.isFocused();
+    const state = this.captureDomState();
     this.persistDraft();
     this.deps.onBeforeRemount();
     this.composerEl?.remove();
-    this.mount(shell, this.deps.model.currentSession ?? {}, focused);
+    this.mount(shell, this.deps.model.currentSession ?? {}, false);
+    this.restoreDomState(state);
   }
 
   /** Saves the currently mounted composer text to plugin data. Replaces `persistComposerDraft`. */
@@ -224,6 +223,16 @@ export class ComposerController {
   /** Updates textarea disabled state + inset after the docks controller re-renders. Replaces the composer half of `onRequestDocksChanged`. */
   onDocksChanged(): void {
     if (this.composerTextarea?.isConnected) this.composerTextarea.disabled = this.deps.isComposerBlocked();
+    this.syncSendButtons();
+    this.updateInsetSoon();
+  }
+
+  /** Updates busy-state composer controls without replacing the focused textarea. */
+  onSessionStatusChanged(): void {
+    if (!this.deps.model.sessionBusy) this.clearInterruptConfirmation();
+    if (this.composerTextarea?.isConnected) this.composerTextarea.disabled = this.deps.isComposerBlocked();
+    for (const badge of this.composerQueuedBadges) badge.toggleClass("is-visible", this.deps.model.sessionBusy);
+    this.syncSendButtons();
     this.updateInsetSoon();
   }
 
@@ -235,6 +244,8 @@ export class ComposerController {
       value: textarea.value,
       selectionStart: textarea.selectionStart,
       selectionEnd: textarea.selectionEnd,
+      selectionDirection: textarea.selectionDirection,
+      scrollTop: textarea.scrollTop,
       focused: document.activeElement === textarea,
     };
   }
@@ -244,7 +255,8 @@ export class ComposerController {
     if (!state || !this.composerTextarea) return;
     this.composerTextarea.value = state.value;
     this.resizeComposerInput(this.composerTextarea);
-    this.composerTextarea.setSelectionRange(state.selectionStart, state.selectionEnd);
+    this.composerTextarea.setSelectionRange(state.selectionStart, state.selectionEnd, state.selectionDirection);
+    this.composerTextarea.scrollTop = state.scrollTop;
     if (state.focused) this.composerTextarea.focus({ preventScroll: true });
   }
 
@@ -254,13 +266,23 @@ export class ComposerController {
   private renderQueuedBadge(container: HTMLElement): void {
     const badge = container.createSpan({ text: "QUEUED", cls: "opencode-session-view__queued-badge" });
     badge.toggleClass("is-visible", this.deps.model.sessionBusy);
+    this.composerQueuedBadges.push(badge);
   }
 
   /** Renders the send/stop button; click calls abort when busy + composer empty, otherwise sends. */
   private renderSendButton(container: HTMLElement, textarea: HTMLTextAreaElement): void {
-    const stopMode = this.deps.model.sessionBusy && !textarea.value.trim();
     const send = container.createEl("button", { cls: "opencode-session-view__composer-send mod-cta" });
-    this.composerSendButton = send;
+    this.composerSendButtons.push(send);
+    this.paintSendButton(send, textarea);
+    send.addEventListener("click", () => {
+      if (this.deps.model.sessionBusy && !textarea.value.trim()) void this.abortCurrentSession();
+      else void this.sendPrompt();
+    });
+  }
+
+  /** Paints one send action from current model and textarea state without replacing either element. */
+  private paintSendButton(send: HTMLButtonElement, textarea: HTMLTextAreaElement): void {
+    const stopMode = this.deps.model.sessionBusy && !textarea.value.trim();
     send.toggleClass("is-stop", stopMode);
     send.toggleClass("is-loading", this.deps.model.submittingPrompt || this.abortingSession);
     send.toggleClass("is-confirming", this.pendingInterruptConfirm);
@@ -276,20 +298,31 @@ export class ComposerController {
       send.title = `${Platform.isMacOS ? "⌘" : "Ctrl"}+Enter to send · Shift+Enter for newline`;
       send.disabled = this.deps.isComposerBlocked() || this.deps.model.submittingPrompt || !textarea.value.trim();
     }
-    send.addEventListener("click", () => {
-      if (stopMode) void this.abortCurrentSession();
-      else void this.sendPrompt();
-    });
   }
 
-  /** Updates only the send button's disabled state from the current buffer; avoids the cost of refresh() per keystroke. Referenced by the textarea `input` listener in `mount`. */
-  private syncSendButtonEnabled(): void {
-    const send = this.composerSendButton;
+  /** Repaints the mounted send action from the stable live textarea. */
+  private syncSendButtons(): void {
     const textarea = this.composerTextarea;
-    if (!send || !textarea) return;
-    // Stop mode (busy + empty) is only reconfigured during a full refresh, so skip it here.
-    if (this.deps.model.sessionBusy && !textarea.value.trim()) return;
-    send.disabled = this.deps.isComposerBlocked() || this.deps.model.submittingPrompt || !textarea.value.trim();
+    if (!textarea) return;
+    for (const send of this.composerSendButtons) this.paintSendButton(send, textarea);
+  }
+
+  /** Processes native, pasted, accessibility, and composition input without remounting the composer. */
+  private handleComposerInput(textarea: HTMLTextAreaElement): void {
+    this.historyIndex = -1;
+    this.resizeComposerInput(textarea);
+    this.deps.onSlashUpdate(textarea);
+    this.updateInsetSoon();
+    this.scheduleDraftSave();
+    if (textarea.value.trim()) this.clearInterruptConfirmation();
+    this.syncSendButtons();
+  }
+
+  /** Clears the transient double-Esc confirmation before repainting stable controls. */
+  private clearInterruptConfirmation(): void {
+    this.pendingInterruptConfirm = false;
+    if (this.interruptConfirmTimer) window.clearTimeout(this.interruptConfirmTimer);
+    this.interruptConfirmTimer = undefined;
   }
 
   /** Renders one compact boolean composer control; referenced by auto-approve and mute toggles. */
@@ -406,6 +439,7 @@ export class ComposerController {
   /** Handles keyboard send, interrupt, and prompt-history navigation in the composer textarea. */
   private handleComposerKeydown(event: KeyboardEvent): void {
     const textarea = event.currentTarget as HTMLTextAreaElement;
+    if (this.composing || event.isComposing) return;
     if (this.deps.onSlashKeydown(event, textarea)) return;
     // Stop-button Esc confirmation: only active when agent is running and composer is empty.
     if (event.key === "Escape" && this.deps.model.sessionBusy && !textarea.value.trim() && !this.abortingSession) {
@@ -442,7 +476,7 @@ export class ComposerController {
 
   /** Captures macOS Command+Enter before Obsidian's global hotkey layer consumes it. */
   private handleGlobalComposerSend = (event: KeyboardEvent): void => {
-    if (!Platform.isMacOS || !event.metaKey) return;
+    if (this.composing || event.isComposing || !Platform.isMacOS || !event.metaKey) return;
     if (document.activeElement !== this.composerTextarea) return;
     if (event.key !== "Enter" && event.code !== "Enter" && event.code !== "NumpadEnter") return;
     event.preventDefault();

@@ -2,6 +2,7 @@ import type { JsonObject, OpenCodeMessageBundle } from "../../../services/openco
 import { describe, expect, it } from "vitest";
 
 import {
+  assistantTurnTiming,
   isCompactAssistantPart,
   latestMessageIndex,
   latestVisibleAssistantIndex,
@@ -62,6 +63,35 @@ describe("visibleTimelineMessages", () => {
     expect(visibleTimelineMessages(messages, "m3", true).map((message) => message.info.id)).toEqual(["m1"]);
     expect(messages.map((message) => message.info.id)).toEqual(["m3", "m1", "m2"]);
   });
+
+  it("folds a v1 compaction assistant summary into its parent marker", () => {
+    const messages = [
+      bundle("c1", "user", 1, [{ type: "compaction", auto: false }]),
+      bundle("a1", "assistant", 2, [{ type: "text", text: "Retained session context" }], {
+        parentID: "c1",
+        mode: "compaction",
+        summary: true,
+      }),
+    ];
+
+    const visible = visibleTimelineMessages(messages, undefined, true);
+
+    expect(visible).toHaveLength(1);
+    expect(visible[0].info.id).toBe("c1");
+    expect(visible[0].info.summary).toBe("Retained session context");
+    expect(visible[0].info.compactionSummaryMessageID).toBe("a1");
+    expect(messages[0].info.summary).toBeUndefined();
+  });
+
+  it("keeps an unpaired compaction assistant visible when its parent is not loaded", () => {
+    const summary = bundle("a1", "assistant", 2, [{ type: "text", text: "Retained session context" }], {
+      parentID: "missing",
+      mode: "compaction",
+      summary: true,
+    });
+
+    expect(visibleTimelineMessages([summary], undefined, true).map((message) => message.info.id)).toEqual(["a1"]);
+  });
 });
 
 describe("timeline index helpers", () => {
@@ -102,5 +132,23 @@ describe("messageRenderOptions", () => {
     ];
     expect(messageRenderOptions(messages, 0)).toEqual({ showAssistantMeta: true, assistantTurnText: "before" });
     expect(messageRenderOptions(messages, 1)).toEqual({ showAssistantMeta: false, assistantTurnText: "" });
+  });
+});
+
+describe("assistantTurnTiming", () => {
+  it("measures a multi-message assistant turn from its preceding user message", () => {
+    const messages = [
+      bundle("u1", "user", 1_000, [{ type: "text", text: "question" }]),
+      bundle("a1", "assistant", 2_000, [{ type: "tool", tool: "read" }], { parentID: "u1", time: { created: 2_000, completed: 4_000 } }),
+      bundle("a2", "assistant", 5_000, [{ type: "text", text: "answer" }], { parentID: "u1", time: { created: 5_000, completed: 10_000 } }),
+    ];
+
+    expect(assistantTurnTiming(messages, 2)).toEqual({ startedAt: 1_000, completedAt: 10_000 });
+  });
+
+  it("falls back to the first assistant creation time when its user message is unavailable", () => {
+    const messages = [bundle("a1", "assistant", 2_000, [{ type: "text", text: "answer" }], { time: { created: 2_000, completed: 4_000 } })];
+
+    expect(assistantTurnTiming(messages, 0)).toEqual({ startedAt: 2_000, completedAt: 4_000 });
   });
 });

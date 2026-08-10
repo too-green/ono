@@ -22,8 +22,16 @@ export interface ScrollDeps {
   contentEl: HTMLElement;
   model: SessionViewModel;
   register: DomEventRegistrar;
+  isActive: () => boolean;
   onNearTop: () => void;
   onUnreadChange: (unread: boolean) => void;
+}
+
+/** Captured bottom-follow intent guarded by user-interaction generation and scroll position. */
+export interface FollowLatestAnchor {
+  generation: number;
+  scrollTop: number;
+  explicit: boolean;
 }
 
 /**
@@ -42,6 +50,9 @@ export class ScrollController {
   private followLatestFrame?: number;
   private followLatestUntil = 0;
   private followLatestReleaseTimer?: number;
+  private followGeneration = 0;
+  private expectedProgrammaticTop?: number;
+  private touchStart?: { x: number; y: number };
   private programmaticScrollUntil = 0;
   private scrollSaveTimer?: number;
 
@@ -64,14 +75,37 @@ export class ScrollController {
     this.scrollBound = true;
     const { contentEl, register, model } = this.deps;
     register.registerDomEvent(contentEl, "scroll", () => {
+      const matchedProgrammaticTarget = this.expectedProgrammaticTop !== undefined && Math.abs(contentEl.scrollTop - this.expectedProgrammaticTop) <= 1;
+      this.expectedProgrammaticTop = undefined;
       this.updateJumpButton();
       this.scheduleScrollStateSave();
       if (Date.now() > this.programmaticScrollUntil) this.markSessionReadIfAtBottom();
-      if (model.followLatest && !this.isNearBottom() && Date.now() > this.programmaticScrollUntil) this.disableFollowLatest();
+      if (model.followLatest && !this.isNearBottom() && !matchedProgrammaticTarget) this.disableFollowLatest();
       if (contentEl.scrollTop < LOAD_OLDER_THRESHOLD_PX) this.deps.onNearTop();
     });
-    register.registerDomEvent(contentEl, "wheel", () => {
-      if (model.followLatest && Date.now() > this.programmaticScrollUntil) this.disableFollowLatest();
+    register.registerDomEvent(contentEl, "wheel", (event) => {
+      this.followGeneration += 1;
+      if (event.deltaY < 0) this.disableFollowLatest();
+    });
+    register.registerDomEvent(contentEl, "touchstart", (event) => {
+      this.followGeneration += 1;
+      const touch = event.touches[0];
+      this.touchStart = touch ? { x: touch.clientX, y: touch.clientY } : undefined;
+    });
+    register.registerDomEvent(contentEl, "pointerdown", () => {
+      this.followGeneration += 1;
+    });
+    register.registerDomEvent(contentEl, "touchmove", (event) => {
+      const touch = event.touches[0];
+      if (!touch || !this.touchStart) return;
+      const deltaX = touch.clientX - this.touchStart.x;
+      const deltaY = touch.clientY - this.touchStart.y;
+      if (deltaY > 4 && Math.abs(deltaY) > Math.abs(deltaX)) this.disableFollowLatest();
+    });
+    register.registerDomEvent(window, "keydown", (event) => {
+      if (!this.deps.isActive()) return;
+      if (isEditableTarget(event.target)) return;
+      if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) this.disableFollowLatest();
     });
   }
 
@@ -89,17 +123,24 @@ export class ScrollController {
   // ---- scroll restoration
 
   /** Restores bottom/default/current scroll after async markdown rendering settles. */
-  async restoreScrollAfterRender(initialLoad: boolean, previousTop: number, wasAtBottom: boolean): Promise<void> {
+  async restoreScrollAfterRender(
+    initialLoad: boolean,
+    previousTop: number,
+    followAnchor: FollowLatestAnchor | undefined,
+    interactionGeneration: number,
+  ): Promise<void> {
     await this.nextFrame();
     const { contentEl, model, plugin } = this.deps;
-    if (model.followLatest) {
-      this.scrollToBottom(false);
+    if (interactionGeneration !== this.followGeneration) {
+      this.updateJumpButton();
+      return;
+    }
+    if (this.restoreFollowLatest(followAnchor)) {
+      // `restoreFollowLatest` performs the guarded write.
     } else if (initialLoad) {
       const saved = model.sessionId ? plugin.settings.sessionScroll[model.sessionId] : undefined;
       if (saved && !saved.atBottom) contentEl.scrollTop = saved.top;
       else this.scrollToBottom(false);
-    } else if (wasAtBottom) {
-      this.scrollToBottom(false);
     } else {
       contentEl.scrollTop = previousTop;
     }
@@ -107,26 +148,29 @@ export class ScrollController {
   }
 
   /** Captures the first visible timeline row before older messages are prepended. */
-  capturePrependAnchor(): { id: string; offset: number } | undefined {
+  capturePrependAnchor(): { id: string; offset: number; generation: number; scrollTop: number } | undefined {
     const view = this.deps.contentEl.getBoundingClientRect();
     const visible = Array.from(this.deps.contentEl.querySelectorAll<HTMLElement>("[data-message-id]"))
       .map((element) => ({ element, rect: element.getBoundingClientRect() }))
       .filter((item) => item.rect.bottom > view.top && item.rect.top < view.bottom)
       .sort((a, b) => a.rect.top - b.rect.top)[0];
     const id = visible?.element.dataset.messageId;
-    return id ? { id, offset: visible.rect.top - view.top } : undefined;
+    return id ? { id, offset: visible.rect.top - view.top, generation: this.followGeneration, scrollTop: this.deps.contentEl.scrollTop } : undefined;
   }
 
   /** Re-applies a captured row offset after markdown/layout work from a prepend has settled. */
-  async restorePrependAnchor(anchor: { id: string; offset: number } | undefined): Promise<void> {
+  async restorePrependAnchor(anchor: { id: string; offset: number; generation: number; scrollTop: number } | undefined): Promise<void> {
     if (!anchor) return;
+    let expectedTop = anchor.scrollTop;
     for (let frame = 0; frame < 30; frame += 1) {
       await this.nextFrame();
+      if (anchor.generation !== this.followGeneration || Math.abs(this.deps.contentEl.scrollTop - expectedTop) > 1) return;
       const element = this.deps.contentEl.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(anchor.id)}"]`);
       if (!element) continue;
       const delta = element.getBoundingClientRect().top - this.deps.contentEl.getBoundingClientRect().top - anchor.offset;
       if (Math.abs(delta) <= 0.5) return;
       this.deps.contentEl.scrollTop += delta;
+      expectedTop = this.deps.contentEl.scrollTop;
     }
   }
 
@@ -143,8 +187,33 @@ export class ScrollController {
     return this.deps.model.followLatest || this.isNearBottom();
   }
 
+  /** Captures user-interaction generation for guarding non-follow scroll restoration. */
+  captureInteractionGeneration(): number {
+    return this.followGeneration;
+  }
+
+  /** Captures follow intent so asynchronous rendering cannot override later user scrolling. */
+  captureFollowLatest(): FollowLatestAnchor | undefined {
+    if (!this.shouldFollowLatest()) return undefined;
+    return {
+      generation: this.followGeneration,
+      scrollTop: this.deps.contentEl.scrollTop,
+      explicit: this.deps.model.followLatest,
+    };
+  }
+
+  /** Restores a captured bottom anchor only when no user interaction invalidated it. */
+  restoreFollowLatest(anchor: FollowLatestAnchor | undefined): boolean {
+    if (!anchor || anchor.generation !== this.followGeneration) return false;
+    const unchangedImplicitAnchor = !anchor.explicit && Math.abs(this.deps.contentEl.scrollTop - anchor.scrollTop) <= 1;
+    if (!(anchor.explicit ? this.deps.model.followLatest : unchangedImplicitAnchor || this.isNearBottom())) return false;
+    this.scrollToBottom(false);
+    return true;
+  }
+
   /** Enables chat-style auto-follow after the user sends a prompt; referenced by send and streaming renders. */
   enableFollowLatest(): void {
+    this.followGeneration += 1;
     this.deps.model.followLatest = true;
     if (this.followLatestReleaseTimer) window.clearTimeout(this.followLatestReleaseTimer);
     this.followLatestReleaseTimer = undefined;
@@ -172,6 +241,7 @@ export class ScrollController {
 
   /** Stops explicit auto-follow when the run settles or the user manually scrolls away. */
   disableFollowLatest(): void {
+    this.followGeneration += 1;
     this.deps.model.followLatest = false;
     this.followLatestUntil = 0;
     if (this.followLatestFrame !== undefined) window.cancelAnimationFrame(this.followLatestFrame);
@@ -187,8 +257,7 @@ export class ScrollController {
     if (this.followLatestReleaseTimer) window.clearTimeout(this.followLatestReleaseTimer);
     this.followLatestReleaseTimer = window.setTimeout(() => {
       this.followLatestReleaseTimer = undefined;
-      this.deps.model.followLatest = false;
-      this.followLatestUntil = 0;
+      this.disableFollowLatest();
     }, 2000);
   }
 
@@ -217,7 +286,9 @@ export class ScrollController {
   alignToBottom(): void {
     this.programmaticScrollUntil = Date.now() + 600;
     const el = this.deps.contentEl;
-    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    const top = Math.max(0, el.scrollHeight - el.clientHeight);
+    this.expectedProgrammaticTop = top;
+    el.scrollTop = top;
   }
 
   /** Shows the subdued jump button only while the user is reading away from latest. */
@@ -254,4 +325,10 @@ export class ScrollController {
   private nextFrame(): Promise<void> {
     return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
   }
+}
+
+/** Returns whether keyboard scrolling originated inside an editable composer control. */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || target.matches("input, textarea, select, [contenteditable='true']");
 }

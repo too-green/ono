@@ -1,12 +1,18 @@
 import { setIcon } from "obsidian";
 
 import type { JsonObject } from "../../../services/opencode-types";
+import { readObject, readString } from "../json-helpers";
 import { contextSummary, renderToolCall } from "./tool-renderer";
-import { renderLazyDetailsBody, type BlockRenderCtx } from "./tool-primitives";
+import { bindDisclosureState, disclosureKey, renderLazyDetailsBody, type BlockRenderCtx } from "./tool-primitives";
 
 /** Renders consecutive read/search/list tools under one collapsed context-gathering container; called by `TimelineRenderer`. */
 export async function renderContextToolGroup(container: HTMLElement, parts: JsonObject[], ctx: BlockRenderCtx): Promise<void> {
-  const details = container.createEl("details", { cls: "opencode-session-view__tool-group opencode-session-view__tool" });
+  const running = parts.some((part) => {
+    const status = readString(readObject(part, "state") ?? {}, ["status"]);
+    return status === "pending" || status === "running";
+  });
+  const details = container.createEl("details", { cls: `opencode-session-view__tool-group opencode-session-view__tool${running ? " opencode-session-view__tool--running" : ""}` });
+  bindDisclosureState(details, disclosureKey(ctx, "context", parts.slice(0, 1)), ctx.openDisclosures);
   const summary = details.createEl("summary", { cls: "opencode-session-view__tool-summary" });
   const icon = summary.createSpan({ cls: "opencode-session-view__tool-icon" });
   setIcon(icon, "search");

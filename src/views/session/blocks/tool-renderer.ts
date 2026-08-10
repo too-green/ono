@@ -1,8 +1,9 @@
 import { setIcon } from "obsidian";
 
 import type { JsonObject } from "../../../services/opencode-types";
-import { inlineValue, languageFromPath } from "../diff-parsing";
-import { readObject, readString } from "../json-helpers";
+import type { ToolDisplaySetting } from "../../../settings";
+import { inlineValue, languageFromPath, parseReadOutputRows, parseUnifiedDiffRows } from "../diff-parsing";
+import { readNumber, readObject, readString } from "../json-helpers";
 import { displayPath as displayPathRaw, splitPath } from "../path-utils";
 import {
   renderEditDiff,
@@ -18,18 +19,42 @@ import {
   renderReadTool,
   renderTaskTool,
   renderTodoTool,
+  taskSessionId,
   todoSubtitle,
   todosFromTool,
 } from "./specialized-tool-renderers";
-import { renderJsonSection, renderLazyDetailsBody, renderMarkdownSection, renderCodeBlock, type BlockRenderCtx } from "./tool-primitives";
-
-const PRIMARY_ARG_KEYS = ["description", "query", "path", "filePath", "filepath", "pattern", "name", "command"];
+import {
+  bindDisclosureState,
+  disclosureKey,
+  renderCodeBlock,
+  renderLazyDetailsBody,
+  renderRawTextOutput,
+  renderToolDetails,
+  type BlockRenderCtx,
+} from "./tool-primitives";
 
 export interface ToolInfo {
   title: string;
   subtitle?: string;
-  tags: string[];
 }
+
+export interface CollapsedToolDisplay {
+  icon: string;
+  text: string;
+}
+
+interface ToolBlockOptions {
+  status: string;
+  icon: string;
+  part: JsonObject;
+  ctx: BlockRenderCtx;
+  renderSummary: (summary: HTMLElement) => void;
+  renderBody?: (body: HTMLElement) => Promise<void>;
+  className?: string;
+  disclosureKey?: string;
+}
+
+type ToolFileOperation = "new" | "deleted" | "moved";
 
 /** Renders one collapsed-by-default tool call with specialized expanded states for common opencode tools; called by timeline and context renderers. */
 export async function renderToolCall(container: HTMLElement, part: JsonObject, ctx: BlockRenderCtx): Promise<void> {
@@ -48,57 +73,89 @@ export async function renderToolCall(container: HTMLElement, part: JsonObject, c
         cls: "opencode-session-view__patch-files",
         attr: { role: "group", "aria-label": "Patched files" },
       });
-      for (const file of files) renderPatchFileCall(group, file, state, ctx);
+      for (const file of files) renderPatchFileCall(group, file, part, state, ctx);
       return;
     }
   }
 
   if (tool === "apply_patch" && (status === "pending" || status === "running")) {
-    renderPendingPatchCall(container, status);
+    renderPendingPatchCall(container, status, part, ctx);
     return;
   }
 
-  const details = container.createEl("details", { cls: `opencode-session-view__tool opencode-session-view__tool--${status}` });
-  const summary = details.createEl("summary", { cls: "opencode-session-view__tool-summary" });
-  if (hasToolIcon(tool)) {
-    const icon = summary.createSpan({ cls: "opencode-session-view__tool-icon" });
-    setIcon(icon, toolIcon(tool));
-  }
-  if (isPathTool(tool)) renderPathToolSummary(summary, tool, input, state, ctx);
-  else if (isContextLocationTool(tool)) renderContextLocationSummary(summary, tool, input, ctx);
-  else if (tool === "bash" || tool === "shell") renderBashToolSummary(summary, input, state);
-  else {
-    summary.createSpan({ text: info.title, cls: "opencode-session-view__tool-title" });
-    if (info.subtitle) summary.createSpan({ text: info.subtitle, cls: "opencode-session-view__tool-subtitle" });
-  }
-  if (status !== "completed" && status !== "error") summary.createSpan({ text: status, cls: "opencode-session-view__tool-status" });
+  const custom = customToolDisplay(tool, input, ctx.customToolDisplays);
+  renderToolBlock(container, {
+    status,
+    icon: custom?.icon ?? toolIcon(tool),
+    part,
+    ctx,
+    renderSummary: (summary) => {
+      renderCollapsedSummary(summary, tool, input, state, info, custom, ctx);
+      if (tool === "write" && readObject(state, "metadata")?.exists === false) renderFileOperation(summary, "new");
+    },
+    renderBody: async (body) => renderToolBody(body, tool, input, output, state, ctx),
+    className: tool === "task" ? "opencode-session-view__tool--task" : undefined,
+  });
+}
 
-  renderLazyDetailsBody(details, "opencode-session-view__tool-body", async (body) => renderToolBody(body, tool, input, output, state, info.tags, ctx));
+/** Renders the common icon, summary, state, disclosure, lazy body, and raw-context control used by every tool block. */
+function renderToolBlock(container: HTMLElement, options: ToolBlockOptions): void {
+  const classes = [
+    "opencode-session-view__tool",
+    `opencode-session-view__tool--${options.status}`,
+    options.renderBody ? "" : "opencode-session-view__tool--static",
+    options.className ?? "",
+  ].filter(Boolean).join(" ");
+  const block = options.renderBody
+    ? container.createEl("details", { cls: classes })
+    : container.createDiv({ cls: classes });
+  if (options.renderBody) {
+    bindDisclosureState(
+      block as HTMLDetailsElement,
+      options.disclosureKey ?? disclosureKey(options.ctx, "tool", [options.part]),
+      options.ctx.openDisclosures,
+    );
+  }
+  const summary = options.renderBody
+    ? block.createEl("summary", { cls: "opencode-session-view__tool-summary" })
+    : block.createDiv({ cls: "opencode-session-view__tool-summary" });
+  const icon = summary.createSpan({ cls: "opencode-session-view__tool-icon" });
+  setIcon(icon, options.icon);
+  options.renderSummary(summary);
+  if (!options.renderBody) return;
+  renderLazyDetailsBody(block as HTMLDetailsElement, "opencode-session-view__tool-body", async (body) => {
+    await renderToolDetails(body, options.part, options.ctx, options.renderBody!);
+  });
 }
 
 /** Renders a non-expandable placeholder while apply_patch has no authoritative per-file metadata. */
-function renderPendingPatchCall(container: HTMLElement, status: string): void {
-  const block = container.createDiv({ cls: `opencode-session-view__tool opencode-session-view__tool--${status} opencode-session-view__tool--static` });
-  const summary = block.createDiv({ cls: "opencode-session-view__tool-summary" });
-  const icon = summary.createSpan({ cls: "opencode-session-view__tool-icon" });
-  setIcon(icon, "pencil");
-  summary.createSpan({ text: "Patching files…", cls: "opencode-session-view__tool-title" });
-  summary.createSpan({ text: status, cls: "opencode-session-view__tool-status" });
+function renderPendingPatchCall(container: HTMLElement, status: string, part: JsonObject, ctx: BlockRenderCtx): void {
+  renderToolBlock(container, {
+    status,
+    icon: configuredToolIcon("apply_patch", ctx.customToolDisplays),
+    part,
+    ctx,
+    renderSummary: (summary) => summary.createSpan({ text: "Patching files…", cls: "opencode-session-view__tool-title" }),
+  });
 }
 
 /** Renders one completed apply-patch file as an independently collapsible edit-style block. */
-function renderPatchFileCall(container: HTMLElement, diff: EditDiff, state: JsonObject, ctx: BlockRenderCtx): void {
-  const details = container.createEl("details", {
-    cls: "opencode-session-view__tool opencode-session-view__tool--completed opencode-session-view__tool--patch-file",
+function renderPatchFileCall(container: HTMLElement, diff: EditDiff, part: JsonObject, state: JsonObject, ctx: BlockRenderCtx): void {
+  renderToolBlock(container, {
+    status: "completed",
+    icon: configuredToolIcon("apply_patch", ctx.customToolDisplays),
+    part,
+    ctx,
+    disclosureKey: disclosureKey(ctx, "patch-file", [part], diff.targetPath ?? diff.file ?? diff.sourcePath),
+    className: "opencode-session-view__tool--patch-file",
+    renderSummary: (summary) => {
+      renderPatchFileSummary(summary, diff, ctx);
+      renderDiffTotals(summary, [diff]);
+      const operation = patchOperationLabel(diff.operation);
+      if (operation) renderFileOperation(summary, operation);
+    },
+    renderBody: async (body) => renderEditDiff(body, diff, state, ctx),
   });
-  const summary = details.createEl("summary", { cls: "opencode-session-view__tool-summary" });
-  const icon = summary.createSpan({ cls: "opencode-session-view__tool-icon" });
-  setIcon(icon, "pencil");
-  renderPatchFileSummary(summary, diff, ctx);
-  renderDiffTotals(summary, [diff]);
-  const operation = patchOperationLabel(diff.operation);
-  if (operation) summary.createSpan({ text: operation, cls: "opencode-session-view__tool-status" });
-  renderLazyDetailsBody(details, "opencode-session-view__tool-body", async (body) => renderEditDiff(body, diff, state, ctx));
 }
 
 /** Renders operation-aware source and target paths for one completed patch file. */
@@ -108,12 +165,23 @@ function renderPatchFileSummary(summary: HTMLElement, diff: EditDiff, ctx: Block
   else summary.createSpan({ text: "Patched file", cls: "opencode-session-view__tool-title" });
 }
 
-/** Returns the operation label that distinguishes non-update patch results. */
-function patchOperationLabel(operation: EditDiff["operation"]): string | undefined {
-  if (operation === "add") return "Created";
-  if (operation === "delete") return "Deleted";
-  if (operation === "move") return "Moved";
+/** Returns the display operation that distinguishes non-update patch results. */
+function patchOperationLabel(operation: EditDiff["operation"]): ToolFileOperation | undefined {
+  if (operation === "add") return "new";
+  if (operation === "delete") return "deleted";
+  if (operation === "move") return "moved";
   return undefined;
+}
+
+/** Appends a responsive full/initial file-operation label after collapsed diff totals. */
+function renderFileOperation(summary: HTMLElement, operation: ToolFileOperation): void {
+  const label = operation === "new" ? "New" : operation === "deleted" ? "Deleted" : "Moved";
+  const element = summary.createSpan({
+    cls: `opencode-session-view__file-operation opencode-session-view__file-operation--${operation}`,
+    attr: { "aria-label": label, title: label },
+  });
+  element.createSpan({ text: label, cls: "opencode-session-view__file-operation-full", attr: { "aria-hidden": "true" } });
+  element.createSpan({ text: label[0], cls: "opencode-session-view__file-operation-compact", attr: { "aria-hidden": "true" } });
 }
 
 /** Renders the specialized expanded body for a tool once its disclosure has been opened. */
@@ -123,7 +191,6 @@ async function renderToolBody(
   input: JsonObject,
   output: string | undefined,
   state: JsonObject,
-  tags: string[],
   ctx: BlockRenderCtx,
 ): Promise<void> {
   if (tool === "read" || tool === "read_file") await renderReadTool(container, input, output, state, ctx);
@@ -131,17 +198,12 @@ async function renderToolBody(
   else if (tool === "edit" || tool === "write" || tool === "apply_patch") await renderEditTool(container, tool, input, output, state, ctx);
   else if (tool === "task") await renderTaskTool(container, input, output, state, ctx);
   else if (tool.startsWith("todo")) await renderTodoTool(container, input, state, ctx);
-  else await renderGenericTool(container, input, output, tags, ctx);
+  else renderGenericTool(container, output);
 }
 
-/** Renders unknown tools as readable input/output sections plus up to three argument tags. */
-async function renderGenericTool(container: HTMLElement, input: JsonObject, output: string | undefined, tags: string[], ctx: BlockRenderCtx): Promise<void> {
-  if (tags.length > 0) {
-    const tagWrap = container.createDiv({ cls: "opencode-session-view__tool-tags" });
-    for (const tag of tags) tagWrap.createSpan({ text: tag, cls: "opencode-session-view__tool-tag" });
-  }
-  await renderJsonSection(container, "Input", input, ctx);
-  if (output) await renderMarkdownSection(container, "Output", output, ctx);
+/** Renders generic/search/skill output verbatim when raw context is disabled. */
+function renderGenericTool(container: HTMLElement, output: string | undefined): void {
+  renderRawTextOutput(container, output);
 }
 
 /** Normalizes OpenCode tool names so aliases share one renderer path. */
@@ -149,15 +211,107 @@ export function normalizedToolName(part: JsonObject): string {
   return (readString(part, ["tool", "name"]) ?? "tool").toLowerCase();
 }
 
-/** Builds fallback tool title/subtitle/tags using the getToolInfo-style primary argument extraction from the spec. */
+/** Builds the remaining specialized title/count information used by task and todo summaries. */
 export function toolInfo(tool: string, input: JsonObject, state: JsonObject): ToolInfo {
   const title = readString(state, ["title"]) ?? toolTitle(tool, input);
-  const subtitle = tool.startsWith("todo") ? todoSubtitle(todosFromTool(input, state)) : primaryArg(input);
-  const tags = Object.entries(input)
-    .filter(([key]) => !PRIMARY_ARG_KEYS.includes(key))
-    .slice(0, 3)
-    .map(([key, value]) => `${key}=${inlineValue(value)}`);
-  return { title, subtitle, tags };
+  const subtitle = tool.startsWith("todo") ? todoSubtitle(todosFromTool(input, state)) : undefined;
+  return { title, subtitle };
+}
+
+/** Resolves a user-defined collapsed icon and argument value for an exact normalized tool name. */
+export function customToolDisplay(
+  tool: string,
+  input: JsonObject,
+  displays: ToolDisplaySetting[] | undefined,
+): CollapsedToolDisplay | undefined {
+  const display = displays?.find((item) => item.tool.trim().toLowerCase() === tool);
+  if (!display) return undefined;
+  const value = display.displayArgument ? input[display.displayArgument] : undefined;
+  return {
+    icon: display.icon || "wrench",
+    text: value === undefined ? tool : inlineValue(value),
+  };
+}
+
+/** Chooses a configured icon while preserving specialized summary content such as patch-file paths. */
+function configuredToolIcon(tool: string, displays: ToolDisplaySetting[] | undefined): string {
+  return displays?.find((item) => item.tool.trim().toLowerCase() === tool)?.icon || toolIcon(tool);
+}
+
+/** Supplies the tool-specific text placed inside the common collapsed block container. */
+function renderCollapsedSummary(
+  summary: HTMLElement,
+  tool: string,
+  input: JsonObject,
+  state: JsonObject,
+  info: ToolInfo,
+  custom: CollapsedToolDisplay | undefined,
+  ctx: BlockRenderCtx,
+): void {
+  if (tool === "task") {
+    renderTaskToolSummary(summary, input, state, info, ctx);
+    return;
+  }
+  if (custom) {
+    summary.createSpan({ text: custom.text, cls: "opencode-session-view__tool-subtitle" });
+    return;
+  }
+  if (isPathTool(tool)) {
+    renderPathToolSummary(summary, tool, input, state, ctx);
+    return;
+  }
+  if (tool === "bash" || tool === "shell") {
+    renderBashToolSummary(summary, input, state);
+    return;
+  }
+  if (tool === "glob" || tool === "grep") {
+    summary.createSpan({ text: readString(input, ["pattern"]) ?? tool, cls: "opencode-session-view__tool-subtitle" });
+    return;
+  }
+  if (tool === "skill") {
+    summary.createSpan({ text: readString(input, ["name"]) ?? tool, cls: "opencode-session-view__tool-subtitle" });
+    return;
+  }
+  if (tool === "list") {
+    renderContextLocationSummary(summary, tool, input, ctx);
+    return;
+  }
+  if (tool.startsWith("todo")) {
+    summary.createSpan({ text: info.subtitle ?? "0/0 done", cls: "opencode-session-view__tool-subtitle" });
+    return;
+  }
+  summary.createSpan({ text: tool, cls: "opencode-session-view__tool-subtitle" });
+}
+
+/** Renders the resolved child-session link followed by the task description as faint metadata. */
+function renderTaskToolSummary(summary: HTMLElement, input: JsonObject, state: JsonObject, info: ToolInfo, ctx: BlockRenderCtx): void {
+  renderTaskSessionAction(summary, input, state, ctx);
+  summary.createSpan({
+    text: readString(input, ["description"]) ?? info.title,
+    cls: "opencode-session-view__tool-subtitle opencode-session-view__task-description",
+  });
+}
+
+/** Appends a child-session title button once v1 task metadata and descendant identity are available. */
+function renderTaskSessionAction(summary: HTMLElement, input: JsonObject, state: JsonObject, ctx: BlockRenderCtx): void {
+  const sessionId = taskSessionId(input, state);
+  const session = sessionId ? ctx.resolveSession?.(sessionId) : undefined;
+  if (!sessionId || !session || session.title === sessionId || !ctx.openSession) return;
+  const link = summary.createEl("a", {
+    cls: "opencode-session-view__task-session",
+    attr: {
+      href: "#",
+      "aria-label": `Open subagent session ${session.title}`,
+      title: `Open subagent session ${session.title}`,
+    },
+  });
+  link.createSpan({ text: session.title, cls: "opencode-session-view__task-session-title" });
+  link.addEventListener("pointerdown", (event) => event.stopPropagation());
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void ctx.openSession?.(sessionId, session.title);
+  });
 }
 
 /** Returns true for tools whose collapsed row should prioritize a filesystem path over the tool title. */
@@ -175,12 +329,60 @@ function renderPathToolSummary(summary: HTMLElement, tool: string, input: JsonOb
   const rawPath = toolPath(input) ?? patchToolPath(input, state);
   if (!rawPath) {
     const failedPatch = tool === "apply_patch" && readString(state, ["status"]) === "error";
-    summary.createSpan({ text: failedPatch ? "Patch failed" : toolTitle(tool, input), cls: "opencode-session-view__tool-title" });
+    summary.createSpan({
+      text: failedPatch ? "Patch failed" : toolTitle(tool, input),
+      cls: failedPatch ? "opencode-session-view__tool-subtitle" : "opencode-session-view__tool-title",
+    });
     return;
   }
 
+  if (tool === "read" || tool === "read_file") {
+    renderReadDisplayPath(summary, rawPath, input, state, ctx.sessionDirectory);
+    return;
+  }
   renderDisplayPath(summary, rawPath, ctx.sessionDirectory);
   renderDiffStats(summary, tool, input, state);
+}
+
+/** Renders directory paths uniformly faint and file paths with an optional faint requested line range. */
+function renderReadDisplayPath(container: HTMLElement, rawPath: string, input: JsonObject, state: JsonObject, sessionDirectory?: string): void {
+  const display = displayPathRaw(rawPath, sessionDirectory);
+  const path = container.createSpan({ cls: "opencode-session-view__tool-display-path" });
+  if (readPathKind(state) === "directory") {
+    path.createSpan({ text: display, cls: "opencode-session-view__tool-path-prefix" });
+    return;
+  }
+
+  const split = splitPath(display);
+  if (split.prefix) path.createSpan({ text: split.prefix, cls: "opencode-session-view__tool-path-prefix" });
+  path.createSpan({ text: split.basename, cls: "opencode-session-view__tool-path-basename" });
+  const range = readLineRange(input, state);
+  if (range) path.createSpan({ text: `(${range})`, cls: "opencode-session-view__read-range" });
+}
+
+/** Identifies completed directory reads from v1 display metadata or persisted structured output. */
+function readPathKind(state: JsonObject): "file" | "directory" | undefined {
+  const display = readObject(readObject(state, "metadata") ?? {}, "display");
+  const metadataType = display ? readString(display, ["type"]) : undefined;
+  if (metadataType === "file" || metadataType === "directory") return metadataType;
+  const outputType = readString(state, ["output"])?.match(/<type>\s*(file|directory)\s*<\/type>/i)?.[1]?.toLowerCase();
+  return outputType === "file" || outputType === "directory" ? outputType : undefined;
+}
+
+/** Returns the exact or requested file-line window only when offset or limit was explicitly supplied. */
+function readLineRange(input: JsonObject, state: JsonObject): string | undefined {
+  const offset = readNumber(input, ["offset"]);
+  const limit = readNumber(input, ["limit"]);
+  if (offset === undefined && limit === undefined) return undefined;
+
+  const display = readObject(readObject(state, "metadata") ?? {}, "display");
+  const metadataStart = display ? readNumber(display, ["lineStart"]) : undefined;
+  const metadataEnd = display ? readNumber(display, ["lineEnd"]) : undefined;
+  const rows = parseReadOutputRows(readString(state, ["output"]) ?? "");
+  const start = metadataStart ?? rows[0]?.line ?? offset ?? 1;
+  const end = metadataEnd ?? rows[rows.length - 1]?.line ?? (limit === undefined ? undefined : start + limit - 1);
+  if (end === undefined || end < start) return undefined;
+  return start === end ? String(start) : `${start}-${end}`;
 }
 
 /** Appends edit/write/apply_patch additions/deletions to the collapsed row. */
@@ -192,7 +394,13 @@ function renderDiffStats(summary: HTMLElement, tool: string, input: JsonObject, 
 /** Appends aggregate additions/deletions for the supplied file changes. */
 function renderDiffTotals(summary: HTMLElement, diffs: EditDiff[]): void {
   const totals = diffs.reduce(
-    (acc, diff) => ({ additions: acc.additions + (diff.additions ?? 0), deletions: acc.deletions + (diff.deletions ?? 0) }),
+    (acc, diff) => {
+      const rows = diff.additions === undefined || diff.deletions === undefined ? parseUnifiedDiffRows(diff.patch) : [];
+      return {
+        additions: acc.additions + (diff.additions ?? rows.filter((row) => row.kind === "add").length),
+        deletions: acc.deletions + (diff.deletions ?? rows.filter((row) => row.kind === "del").length),
+      };
+    },
     { additions: 0, deletions: 0 },
   );
   if (totals.additions === 0 && totals.deletions === 0) return;
@@ -242,30 +450,22 @@ export function toolTitle(tool: string, input: JsonObject): string {
   return tool;
 }
 
-/** Returns the best single-line descriptor from a tool input object. */
-export function primaryArg(input: JsonObject): string | undefined {
-  for (const key of PRIMARY_ARG_KEYS) {
-    const value = input[key];
-    if (typeof value === "string" && value.trim()) return value;
-    if (typeof value === "number") return String(value);
-  }
-  return undefined;
+/** Returns true because every tool uses the shared icon-bearing collapsed container. */
+export function hasToolIcon(_tool: string): boolean {
+  return true;
 }
 
-/** Returns true when a tool has a representative icon; generic tools intentionally do not. */
-export function hasToolIcon(tool: string): boolean {
-  return isPathTool(tool) || isContextLocationTool(tool) || tool === "bash" || tool === "shell" || tool === "task" || tool.startsWith("todo");
-}
-
-/** Chooses muted Lucide icons for non-generic collapsed tool rows. */
+/** Chooses muted Lucide icons for built-in tools and a generic wrench for fallback tools. */
 export function toolIcon(tool: string): string {
   if (tool === "read" || tool === "read_file") return "eye";
   if (tool === "grep" || tool === "glob") return "search";
   if (tool === "list") return "list";
   if (tool === "bash" || tool === "shell") return "terminal";
   if (tool === "edit" || tool === "write" || tool === "apply_patch") return "pencil";
-  if (tool === "task") return "brain";
-  if (tool.startsWith("todo")) return "list-checks";
+  if (tool === "question") return "message-circle-question-mark";
+  if (tool === "skill") return "graduation-cap";
+  if (tool === "task") return "bot";
+  if (tool.startsWith("todo")) return "square-check-big";
   return "wrench";
 }
 

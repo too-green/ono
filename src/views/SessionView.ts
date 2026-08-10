@@ -69,6 +69,7 @@ export class SessionView extends ItemView {
       contentEl: this.contentEl,
       model: this.model,
       register: this.makeRegistrar(),
+      isActive: () => this.app.workspace.activeLeaf === this.leaf,
       onNearTop: () => {
         void this.loadOlderMessages();
       },
@@ -78,8 +79,8 @@ export class SessionView extends ItemView {
       contentEl: this.contentEl,
       component: this,
       getSessionId: () => this.model.sessionId,
-      shouldFollowLatest: () => this.scroll.shouldFollowLatest(),
-      scrollToBottom: (smooth) => this.scroll.scrollToBottom(smooth),
+      captureFollowLatest: () => this.scroll.captureFollowLatest(),
+      restoreFollowLatest: (anchor) => this.scroll.restoreFollowLatest(anchor),
       updateJumpButton: () => this.scroll.updateJumpButton(),
     });
     this.timeline = new TimelineRenderer({
@@ -89,29 +90,28 @@ export class SessionView extends ItemView {
       model: this.model,
       getShowReasoningBlocks: () => this.plugin.settings.showReasoningBlocks,
       getGroupContextTools: () => this.plugin.settings.groupContextTools,
+      getCustomToolDisplays: () => this.plugin.settings.customToolDisplays,
       getBindingVersion: () => this.sessionBindingVersion,
       isCurrentBinding: (sessionId, bindingVersion) => this.isCurrentSessionBinding(sessionId, bindingVersion),
       getRevertMessageId: () => this.revertMessageId(),
       requestShellRender: async () => {
         if (this.model.currentSession) await this.renderSession(this.model.currentSession, this.model.loadedMessages, { initialLoad: false });
       },
-      shouldFollowLatest: () => this.scroll.shouldFollowLatest(),
-      markProgrammaticScroll: (durationMs) => this.scroll.markProgrammaticScroll(durationMs),
-      scrollToBottom: (smooth) => this.scroll.scrollToBottom(smooth),
+      captureFollowLatest: () => this.scroll.captureFollowLatest(),
+      restoreFollowLatest: (anchor) => this.scroll.restoreFollowLatest(anchor),
       updateJumpButton: () => this.scroll.updateJumpButton(),
       onFork: (messageId) => void this.forkCurrentSession(messageId),
       onRewind: (bundle) => void this.requestMessageRewind(bundle),
       onRedo: () => void this.redoSessionRewind(),
+      onOpenSession: (sessionId, title) => this.plugin.openSessionTab(sessionId, title),
     });
+    this.registerInterval(window.setInterval(() => this.timeline.refreshActiveTurnDuration(), 1_000));
     this.stream = new StreamController({
       model: this.model,
       subscribeToEvents: (handlers, directory) => this.plugin.requireOpenCodeService().subscribeToEvents(handlers, directory),
       findStreamingPartTarget: (messageId, partId, type) => this.markdownPatcher.findPartTarget(messageId, partId, type),
       queueStreamingMarkdownPatch: (key, element, markdown) => this.markdownPatcher.queue(key, element, markdown),
-      shouldFollowLatest: () => this.scroll.shouldFollowLatest(),
       extendFollowLatest: (durationMs) => this.scroll.extendFollowLatest(durationMs),
-      scrollToBottom: (smooth) => this.scroll.scrollToBottom(smooth),
-      updateJumpButton: () => this.scroll.updateJumpButton(),
       onSessionUpdated: (session) => this.applySessionUpdate(session),
       onSessionDiff: (diffs) => {
         this.model.revertDiffFiles = diffs;
@@ -194,7 +194,7 @@ export class SessionView extends ItemView {
   getIcon(): string {
     switch (this.sessionVisualStatus()) {
       case "working":
-        return this.workingTabIcon();
+        return "circle";
       case "attention":
         return "megaphone";
       case "error":
@@ -361,6 +361,8 @@ export class SessionView extends ItemView {
     this.model.submittingPrompt = submittingPrompt;
     this.model.sessionStatusType = "idle";
     this.model.sessionBusy = false;
+    this.model.activeTurnStartedAt = undefined;
+    this.model.activeTurnCompletedAt = undefined;
     this.model.loadingOlder = false;
     this.model.pendingPermissions = [];
     this.model.pendingQuestions = [];
@@ -374,6 +376,7 @@ export class SessionView extends ItemView {
     this.descendantDiscoveryRetryDelay = 1_000;
     this.model.queuedMessageIds.clear();
     this.model.pendingQueuedUserMessages = 0;
+    this.timeline.clearDisclosureState();
     this.scroll.clearJumpButtonReference();
     if (!submittingPrompt) this.scroll.disableFollowLatest();
   }
@@ -542,6 +545,11 @@ export class SessionView extends ItemView {
     const isBusy = isActiveSessionStatus(nextType);
     this.model.sessionStatusType = nextType;
     this.model.sessionBusy = isBusy;
+    if (!wasBusy && isBusy) {
+      this.model.activeTurnStartedAt = Date.now();
+      this.model.activeTurnCompletedAt = undefined;
+    }
+    if (wasBusy && !isBusy) this.model.activeTurnCompletedAt = Date.now();
 
     if (fromEvent && nextType === "idle") {
       this.model.queuedMessageIds.clear();
@@ -552,6 +560,7 @@ export class SessionView extends ItemView {
     if (wasBusy && !isBusy && this.model.sessionId) this.setSessionUnread(true);
     if (this.model.sessionId) this.plugin.notifySessionStatusChanged(this.model.sessionId, nextType);
     this.refreshSessionStateIndicator();
+    if (wasBusy !== isBusy) void this.timeline.renderStreaming().catch((error) => console.warn("[opencode-plugin:session-status] timeline render failed", error));
     if (wasBusy !== isBusy) void this.composer.refresh();
   }
 
@@ -561,48 +570,25 @@ export class SessionView extends ItemView {
     return visualStatusForSession(this.model.sessionStatusType, this.model.sessionId ? this.plugin.settings.sessionUnread[this.model.sessionId] === true : false);
   }
 
-  /** Selects a tab icon that also exposes the configured working animation to CSS. */
-  private workingTabIcon(): string {
-    switch (normalizeWorkingAnimation(this.plugin.settings.workingAnimation)) {
-      case "W1":
-        return "circle-dot";
-      case "W2":
-        return "loader-circle";
-      case "W4":
-        return "sparkles";
-      default:
-        return "ellipsis";
-    }
-  }
-
   /** Updates the tab/header icon and the mounted in-view state indicator after status changes. */
   private refreshSessionStateIndicator(): void {
     const status = this.sessionVisualStatus();
-    const animation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
     this.contentEl.dataset.sessionState = status;
-    this.contentEl.dataset.workingAnimation = animation;
+    this.contentEl.dataset.workingAnimation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
     const indicator = this.contentEl.querySelector<HTMLElement>(".opencode-session-view__state-indicator");
-    if (indicator) this.paintSessionStateIndicator(indicator, status, animation);
+    if (indicator) this.paintSessionStateIndicator(indicator, status);
     this.refreshLeafTitle();
   }
 
   /** Paints one session state indicator without rebuilding the surrounding session view. */
-  private paintSessionStateIndicator(container: HTMLElement, status: SessionVisualStatus, animation: string): void {
+  private paintSessionStateIndicator(container: HTMLElement, status: SessionVisualStatus): void {
     container.empty();
     container.className = `opencode-session-view__state-indicator opencode-session-view__state-indicator--${status}`;
-    container.dataset.workingAnimation = animation;
     if (status === "attention") setIcon(container, "megaphone");
     if (status === "error") setIcon(container, "alert-circle");
     if (status === "retry") setIcon(container, "rotate-cw");
     if (status === "done") container.createSpan();
-    if (status === "working") {
-      if (animation === "W2") container.createSpan({ cls: "opencode-session-view__state-spinner" });
-      else if (animation === "W3") {
-        container.createSpan();
-        container.createSpan();
-        container.createSpan();
-      } else container.createSpan();
-    }
+    if (status === "working") container.createSpan();
   }
 
   /** Renders a placeholder when no session id is bound to this view. */
@@ -674,12 +660,15 @@ export class SessionView extends ItemView {
     const sessionId = this.model.sessionId;
     const bindingVersion = this.sessionBindingVersion;
     const previousTop = this.contentEl.scrollTop;
-    const wasAtBottom = this.scroll.shouldFollowLatest();
+    const followAnchor = this.scroll.captureFollowLatest();
+    const interactionGeneration = this.scroll.captureInteractionGeneration();
+    const wasAtBottom = !!followAnchor;
     const composerState = this.composer.captureDomState();
     this.composer.persistDraft();
     if (wasAtBottom) this.scroll.markProgrammaticScroll(1600);
     this.slash.hide();
     this.variants.hideModelMenu();
+    this.contentEl.dataset.workingAnimation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
     this.contentEl.empty();
     const shell = this.contentEl.createDiv({ cls: "opencode-session-view__shell" });
     this.renderHeader(shell, session);
@@ -693,7 +682,7 @@ export class SessionView extends ItemView {
     this.composer.restoreDomState(composerState);
     this.scroll.renderJumpToBottomButton();
     this.scroll.bindScrollListener();
-    await this.scroll.restoreScrollAfterRender(options.initialLoad, previousTop, wasAtBottom);
+    await this.scroll.restoreScrollAfterRender(options.initialLoad, previousTop, followAnchor, interactionGeneration);
   }
 
   /** Loads the previous cursor page and prepends it while preserving the top visible message anchor. */
@@ -784,7 +773,7 @@ export class SessionView extends ItemView {
     const titleWrap = header.createDiv({ cls: "opencode-session-view__title-wrap" });
     const titleLine = titleWrap.createDiv({ cls: "opencode-session-view__title-line" });
     const indicator = titleLine.createDiv({ cls: "opencode-session-view__state-indicator" });
-    this.paintSessionStateIndicator(indicator, this.sessionVisualStatus(), normalizeWorkingAnimation(this.plugin.settings.workingAnimation));
+    this.paintSessionStateIndicator(indicator, this.sessionVisualStatus());
     const title = titleLine.createDiv({ text: this.sessionTitleFromSession(session), cls: "opencode-session-view__title" });
     title.title = "Rename session";
     title.addEventListener("click", () => this.beginInlineTitleRename(title));
@@ -846,7 +835,7 @@ export class SessionView extends ItemView {
 
   /** Forks the current session and opens the resulting session tab. */
   private async forkCurrentSession(messageId?: string): Promise<void> {
-    if (!this.model.sessionId) return;
+    if (!this.model.sessionId || this.model.sessionBusy) return;
     try {
       const forked = await this.plugin.requireOpenCodeService().forkSession(this.model.sessionId, this.model.sessionDirectory, messageId);
       await this.plugin.refreshAgentPanels({ showLoading: false });
@@ -1160,7 +1149,7 @@ export class SessionView extends ItemView {
     input.addEventListener("blur", () => void finish(true));
   }
 
-  /** Applies status data attributes to the native view header icon for CSS animation. */
+  /** Applies the current status to native tab and view-header icons. */
   private decorateSessionHeader(): void {
     const status = this.sessionVisualStatus();
     const animation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);

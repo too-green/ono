@@ -79,6 +79,14 @@ describe("diffsFromEditTool", () => {
     expect(diff.patch).toContain("+++ new.ts");
     expect(diff.patch).toContain("+line1");
     expect(diff.patch).toContain("+line2");
+    expect(diff.additions).toBe(2);
+    expect(diff.deletions).toBe(0);
+  });
+
+  it("counts a final newline as a terminator rather than an extra added line", () => {
+    const [diff] = diffsFromEditTool("write", { filePath: "new.ts", content: "one\ntwo\n" }, empty);
+    expect(parseUnifiedDiffRows(diff.patch).filter((row) => row.kind === "add")).toHaveLength(2);
+    expect(diff.additions).toBe(2);
   });
 
   it("parses produced patch through parseUnifiedDiffRows without dropping content", () => {

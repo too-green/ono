@@ -25,6 +25,13 @@ export class App {}
 
 export class Plugin extends Component {}
 
+export abstract class AbstractInputSuggest<T> {
+  constructor(_app?: unknown, _input?: unknown) {}
+  onSelect(_callback: (value: T) => unknown) { return this; }
+  protected abstract getSuggestions(query: string): T[] | Promise<T[]>;
+  abstract renderSuggestion(value: T, element: HTMLElement): void;
+}
+
 export class PluginSettingTab extends Component {
   containerEl = typeof document === "undefined" ? ({} as HTMLElement) : document.createElement("div");
 
@@ -37,6 +44,12 @@ export class Setting {
   constructor(_containerEl?: unknown) {}
   setName() { return this; }
   setDesc() { return this; }
+  setHeading() { return this; }
+  setClass() { return this; }
+  addButton() { return this; }
+  addDropdown() { return this; }
+  addExtraButton() { return this; }
+  addSearch() { return this; }
   addToggle() { return this; }
   addText() { return this; }
 }
@@ -75,3 +88,4 @@ export class Modal {
 }
 
 export const setIcon = (): void => undefined;
+export const getIconIds = (): string[] => [];

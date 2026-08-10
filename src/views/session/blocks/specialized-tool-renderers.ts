@@ -71,10 +71,21 @@ export async function renderTaskTool(
   state: JsonObject,
   ctx: BlockRenderCtx,
 ): Promise<void> {
-  const childId = readString(readObject(state, "metadata") ?? {}, ["sessionId", "sessionID"]);
+  const childId = taskSessionId(input, state);
   await renderJsonSection(container, "Input", input, ctx);
   if (output) await renderMarkdownSection(container, "Result", output, ctx);
   if (childId) container.createDiv({ text: `Child session: ${childId}`, cls: "opencode-session-view__tool-path" });
+}
+
+/** Resolves the authoritative v1 child session id, with exact resume and structured-output fallbacks. */
+export function taskSessionId(input: JsonObject, state: JsonObject): string | undefined {
+  const metadata = readObject(state, "metadata") ?? {};
+  const fromMetadata = readString(metadata, ["sessionId", "sessionID"]);
+  if (fromMetadata) return fromMetadata;
+  const resumed = readString(input, ["task_id", "taskId"]);
+  if (resumed) return resumed;
+  const output = readString(state, ["output"]);
+  return output?.match(/<task\s+id=["']([^"']+)["']/i)?.[1];
 }
 
 /** Renders todo* tool calls as an inert checklist, matching opencode's dedicated todo renderer intent. */
@@ -104,11 +115,10 @@ export function todosFromTool(input: JsonObject, state: JsonObject): JsonObject[
   return metadataTodos.length > 0 ? metadataTodos : readObjectArray(input, "todos");
 }
 
-/** Builds a compact completed/total subtitle for todo tool calls. */
-export function todoSubtitle(todos: JsonObject[]): string | undefined {
-  if (todos.length === 0) return undefined;
+/** Builds the completed/total detail shown by collapsed todo tool calls. */
+export function todoSubtitle(todos: JsonObject[]): string {
   const completed = todos.filter((todo) => readString(todo, ["status"]) === "completed").length;
-  return `${completed}/${todos.length}`;
+  return `${completed}/${todos.length} done`;
 }
 
 /** Copies arbitrary rendered tool text to the clipboard. */

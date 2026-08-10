@@ -65,10 +65,7 @@ describe("StreamController", () => {
       }),
       findStreamingPartTarget: vi.fn<(messageId: string, partId: string, type: string) => HTMLElement | undefined>(() => undefined),
       queueStreamingMarkdownPatch: vi.fn(),
-      shouldFollowLatest: vi.fn(() => false),
       extendFollowLatest: vi.fn(),
-      scrollToBottom: vi.fn(),
-      updateJumpButton: vi.fn(),
       onSessionUpdated: vi.fn(),
       onSessionDiff: vi.fn(),
       onStatusChange: vi.fn(),
@@ -163,11 +160,23 @@ describe("StreamController", () => {
     expect(model.loadedMessages.find((bundle) => bundle.info.id === "m2")?.parts[0]?.id).toBe("p2");
   });
 
+  it("patches mounted text snapshots without scheduling timeline reconciliation", () => {
+    const { model, handlers, deps } = setup();
+    const target = document.createElement("div");
+    target.dataset.partId = "p1";
+    deps.findStreamingPartTarget.mockReturnValue(target);
+    model.loadedMessages = [{ info: { id: "m1" }, parts: [{ id: "p1", messageID: "m1", type: "text", text: "old" }] }];
+
+    emit(handlers, "message.part.updated", { sessionID: "s1", part: { id: "p1", messageID: "m1", type: "text", text: "snapshot" } });
+
+    expect(deps.queueStreamingMarkdownPatch).toHaveBeenCalledWith("m1:p1:text", target, "snapshot");
+    expect(frames.size).toBe(0);
+  });
+
   it("patches mounted text deltas directly and falls back to a timeline render without a target", () => {
     const { model, handlers, deps } = setup();
     const target = document.createElement("div");
     deps.findStreamingPartTarget.mockReturnValue(target);
-    deps.shouldFollowLatest.mockReturnValue(true);
     model.followLatest = true;
     model.loadedMessages = [{ info: { id: "m1" }, parts: [{ id: "p1", messageID: "m1", type: "text", text: "a" }] }];
 
@@ -175,8 +184,6 @@ describe("StreamController", () => {
     expect(model.loadedMessages[0]?.parts[0]?.text).toBe("ab");
     expect(deps.queueStreamingMarkdownPatch).toHaveBeenCalledWith("m1:p1:text", target, "ab");
     expect(deps.extendFollowLatest).toHaveBeenCalledWith(1600);
-    expect(deps.scrollToBottom).toHaveBeenCalledWith(false);
-    expect(deps.updateJumpButton).toHaveBeenCalledOnce();
     expect(frames.size).toBe(0);
 
     deps.findStreamingPartTarget.mockReturnValue(undefined);
@@ -222,12 +229,14 @@ describe("StreamController", () => {
     emit(handlers, "message.updated", { sessionID: "foreign", info: { id: "ignored", role: "assistant" } });
     expect(model.loadedMessages).toEqual([]);
 
-    emit(handlers, "session.created", { info: { id: "child", parentID: "s1" } });
+    emit(handlers, "session.created", { info: { id: "child", parentID: "s1", title: "Research child", directory: "/workspace" } });
+    expect(model.descendantSessions.get("child")).toEqual({ title: "Research child", directory: "/workspace" });
+    expect(frames.size).toBe(1);
     vi.runOnlyPendingTimers();
     expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
 
-    model.descendantSessions.set("child", { title: "Child", directory: "/workspace" });
     emit(handlers, "session.updated", { info: { id: "child", title: "Renamed child" } });
+    expect(model.descendantSessions.get("child")).toEqual({ title: "Renamed child", directory: "/workspace" });
     vi.advanceTimersByTime(499);
     expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
     vi.advanceTimersByTime(1);

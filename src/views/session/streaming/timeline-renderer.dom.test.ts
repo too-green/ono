@@ -29,8 +29,8 @@ function installObsidianDomMethods(): void {
 }
 
 /** Builds a compact bundle for timeline DOM tests. */
-function bundle(id: string, role: string, created: number, parts: JsonObject[]): OpenCodeMessageBundle {
-  return { info: { id, role, time: { created } }, parts };
+function bundle(id: string, role: string, created: number, parts: JsonObject[], extraInfo: JsonObject = {}): OpenCodeMessageBundle {
+  return { info: { id, role, time: { created }, ...extraInfo }, parts };
 }
 
 describe("TimelineRenderer DOM", () => {
@@ -66,17 +66,18 @@ describe("TimelineRenderer DOM", () => {
       model,
       getShowReasoningBlocks: vi.fn(() => true),
       getGroupContextTools: vi.fn(() => true),
+      getCustomToolDisplays: vi.fn(() => []),
       getBindingVersion: () => bindingVersion,
       isCurrentBinding: (sessionId: string, version: number) => model.sessionId === sessionId && bindingVersion === version,
       getRevertMessageId: () => revertMessageId,
       requestShellRender: vi.fn(async () => undefined),
-      shouldFollowLatest: vi.fn(() => false),
-      markProgrammaticScroll: vi.fn(),
-      scrollToBottom: vi.fn(),
+      captureFollowLatest: vi.fn(() => undefined as { generation: number; scrollTop: number; explicit: boolean } | undefined),
+      restoreFollowLatest: vi.fn(() => false),
       updateJumpButton: vi.fn(),
       onFork: vi.fn(),
       onRewind: vi.fn(),
       onRedo: vi.fn(),
+      onOpenSession: vi.fn(),
     };
     return {
       contentEl,
@@ -104,19 +105,146 @@ describe("TimelineRenderer DOM", () => {
     expect(timeline.querySelectorAll(".opencode-session-view__message-meta--assistant")).toHaveLength(1);
   });
 
-  it("replaces a streaming timeline and preserves follow-latest scroll behavior", async () => {
+  it("reveals a paired compaction summary only inside its divider disclosure", async () => {
+    const { contentEl, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const messages = [
+      bundle("c1", "user", 1, [{ type: "compaction", auto: false }]),
+      bundle("a1", "assistant", 2, [{ type: "text", text: "Retained session context" }], {
+        parentID: "c1",
+        mode: "compaction",
+        summary: true,
+      }),
+    ];
+
+    const visibleCount = await renderer.renderInto(timeline, messages);
+    const details = timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__compaction")!;
+
+    expect(visibleCount).toBe(1);
+    expect(timeline.querySelectorAll("[data-message-id]")).toHaveLength(1);
+    expect(details.open).toBe(false);
+    expect(details.querySelector(".opencode-session-view__compaction-summary")?.textContent).toBe("Session compacted");
+    expect(details.querySelector(".opencode-session-view__compaction-body")).toBeNull();
+    expect(timeline.querySelector(".opencode-session-view__assistant-markdown")).toBeNull();
+
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    await vi.waitFor(() => expect(details.querySelector(".opencode-session-view__compaction-body")?.textContent).toBe("Retained session context"));
+    expect(details.textContent).not.toContain("Manual compaction");
+  });
+
+  it("renders live assistant metadata immediately before the first assistant message", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const user = bundle("u1", "user", 2_000, [{ type: "text", text: "question" }], { agent: "build", model: { modelID: "test-model" }, time: {} });
+    model.loadedMessages = [user];
+    model.sessionBusy = true;
+    model.activeTurnStartedAt = 2_000;
+    vi.spyOn(Date, "now").mockReturnValue(5_000);
+
+    await renderer.renderInto(timeline, model.loadedMessages);
+
+    const meta = timeline.querySelector<HTMLElement>(".opencode-session-view__message-meta--working");
+    const actions = Array.from(meta?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+    expect(meta?.textContent).toContain("Build · test-model · 3.0s");
+    expect(meta?.getAttribute("aria-busy")).toBe("true");
+    expect(meta?.querySelector(".opencode-session-view__message-working-indicator")?.getAttribute("aria-hidden")).toBe("true");
+    expect(actions).toHaveLength(0);
+
+    renderer.refreshActiveTurnDuration(7_500);
+    expect(meta?.textContent).toContain("5.5s");
+  });
+
+  it("keeps live metadata on the current assistant and enables actions after idle", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const messages = [
+      bundle("u1", "user", 1_000, [{ type: "text", text: "question" }]),
+      bundle("a1", "assistant", 2_000, [{ type: "tool", tool: "read", state: { status: "completed" } }], { parentID: "u1", time: { created: 2_000, completed: 4_000 } }),
+      bundle("a2", "assistant", 5_000, [{ type: "text", text: "answer" }], { parentID: "u1", time: { created: 5_000, completed: 9_000 } }),
+    ];
+    model.loadedMessages = messages;
+    model.sessionBusy = true;
+    model.activeTurnStartedAt = 1_000;
+    vi.spyOn(Date, "now").mockReturnValue(11_000);
+
+    await renderer.renderInto(timeline, messages);
+
+    const workingMeta = timeline.querySelector<HTMLElement>('[data-message-id="a2"] .opencode-session-view__message-meta--working');
+    const workingActions = Array.from(workingMeta?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+    expect(workingMeta?.textContent).toContain("10s");
+    expect(timeline.querySelector(".opencode-session-view__assistant-meta-placeholder")).toBeNull();
+    expect(workingActions).toHaveLength(0);
+
+    model.sessionBusy = false;
+    model.activeTurnCompletedAt = 10_000;
+    await renderer.renderStreaming();
+
+    const settledMeta = contentEl.querySelector<HTMLElement>('[data-message-id="a2"] .opencode-session-view__message-meta--assistant');
+    const settledActions = Array.from(settledMeta?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+    expect(settledMeta?.textContent).toContain("9.0s");
+    expect(settledMeta?.classList.contains("opencode-session-view__message-meta--working")).toBe(false);
+    expect(settledActions).toHaveLength(2);
+    expect(settledActions.every((action) => !action.disabled)).toBe(true);
+  });
+
+  it("preserves the working indicator while streamed assistant content changes", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const assistant = bundle("a1", "assistant", 2_000, [{ id: "p1", messageID: "a1", type: "text", text: "first" }]);
+    model.loadedMessages = [assistant];
+    model.sessionBusy = true;
+    model.activeTurnStartedAt = 1_000;
+    await renderer.renderInto(timeline, model.loadedMessages);
+    const row = timeline.querySelector<HTMLElement>('[data-message-id="a1"]')!;
+    const indicator = row.querySelector<HTMLElement>(".opencode-session-view__message-working-indicator")!;
+
+    assistant.parts[0].text = "second";
+    await renderer.renderStreaming();
+
+    expect(timeline.querySelector('[data-message-id="a1"]')).toBe(row);
+    expect(row.querySelector(".opencode-session-view__message-working-indicator")).toBe(indicator);
+    expect(row.querySelector(".opencode-session-view__assistant-markdown")?.textContent).toBe("second");
+  });
+
+  it("preserves expanded disclosures and unchanged tool blocks across streamed updates", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const assistant = bundle("a1", "assistant", 2_000, [
+      { id: "r1", messageID: "a1", type: "reasoning", text: "thinking", time: {} },
+      { id: "t1", messageID: "a1", type: "tool", tool: "read", state: { status: "running", input: { filePath: "a.ts" } } },
+    ]);
+    model.loadedMessages = [assistant];
+    model.sessionBusy = true;
+    await renderer.renderInto(timeline, model.loadedMessages);
+    const reasoning = timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__reasoning")!;
+    const tool = timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__tool")!;
+    reasoning.open = true;
+    reasoning.dispatchEvent(new Event("toggle"));
+    tool.open = true;
+    tool.dispatchEvent(new Event("toggle"));
+
+    assistant.parts[0].text = "still thinking";
+    await renderer.renderStreaming();
+
+    expect(timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__reasoning")?.open).toBe(true);
+    expect(timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__tool")).toBe(tool);
+    expect(tool.open).toBe(true);
+  });
+
+  it("reconciles a streaming timeline in place and preserves follow-latest behavior", async () => {
     const { contentEl, model, deps, renderer } = setup();
     const current = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
     current.textContent = "old";
     model.loadedMessages = [bundle("a1", "assistant", 1, [{ type: "text", text: "new" }])];
-    deps.shouldFollowLatest.mockReturnValue(true);
+    const followAnchor = { generation: 4, scrollTop: 0, explicit: true };
+    deps.captureFollowLatest.mockReturnValue(followAnchor);
 
     await renderer.renderStreaming();
 
-    expect(current.isConnected).toBe(false);
+    expect(current.isConnected).toBe(true);
     expect(contentEl.querySelector(".opencode-session-view__assistant-markdown")?.textContent).toBe("new");
-    expect(deps.markProgrammaticScroll).toHaveBeenCalledWith(1200);
-    expect(deps.scrollToBottom).toHaveBeenCalledWith(false);
+    expect(deps.restoreFollowLatest).toHaveBeenCalledWith(followAnchor);
     expect(deps.updateJumpButton).toHaveBeenCalledOnce();
   });
 
@@ -141,6 +269,28 @@ describe("TimelineRenderer DOM", () => {
     expect(current.textContent).toBe("current");
   });
 
+  it("retries instead of committing a row snapshot made stale by a concurrent delta", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const assistant = bundle("a1", "assistant", 1, [{ id: "p1", messageID: "a1", type: "text", text: "first" }]);
+    model.loadedMessages = [assistant];
+    await renderer.renderInto(timeline, model.loadedMessages);
+    assistant.parts[0].text = "snapshot";
+    let releaseSnapshot: (() => void) | undefined;
+    vi.mocked(MarkdownRenderer.renderMarkdown).mockImplementation(async (markdown, container) => {
+      if (markdown === "snapshot") await new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+      container.textContent = markdown;
+    });
+
+    const rendering = renderer.renderStreaming();
+    await vi.waitFor(() => expect(releaseSnapshot).toBeTypeOf("function"));
+    assistant.parts[0].text = "latest";
+    releaseSnapshot?.();
+    await rendering;
+
+    expect(timeline.querySelector(".opencode-session-view__assistant-markdown")?.textContent).toBe("latest");
+  });
+
   it("appends canonical messages and promotes metadata on the previous assistant", async () => {
     const { contentEl, deps, renderer } = setup();
     const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
@@ -151,14 +301,15 @@ describe("TimelineRenderer DOM", () => {
     ];
     const previousRow = timeline.createDiv({ cls: "opencode-session-view__message-row", attr: { "data-message-id": "a1" } });
     previousRow.dataset.messageSignature = messageRenderSignature(messages[0]);
-    deps.shouldFollowLatest.mockReturnValue(true);
+    const followAnchor = { generation: 3, scrollTop: 0, explicit: true };
+    deps.captureFollowLatest.mockReturnValue(followAnchor);
 
     await renderer.reconcileAppendOnly(messages);
 
     expect(contentEl.querySelector(".opencode-session-view__timeline")).toBe(timeline);
     expect(timeline.querySelectorAll("[data-message-id]")).toHaveLength(2);
     expect(timeline.querySelector('[data-message-id="a1"] .opencode-session-view__message-meta--assistant')).not.toBeNull();
-    expect(deps.scrollToBottom).toHaveBeenCalledWith(false);
+    expect(deps.restoreFollowLatest).toHaveBeenCalledWith(followAnchor);
   });
 
   it("removes previous final-turn metadata when appending another assistant message", async () => {
@@ -180,7 +331,7 @@ describe("TimelineRenderer DOM", () => {
     expect(timeline.querySelector('.opencode-session-view__history-boundary')?.textContent).toBe("Beginning of loaded session");
   });
 
-  it("rebuilds when canonical content changes for an existing message", async () => {
+  it("updates canonical content without replacing its message row", async () => {
     const { contentEl, model, renderer } = setup();
     const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
     timeline.createDiv({ cls: "opencode-session-view__history-boundary" });
@@ -192,11 +343,12 @@ describe("TimelineRenderer DOM", () => {
 
     await renderer.reconcileAppendOnly([canonical]);
 
-    expect(timeline.isConnected).toBe(false);
+    expect(timeline.isConnected).toBe(true);
+    expect(contentEl.querySelector('[data-message-id="a1"]')).toBe(row);
     expect(contentEl.querySelector(".opencode-session-view__assistant-markdown")?.textContent).toBe("canonical");
   });
 
-  it("rebuilds when mounted rows are not a contiguous canonical prefix", async () => {
+  it("inserts missing canonical rows without replacing the timeline", async () => {
     const { contentEl, model, renderer } = setup();
     const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
     timeline.createDiv({ cls: "opencode-session-view__history-boundary" });
@@ -210,11 +362,11 @@ describe("TimelineRenderer DOM", () => {
 
     await renderer.reconcileAppendOnly(messages);
 
-    expect(timeline.isConnected).toBe(false);
+    expect(timeline.isConnected).toBe(true);
     expect(Array.from(contentEl.querySelectorAll<HTMLElement>("[data-message-id]")).map((row) => row.dataset.messageId)).toEqual(["u1", "u2"]);
   });
 
-  it("rebuilds when mounted rows outnumber visible canonical messages", async () => {
+  it("removes stale canonical rows without replacing the timeline", async () => {
     const { contentEl, model, renderer } = setup();
     const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
     timeline.createDiv({ cls: "opencode-session-view__history-boundary" });
@@ -228,11 +380,11 @@ describe("TimelineRenderer DOM", () => {
 
     await renderer.reconcileAppendOnly([first]);
 
-    expect(timeline.isConnected).toBe(false);
+    expect(timeline.isConnected).toBe(true);
     expect(Array.from(contentEl.querySelectorAll<HTMLElement>("[data-message-id]")).map((row) => row.dataset.messageId)).toEqual(["u1"]);
   });
 
-  it("rebuilds same-id rewind boundaries when affected files change", async () => {
+  it("updates same-id rewind boundaries without replacing the timeline", async () => {
     const { contentEl, model, renderer, setRevert } = setup();
     const message = bundle("u1", "user", 1, [{ type: "text", text: "question" }]);
     model.loadedMessages = [message];
@@ -244,7 +396,7 @@ describe("TimelineRenderer DOM", () => {
     model.revertDiffFiles = [{ file: "new.ts", additions: 2, deletions: 1 }];
     await renderer.reconcileAppendOnly([message]);
 
-    expect(timeline.isConnected).toBe(false);
+    expect(timeline.isConnected).toBe(true);
     expect(contentEl.querySelector(".opencode-session-view__rewind-file-path")?.textContent).toBe("new.ts");
   });
 

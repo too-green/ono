@@ -18,10 +18,7 @@ export interface StreamDeps {
   subscribeToEvents: (handlers: OpenCodeEventHandlers, directory?: string) => OpenCodeEventSubscription;
   findStreamingPartTarget: (messageId: string, partId: string, type: string) => HTMLElement | undefined;
   queueStreamingMarkdownPatch: (key: string, element: HTMLElement, markdown: string) => void;
-  shouldFollowLatest: () => boolean;
   extendFollowLatest: (durationMs: number) => void;
-  scrollToBottom: (smooth: boolean) => void;
-  updateJumpButton: () => void;
   onSessionUpdated: (session: JsonObject) => void;
   onSessionDiff: (diffs: DiffFileSummary[]) => void;
   onStatusChange: (status: JsonObject) => void;
@@ -98,7 +95,18 @@ export class StreamController {
     const parentId = info ? jsonHelpers.readString(info, ["parentID", "parentId"]) : undefined;
     const inTree = !!eventSessionId && this.deps.model.descendantSessions.has(eventSessionId);
     const parentInTree = !!parentId && (parentId === this.deps.model.sessionId || this.deps.model.descendantSessions.has(parentId));
-    if (inTree || parentInTree) this.scheduleCanonicalSync(event.type === "session.created" ? 0 : 500);
+    if (!inTree && !parentInTree) return;
+    if (eventSessionId && event.type === "session.deleted") {
+      this.deps.model.descendantSessions.delete(eventSessionId);
+    } else if (eventSessionId && info) {
+      const previous = this.deps.model.descendantSessions.get(eventSessionId);
+      this.deps.model.descendantSessions.set(eventSessionId, {
+        title: jsonHelpers.readString(info, ["title", "name", "slug"]) ?? previous?.title ?? eventSessionId,
+        directory: jsonHelpers.readString(info, ["directory"]) ?? previous?.directory ?? this.deps.model.sessionDirectory,
+      });
+    }
+    this.scheduleRender();
+    this.scheduleCanonicalSync(event.type === "session.created" ? 0 : 500);
   }
 
   /** Closes the current subscription and cancels work associated with the previous session binding. */
@@ -168,7 +176,16 @@ export class StreamController {
     }
     if (event.type === "message.part.updated") {
       const part = jsonHelpers.readObject(properties, "part");
-      if (part) this.upsertPart(part);
+      if (part) {
+        this.upsertPart(part);
+        const type = jsonHelpers.readString(part, ["type"]);
+        const parentId = jsonHelpers.readString(part, ["messageID", "messageId"]);
+        const partId = jsonHelpers.readString(part, ["id", "partID", "partId"]);
+        const time = jsonHelpers.readObject(part, "time");
+        const reasoningComplete = type === "reasoning" && typeof time?.end === "number";
+        const patchable = (type === "text" && part.synthetic !== true && part.ignored !== true) || (type === "reasoning" && !reasoningComplete);
+        if (patchable && parentId && partId && this.patchPart({ messageId: parentId, partId, field: "text", part })) return;
+      }
       this.scheduleRender();
       return;
     }
@@ -276,10 +293,14 @@ export class StreamController {
     if (type !== "text" && type !== "reasoning") return false;
     const target = this.deps.findStreamingPartTarget(delta.messageId, delta.partId, type);
     if (!target) return false;
-    const wasAtBottom = this.deps.shouldFollowLatest();
-    this.deps.queueStreamingMarkdownPatch(`${delta.messageId}:${delta.partId}:${delta.field}`, target, jsonHelpers.readString(delta.part, ["text"]) ?? "");
-    if (wasAtBottom) this.deps.scrollToBottom(false);
-    this.deps.updateJumpButton();
+    const groupedPartIds = (target.dataset.partIds ?? target.dataset.partId ?? delta.partId).split(" ");
+    const bundle = this.deps.model.loadedMessages.find((message) => messageId(message) === delta.messageId);
+    const markdown = groupedPartIds
+      .map((partId) => bundle?.parts.find((part) => jsonHelpers.readString(part, ["id", "partID", "partId"]) === partId))
+      .map((part) => part ? jsonHelpers.readString(part, ["text"]) ?? "" : "")
+      .join("\n\n")
+      .trim();
+    this.deps.queueStreamingMarkdownPatch(`${delta.messageId}:${groupedPartIds[0] ?? delta.partId}:${delta.field}`, target, markdown);
     return true;
   }
 

@@ -1,12 +1,24 @@
 export type SessionVisualStatus = "idle" | "working" | "attention" | "done" | "error" | "retry";
 
-export type WorkingAnimation = "W1" | "W2" | "W3" | "W4";
+export const WORKING_ANIMATION_LABELS = {
+  bounce: "Micro bounce",
+  pulse: "Soft pulse",
+  orbit: "Braille orbit",
+  scanner: "Scanner",
+} as const;
 
-export const DEFAULT_WORKING_ANIMATION: WorkingAnimation = "W3";
+export type WorkingAnimation = keyof typeof WORKING_ANIMATION_LABELS;
 
-/** Normalizes the persisted working animation setting to a supported variant. */
+export const DEFAULT_WORKING_ANIMATION: WorkingAnimation = "bounce";
+
+/** Normalizes current and legacy persisted animation settings; referenced during load and settings updates. */
 export function normalizeWorkingAnimation(value: unknown): WorkingAnimation {
-  return value === "W1" || value === "W2" || value === "W3" || value === "W4" ? value : DEFAULT_WORKING_ANIMATION;
+  if (typeof value === "string" && Object.hasOwn(WORKING_ANIMATION_LABELS, value)) return value as WorkingAnimation;
+  if (value === "W1") return "pulse";
+  if (value === "W2") return "orbit";
+  if (value === "W3") return "bounce";
+  if (value === "W4") return "scanner";
+  return DEFAULT_WORKING_ANIMATION;
 }
 
 /** Returns whether an OpenCode session status means the agent is still active. */

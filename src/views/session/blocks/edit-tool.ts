@@ -105,11 +105,13 @@ export function diffsFromEditTool(tool: string, input: JsonObject, state: JsonOb
   const single = diffFromTool(input, state);
   if (single) return [single];
   if (tool === "write") {
-    const content = readString(input, ["content"]);
+    const content = optionalText(input, ["content"]);
     const file = toolPath(input);
-    if (content) {
-      const patch = [`--- /dev/null`, `+++ ${file ?? "after"}`, ...content.split("\n").map((line) => `+${line}`)].join("\n");
-      return [{ file, patch }];
+    if (content !== undefined) {
+      const lines = content.replace(/\r\n?/g, "\n").split("\n");
+      if (lines.at(-1) === "") lines.pop();
+      const patch = [`--- /dev/null`, `+++ ${file ?? "after"}`, ...lines.map((line) => `+${line}`)].join("\n");
+      return [{ file, patch, additions: lines.length, deletions: 0 }];
     }
   }
   return [];

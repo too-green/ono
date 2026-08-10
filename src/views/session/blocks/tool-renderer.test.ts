@@ -3,15 +3,16 @@ import { describe, expect, it } from "vitest";
 import type { JsonObject } from "../../../services/opencode-types";
 import {
   contextSummary,
+  customToolDisplay,
   hasToolIcon,
   isContextLocationTool,
   isPathTool,
   normalizedToolName,
-  primaryArg,
   toolIcon,
   toolInfo,
   toolTitle,
 } from "./tool-renderer";
+import { taskSessionId } from "./specialized-tool-renderers";
 
 describe("normalizedToolName", () => {
   it("lowercases the tool field", () => {
@@ -51,49 +52,34 @@ describe("toolTitle", () => {
   });
 });
 
-describe("primaryArg", () => {
-  it("returns the first non-empty string in PRIMARY_ARG_KEYS order", () => {
-    expect(primaryArg({ description: "d" })).toBe("d");
-    expect(primaryArg({ filePath: "f.ts", description: "" })).toBe("f.ts");
-    expect(primaryArg({ pattern: "*.ts", path: "/p" })).toBe("/p");
-  });
-
-  it("returns numbers as strings", () => {
-    expect(primaryArg({ count: 5 } as unknown as Record<string, unknown>)).toBeUndefined();
-    expect(primaryArg({ description: 7 } as unknown as Record<string, unknown>)).toBe("7");
-  });
-
-  it("returns undefined when no primary key has a value", () => {
-    expect(primaryArg(empty)).toBeUndefined();
-    expect(primaryArg({ description: "  " })).toBeUndefined();
-  });
-});
-
 describe("toolInfo", () => {
   it("prefers state.title over toolTitle", () => {
     expect(toolInfo("read", empty, { title: "Custom" }).title).toBe("Custom");
     expect(toolInfo("read", empty, empty).title).toBe("Read");
   });
 
-  it("subtitle is todo completed/total for todo tools", () => {
+  it("subtitle describes completed todos out of the total", () => {
     const state: JsonObject = { metadata: { todos: [{ status: "completed" }, { status: "pending" }, { status: "completed" }] } };
-    expect(toolInfo("todo_write", empty, state).subtitle).toBe("2/3");
+    expect(toolInfo("todo_write", empty, state).subtitle).toBe("2/3 done");
   });
 
-  it("subtitle is primaryArg for non-todo tools", () => {
-    expect(toolInfo("edit", { filePath: "a.ts" }, empty).subtitle).toBe("a.ts");
+  it("does not derive generic subtitles from tool arguments", () => {
+    expect(toolInfo("edit", { filePath: "a.ts" }, empty).subtitle).toBeUndefined();
+  });
+});
+
+describe("taskSessionId", () => {
+  it("prefers running v1 metadata over resume input and output fallbacks", () => {
+    expect(taskSessionId(
+      { task_id: "resumed" },
+      { metadata: { sessionId: "running" }, output: '<task id="completed" state="completed">' },
+    )).toBe("running");
   });
 
-  it("tags exclude PRIMARY_ARG_KEYS and cap at 3", () => {
-    const input: JsonObject = {
-      filePath: "a.ts",
-      foo: "bar",
-      baz: 42,
-      qux: true,
-      extra: "ignored",
-    };
-    const info = toolInfo("edit", input, empty);
-    expect(info.tags).toEqual(["foo=bar", "baz=42", "qux=true"]);
+  it("supports resumed tasks and structured persisted output", () => {
+    expect(taskSessionId({ task_id: "resumed" }, {})).toBe("resumed");
+    expect(taskSessionId({}, { output: '<task id="completed" state="completed">' })).toBe("completed");
+    expect(taskSessionId({}, { output: "No child metadata" })).toBeUndefined();
   });
 });
 
@@ -115,14 +101,14 @@ describe("isPathTool / isContextLocationTool / hasToolIcon", () => {
     expect(isContextLocationTool("read")).toBe(false);
   });
 
-  it("hasToolIcon is true for all path/context/bash/task/todo tools", () => {
+  it("hasToolIcon is true for built-in and fallback tools", () => {
     expect(hasToolIcon("read")).toBe(true);
     expect(hasToolIcon("glob")).toBe(true);
     expect(hasToolIcon("bash")).toBe(true);
     expect(hasToolIcon("shell")).toBe(true);
     expect(hasToolIcon("task")).toBe(true);
     expect(hasToolIcon("todowrite")).toBe(true);
-    expect(hasToolIcon("unknown_mcp")).toBe(false);
+    expect(hasToolIcon("unknown_mcp")).toBe(true);
   });
 });
 
@@ -133,9 +119,25 @@ describe("toolIcon", () => {
     expect(toolIcon("list")).toBe("list");
     expect(toolIcon("bash")).toBe("terminal");
     expect(toolIcon("edit")).toBe("pencil");
-    expect(toolIcon("task")).toBe("brain");
-    expect(toolIcon("todowrite")).toBe("list-checks");
+    expect(toolIcon("question")).toBe("message-circle-question-mark");
+    expect(toolIcon("skill")).toBe("graduation-cap");
+    expect(toolIcon("task")).toBe("bot");
+    expect(toolIcon("todowrite")).toBe("square-check-big");
     expect(toolIcon("custom")).toBe("wrench");
+  });
+});
+
+describe("customToolDisplay", () => {
+  it("uses the configured icon and selected input argument", () => {
+    expect(customToolDisplay("deploy", { environment: "staging" }, [
+      { tool: "deploy", icon: "rocket", displayArgument: "environment" },
+    ])).toEqual({ icon: "rocket", text: "staging" });
+  });
+
+  it("falls back to the tool name when the configured argument is absent", () => {
+    expect(customToolDisplay("deploy", {}, [
+      { tool: "deploy", icon: "rocket", displayArgument: "environment" },
+    ])).toEqual({ icon: "rocket", text: "deploy" });
   });
 });
 

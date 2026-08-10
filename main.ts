@@ -298,11 +298,31 @@ export default class OpenCodePlugin extends Plugin {
       this.settings.sessionAttachedFiles && typeof this.settings.sessionAttachedFiles === "object" ? this.settings.sessionAttachedFiles : {};
     this.settings.sessionUnread = this.settings.sessionUnread && typeof this.settings.sessionUnread === "object" ? this.settings.sessionUnread : {};
     this.settings.workingAnimation = normalizeWorkingAnimation(this.settings.workingAnimation);
+    this.settings.customToolDisplays = Array.isArray(this.settings.customToolDisplays)
+      ? this.settings.customToolDisplays.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const value = item as unknown as Record<string, unknown>;
+        return [{
+          tool: typeof value.tool === "string" ? value.tool.trim().toLowerCase() : "",
+          icon: typeof value.icon === "string" && value.icon.trim() ? value.icon.trim() : "wrench",
+          displayArgument: typeof value.displayArgument === "string" ? value.displayArgument.trim() : "",
+        }];
+      })
+      : [];
   }
 
   /** Writes plugin settings to Obsidian's plugin data file; referenced by opened-directory mutations. */
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  /** Refreshes every open session after display settings change. */
+  async refreshSessionViews(): Promise<void> {
+    await Promise.all(
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION).map(async (leaf) => {
+        if (leaf.view instanceof SessionView) await leaf.view.refresh();
+      }),
+    );
   }
 
   /** Loads the target and all descendants because v1 archival only updates one session per PATCH. */

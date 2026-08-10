@@ -84,13 +84,19 @@ export function isCompactionMessage(bundle: OpenCodeMessageBundle): boolean {
   return readString(bundle.info, ["type"]) === "compaction" || bundle.parts.some((part) => readString(part, ["type"]) === "compaction");
 }
 
+/** Returns true for the v1 assistant message whose prose summarizes a preceding compaction marker. */
+export function isCompactionSummaryMessage(bundle: OpenCodeMessageBundle): boolean {
+  if (messageRole(bundle) !== "assistant") return false;
+  return readString(bundle.info, ["mode"]) === "compaction" || bundle.info.summary === true;
+}
+
 /** Capitalizes short metadata labels without changing undefined values. */
 export function capitalized(value: string | undefined): string | undefined {
   if (!value) return undefined;
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-/** Extracts the readable compaction summary/recent text from v2 info or legacy compaction parts. */
+/** Extracts readable summary metadata or a fallback description from a compaction marker. */
 export function compactionText(bundle: OpenCodeMessageBundle): string {
   const summary = readString(bundle.info, ["summary"]);
   const recent = readString(bundle.info, ["recent"]);
@@ -110,11 +116,14 @@ export function modelLabel(info: JsonObject): string | undefined {
   return readString(info, ["modelID", "modelId", "model"]);
 }
 
-/** Formats assistant turn duration from message time.created/completed. */
-export function durationLabel(info: JsonObject): string | undefined {
-  const time = readObject(info, "time");
-  const start = typeof time?.created === "number" ? time.created : undefined;
-  const end = typeof time?.completed === "number" ? time.completed : undefined;
+/** Returns an assistant message completion timestamp when OpenCode has settled it. */
+export function messageCompletedTime(bundle: OpenCodeMessageBundle): number | undefined {
+  const time = readObject(bundle.info, "time");
+  return typeof time?.completed === "number" ? time.completed : undefined;
+}
+
+/** Formats elapsed time between turn-level start and end timestamps. */
+export function elapsedDurationLabel(start: number | undefined, end: number | undefined): string | undefined {
   if (start === undefined || end === undefined || end < start) return undefined;
   const seconds = (end - start) / 1000;
   return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;

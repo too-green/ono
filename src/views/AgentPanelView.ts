@@ -601,21 +601,12 @@ export class AgentPanelView extends ItemView {
   private paintStatusIndicator(slot: HTMLElement, status: SessionVisualStatus): void {
     slot.empty();
     slot.className = `opencode-agent-panel__status opencode-agent-panel__status--${status}`;
-    const animation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
-    slot.dataset.workingAnimation = animation;
+    slot.dataset.workingAnimation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
     if (status === "attention") setIcon(slot, "megaphone");
     if (status === "error") setIcon(slot, "alert-circle");
     if (status === "retry") setIcon(slot, "rotate-cw");
     if (status === "done") slot.createSpan();
-    if (status === "working") {
-      if (animation === "W3") {
-        slot.createSpan();
-        slot.createSpan();
-        slot.createSpan();
-      } else {
-        slot.createSpan();
-      }
-    }
+    if (status === "working") slot.createSpan();
   }
 
   /** Applies a status event immediately so visible rows do not wait for a full sidebar refresh. */

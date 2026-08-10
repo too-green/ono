@@ -64,8 +64,12 @@ export class SessionViewModel {
   // ---- shared status / in-flight
   /** Active session status type string (busy / idle / error / etc.) from session events. */
   sessionStatusType = "idle";
-  /** True while the session is actively producing output (mirrors `isActiveSessionStatus(sessionStatusType)`). */
+  /** True while the server-side run remains active, including silent work and retry backoff. */
   sessionBusy = false;
+  /** Local receipt time of the current turn's first active status; fallback before its user message is available. */
+  activeTurnStartedAt?: number;
+  /** Local receipt time of the current turn's settling status; fallback until canonical completion metadata arrives. */
+  activeTurnCompletedAt?: number;
   /** True between sendComposerPrompt start and the first stream event / failure. */
   submittingPrompt = false;
   /** True while a rewind request is in flight; disables rewind UI affordances. */

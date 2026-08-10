@@ -2,7 +2,7 @@ import { setIcon } from "obsidian";
 
 import type { DiffFileSummary } from "../../../diff-utils";
 import type { OpenCodeMessageBundle } from "../../../services/opencode-types";
-import { capitalized, durationLabel, messageId, messageTime, modelLabel } from "../message-helpers";
+import { capitalized, elapsedDurationLabel, messageId, messageTime, modelLabel } from "../message-helpers";
 import { readObject, readString } from "../json-helpers";
 
 export type MessageRole = "assistant" | "user";
@@ -25,6 +25,17 @@ export interface RewindBoundaryProps {
   onRedo: () => void;
 }
 
+export interface AssistantMetaOptions {
+  /** Whether this row represents the assistant turn that is currently active. */
+  working: boolean;
+  /** Start of the complete assistant turn, normally the preceding user message creation time. */
+  startedAt?: number;
+  /** End of the complete assistant turn, normally the final assistant message completion time. */
+  completedAt?: number;
+  /** Last assistant message id used as the fork boundary; absent before the first assistant message exists. */
+  forkMessageId?: string;
+}
+
 /** Renders the small meta row beneath a message (agent/model/time, copy, fork/rewind actions); called by `TimelineRenderer`. */
 export function renderMessageMeta(
   container: HTMLElement,
@@ -32,16 +43,27 @@ export function renderMessageMeta(
   role: MessageRole,
   copyText: string,
   callbacks: MessageMetaCallbacks,
-): void {
-  const items = role === "assistant" ? assistantMetaItems(bundle) : userMetaItems(bundle);
-
+  assistantOptions?: AssistantMetaOptions,
+): HTMLElement {
   const meta = container.createDiv({ cls: `opencode-session-view__message-meta opencode-session-view__message-meta--${role}` });
-  if (items.length > 0) meta.createSpan({ text: items.join(" · "), cls: "opencode-session-view__message-meta-text" });
+  if (role === "assistant" && assistantOptions?.working) {
+    meta.addClass("opencode-session-view__message-meta--working");
+    meta.setAttr("aria-busy", "true");
+    meta.createSpan({ cls: "opencode-session-view__message-working-indicator", attr: { "aria-hidden": "true" } });
+  }
+  if (role === "assistant") renderAssistantMetaText(meta, bundle, assistantOptions);
+  else {
+    const items = userMetaItems(bundle);
+    if (items.length > 0) meta.createSpan({ text: items.join(" · "), cls: "opencode-session-view__message-meta-text" });
+  }
   if (role === "user" && callbacks.isQueued(messageId(bundle))) {
     meta.createSpan({ text: "QUEUED", cls: "opencode-session-view__queued-badge is-visible" });
   }
-  if (copyText.trim()) {
-    const copy = meta.createEl("button", { attr: { "aria-label": `Copy ${role} message` }, cls: "opencode-session-view__message-action clickable-icon" });
+  if (role === "assistant" && assistantOptions?.working) return meta;
+  const copyAvailable = !!copyText.trim();
+  if (copyAvailable) {
+    const copyLabel = role === "assistant" ? "Copy assistant turn" : "Copy user message";
+    const copy = meta.createEl("button", { attr: { "aria-label": copyLabel }, cls: "opencode-session-view__message-action clickable-icon" });
     setIcon(copy, "copy");
     copy.addEventListener("click", async (event) => {
       event.stopPropagation();
@@ -52,10 +74,13 @@ export function renderMessageMeta(
   }
   if (role === "assistant") {
     const fork = meta.createEl("button", { attr: { "aria-label": "Fork session after this assistant turn" }, cls: "opencode-session-view__message-action clickable-icon" });
+    const forkMessageId = assistantOptions ? assistantOptions.forkMessageId : messageId(bundle);
+    fork.disabled = !forkMessageId;
+    if (fork.disabled) fork.title = "Available when the assistant turn finishes";
     setIcon(fork, "git-fork");
     fork.addEventListener("click", (event) => {
       event.stopPropagation();
-      callbacks.onFork(messageId(bundle));
+      if (!fork.disabled && forkMessageId) callbacks.onFork(forkMessageId);
     });
   }
   if (role === "user") {
@@ -66,6 +91,7 @@ export function renderMessageMeta(
       callbacks.onRewind(bundle);
     });
   }
+  return meta;
 }
 
 /** Renders the v1 rewind boundary, affected files, and redo action after the visible timeline head; called by `TimelineRenderer`. */
@@ -104,14 +130,23 @@ function userMetaItems(bundle: OpenCodeMessageBundle): string[] {
   return time ? [new Intl.DateTimeFormat(undefined, { timeStyle: "short" }).format(time)] : [];
 }
 
-/** Builds assistant turn metadata from agent/model/time/error fields. */
-function assistantMetaItems(bundle: OpenCodeMessageBundle): string[] {
-  const items = [
+/** Renders assistant metadata as independently updateable items for the live duration clock. */
+function renderAssistantMetaText(meta: HTMLElement, bundle: OpenCodeMessageBundle, options: AssistantMetaOptions | undefined): void {
+  const duration = elapsedDurationLabel(options?.startedAt, options?.working ? Date.now() : options?.completedAt);
+  const items: Array<{ text: string; className?: string; startedAt?: number }> = [
     capitalized(readString(bundle.info, ["agent"])),
     modelLabel(bundle.info),
-    durationLabel(bundle.info),
-  ].filter((item): item is string => !!item);
+  ].filter((item): item is string => !!item).map((text) => ({ text }));
+  if (duration) items.push({ text: duration, className: "opencode-session-view__message-meta-duration", startedAt: options?.working ? options.startedAt : undefined });
   const error = readObject(bundle.info, "error");
-  if (readString(error ?? {}, ["name", "type"]) === "MessageAbortedError") items.push("Interrupted");
-  return items;
+  if (readString(error ?? {}, ["name", "type"]) === "MessageAbortedError") items.push({ text: "Interrupted" });
+  if (items.length === 0) return;
+
+  const text = meta.createSpan({ cls: "opencode-session-view__message-meta-text" });
+  for (const [index, item] of items.entries()) {
+    const cls = ["opencode-session-view__message-meta-item", item.className].filter(Boolean).join(" ");
+    const prefix = index === 0 ? "" : " · ";
+    const attr = item.startedAt === undefined ? undefined : { "data-turn-started-at": String(item.startedAt), "data-meta-prefix": prefix };
+    text.createSpan({ text: `${prefix}${item.text}`, cls, attr });
+  }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { JsonObject, OpenCodeMessageBundle } from "../../services/opencode-types";
-import { attachmentUrl, capitalized, compactionText, durationLabel, imageAttachments, isCompactionMessage, isImageAttachment, messageId, messageRole, messageTime, modelLabel, reasoningComplete, reasoningText, reasoningTokenCount, textFromParts, userMessageText } from "./message-helpers";
+import { attachmentUrl, capitalized, compactionText, elapsedDurationLabel, imageAttachments, isCompactionMessage, isCompactionSummaryMessage, isImageAttachment, messageCompletedTime, messageId, messageRole, messageTime, modelLabel, reasoningComplete, reasoningText, reasoningTokenCount, textFromParts, userMessageText } from "./message-helpers";
 
 function bundle(info: JsonObject, parts: JsonObject[] = []): OpenCodeMessageBundle {
   return { info, parts };
@@ -162,6 +162,15 @@ describe("isCompactionMessage", () => {
   });
 });
 
+describe("isCompactionSummaryMessage", () => {
+  it("detects v1 compaction assistants without matching ordinary summaries", () => {
+    expect(isCompactionSummaryMessage(bundle({ role: "assistant", mode: "compaction", summary: true }))).toBe(true);
+    expect(isCompactionSummaryMessage(bundle({ role: "assistant", summary: true }))).toBe(true);
+    expect(isCompactionSummaryMessage(bundle({ role: "assistant" }))).toBe(false);
+    expect(isCompactionSummaryMessage(bundle({ role: "user", mode: "compaction" }))).toBe(false);
+  });
+});
+
 describe("capitalized", () => {
   it("capitalizes the first character", () => {
     expect(capitalized("auto")).toBe("Auto");
@@ -213,23 +222,27 @@ describe("modelLabel", () => {
   });
 });
 
-describe("durationLabel", () => {
+describe("elapsedDurationLabel", () => {
   it("formats sub-10s durations with one decimal", () => {
-    expect(durationLabel({ time: { created: 0, completed: 4500 } })).toBe("4.5s");
+    expect(elapsedDurationLabel(0, 4500)).toBe("4.5s");
   });
 
   it("formats >=10s durations rounded", () => {
-    expect(durationLabel({ time: { created: 0, completed: 42_000 } })).toBe("42s");
+    expect(elapsedDurationLabel(0, 42_000)).toBe("42s");
   });
 
   it("returns undefined when either endpoint missing", () => {
-    expect(durationLabel({ time: { created: 0 } })).toBeUndefined();
-    expect(durationLabel({ time: { completed: 100 } })).toBeUndefined();
-    expect(durationLabel({})).toBeUndefined();
+    expect(elapsedDurationLabel(0, undefined)).toBeUndefined();
+    expect(elapsedDurationLabel(undefined, 100)).toBeUndefined();
   });
 
   it("returns undefined when end < start", () => {
-    expect(durationLabel({ time: { created: 100, completed: 50 } })).toBeUndefined();
+    expect(elapsedDurationLabel(100, 50)).toBeUndefined();
+  });
+
+  it("reads an assistant message completion timestamp", () => {
+    expect(messageCompletedTime(bundle({ time: { created: 0, completed: 4500 } }))).toBe(4500);
+    expect(messageCompletedTime(bundle({ time: { created: 0 } }))).toBeUndefined();
   });
 });
 

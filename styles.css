@@ -146,47 +146,7 @@
 }
 
 .opencode-agent-panel__status--working {
-  gap: var(--size-2-1);
-}
-
-.opencode-agent-panel__status--working span {
-  animation: opencode-agent-panel-bounce 1.2s infinite ease-in-out both;
-  background: var(--text-muted);
-  border-radius: 50%;
-  height: var(--size-2-2);
-  width: var(--size-2-2);
-}
-
-.opencode-agent-panel__status--working[data-working-animation="W1"] span {
-  animation: opencode-session-state-pulse 1.8s ease-in-out infinite;
-  height: var(--size-2-3);
-  width: var(--size-2-3);
-}
-
-.opencode-agent-panel__status--working[data-working-animation="W2"] span {
-  animation: opencode-session-state-spin 1.2s linear infinite;
-  background: transparent;
-  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
-  border-radius: 50%;
-  border-top-color: var(--text-muted);
-  height: var(--size-4-3);
-  width: var(--size-4-3);
-}
-
-.opencode-agent-panel__status--working[data-working-animation="W4"] span {
-  animation: opencode-session-state-shimmer 1.5s linear infinite;
-  background: linear-gradient(90deg, var(--text-faint), var(--interactive-accent), var(--text-faint));
-  background-size: 200% 100%;
-  height: var(--size-2-3);
-  width: var(--size-2-3);
-}
-
-.opencode-agent-panel__status--working span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.opencode-agent-panel__status--working span:nth-child(3) {
-  animation-delay: 0.3s;
+  color: var(--text-muted);
 }
 
 .opencode-agent-panel__new-session .tree-item-self {
@@ -237,19 +197,6 @@
   }
 }
 
-@keyframes opencode-agent-panel-bounce {
-  0%,
-  80%,
-  100% {
-    opacity: 0.35;
-    transform: translateY(0);
-  }
-  40% {
-    opacity: 1;
-    transform: translateY(-2px);
-  }
-}
-
 @keyframes opencode-session-state-pulse {
   0%,
   100% {
@@ -262,15 +209,56 @@
   }
 }
 
-@keyframes opencode-session-state-spin {
+@keyframes opencode-session-working-accent-shimmer {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 transparent);
+  }
+  50% {
+    filter: drop-shadow(0 0 1px var(--interactive-accent));
+  }
+}
+
+@keyframes opencode-session-working-bounce {
+  0%, 30%, 65%, 100% {
+    background-position: 0 100%, 50% 100%, 100% 100%;
+  }
+  15% {
+    background-position: 0 0, 50% 100%, 100% 100%;
+  }
+  48% {
+    background-position: 0 100%, 50% 0, 100% 100%;
+  }
+  82% {
+    background-position: 0 100%, 50% 100%, 100% 0;
+  }
+}
+
+/* Compact alternatives adapt OpenChamber's busy pulse and OpenCode TUI's braille/scanner motion. */
+@keyframes opencode-session-working-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@keyframes opencode-session-working-orbit {
   to {
     transform: rotate(360deg);
   }
 }
 
-@keyframes opencode-session-state-shimmer {
-  to {
-    background-position: -100% 0;
+@keyframes opencode-session-working-scanner {
+  0%,
+  15% {
+    background-position: 100% 50%;
+  }
+  85%,
+  100% {
+    background-position: 0 50%;
   }
 }
 
@@ -348,69 +336,82 @@
 }
 
 .opencode-session-view__state-indicator--working {
-  gap: var(--size-2-1);
+  color: var(--text-muted);
 }
 
-.opencode-session-view__state-indicator--working span {
-  animation: opencode-agent-panel-bounce 1.2s infinite ease-in-out both;
-  background: var(--text-muted);
+/* ── View header + tab header icon: working state ── */
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"] svg,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"] svg {
+  display: none;
+}
+
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"]::after,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"]::after {
+  content: "";
+  display: block;
+}
+
+.opencode-agent-panel__status--working span,
+.opencode-session-view__state-indicator--working span,
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"]::after,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"]::after,
+.opencode-session-view__message-working-indicator {
+  animation: opencode-session-working-bounce 1.2s ease-in-out infinite;
+  background-image:
+    radial-gradient(circle, var(--text-muted) 50%, transparent 55%),
+    radial-gradient(circle, var(--text-muted) 50%, transparent 55%),
+    radial-gradient(circle, var(--text-muted) 50%, transparent 55%);
+  background-position: 0 100%, 50% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-size: 33.333% 33.333%;
+  height: var(--opencode-session-done-size, var(--size-2-3));
+  width: var(--opencode-session-done-size, var(--size-2-3));
+}
+
+.opencode-agent-panel__status--working[data-working-animation="pulse"] span,
+.opencode-session-view[data-working-animation="pulse"] .opencode-session-view__state-indicator--working span,
+.opencode-session-view[data-working-animation="pulse"] .opencode-session-view__message-working-indicator,
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="pulse"]::after,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="pulse"]::after {
+  animation: opencode-session-working-pulse 1.2s ease-in-out infinite;
+  background: var(--interactive-accent);
   border-radius: 50%;
-  height: var(--size-2-2);
-  width: var(--size-2-2);
 }
 
-.opencode-session-view__state-indicator--working span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.opencode-session-view__state-indicator--working span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-.opencode-session-view__state-indicator--working[data-working-animation="W1"] span {
-  animation: opencode-session-state-pulse 1.8s ease-in-out infinite;
-  height: var(--size-2-3);
-  width: var(--size-2-3);
-}
-
-.opencode-session-view__state-indicator--working .opencode-session-view__state-spinner {
-  animation: opencode-session-state-spin 1.2s linear infinite;
-  background: transparent !important;
-  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
+.opencode-agent-panel__status--working[data-working-animation="orbit"] span,
+.opencode-session-view[data-working-animation="orbit"] .opencode-session-view__state-indicator--working span,
+.opencode-session-view[data-working-animation="orbit"] .opencode-session-view__message-working-indicator,
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="orbit"]::after,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="orbit"]::after {
+  animation: opencode-session-working-orbit 900ms steps(8) infinite;
+  background: conic-gradient(from 0deg, var(--interactive-accent), transparent 55%);
   border-radius: 50%;
-  border-top-color: var(--text-muted) !important;
-  height: var(--size-4-3) !important;
-  width: var(--size-4-3) !important;
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - var(--border-width)), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - var(--border-width)), #000 0);
 }
 
-.opencode-session-view__state-indicator--working[data-working-animation="W4"] span {
-  animation: opencode-session-state-shimmer 1.5s linear infinite;
-  background: linear-gradient(90deg, var(--text-faint), var(--interactive-accent), var(--text-faint));
-  background-size: 200% 100%;
-  height: var(--size-2-3);
-  width: var(--size-2-3);
+.opencode-agent-panel__status--working[data-working-animation="scanner"] span,
+.opencode-session-view[data-working-animation="scanner"] .opencode-session-view__state-indicator--working span,
+.opencode-session-view[data-working-animation="scanner"] .opencode-session-view__message-working-indicator,
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="scanner"]::after,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="scanner"]::after {
+  animation: opencode-session-working-scanner 1.4s ease-in-out infinite alternate;
+  background: linear-gradient(90deg, transparent, var(--interactive-accent), transparent) 100% 50% / 200% 33.333% no-repeat;
+  border-radius: var(--pill-radius);
 }
 
-/* ── View header + tab header icon: working animations ── */
-
-.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="W1"] svg,
-.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="W1"] svg {
-  animation: opencode-session-state-pulse 1.8s ease-in-out infinite;
-}
-
-.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="W2"] svg,
-.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="W2"] svg {
-  animation: opencode-session-state-spin 1.2s linear infinite;
-}
-
-.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="W3"] svg,
-.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="W3"] svg {
-  animation: opencode-session-state-pulse 1.2s ease-in-out infinite;
-}
-
-.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="W4"] svg,
-.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="W4"] svg {
-  animation: opencode-session-state-shimmer 1.5s linear infinite;
+@media (prefers-reduced-motion: reduce) {
+  .opencode-agent-panel__status--working span,
+  .opencode-session-view__state-indicator--working span,
+  .opencode-session-view-container .view-header-icon[data-opencode-session-state="working"]::after,
+  .workspace-tab-header-inner-icon[data-opencode-session-state="working"]::after,
+  .opencode-session-view__message-working-indicator,
+  .opencode-session-view__reasoning--streaming .opencode-session-view__reasoning-icon,
+  .opencode-session-view__tool--pending > .opencode-session-view__tool-summary .opencode-session-view__tool-icon,
+  .opencode-session-view__tool--running > .opencode-session-view__tool-summary .opencode-session-view__tool-icon {
+    animation: none;
+  }
 }
 
 .opencode-session-view-container .view-header-icon[data-opencode-session-state="retry"] svg,
@@ -853,7 +854,7 @@
 .opencode-session-view__agent-label {
   align-items: center;
   border-radius: var(--radius-s);
-  color: var(--opencode-agent-label-color, var(--text-accent));
+  color: var(--opencode-agent-label-color, var(--text-muted));
   cursor: pointer;
   display: inline-flex;
   flex: 0 1 auto;
@@ -1307,6 +1308,10 @@
   padding: 0 var(--size-4-2);
 }
 
+.opencode-session-view__message-working-indicator {
+  flex: 0 0 var(--opencode-session-done-size, var(--size-2-3));
+}
+
 .opencode-session-view__message-meta--user {
   align-self: flex-end;
   justify-content: flex-end;
@@ -1326,6 +1331,11 @@
   flex: 0 0 auto;
   height: calc(var(--size-4-5) + var(--size-2-1));
   width: calc(var(--size-4-5) + var(--size-2-1));
+}
+
+.opencode-session-view__message-action:disabled {
+  color: var(--text-faint) !important;
+  cursor: default;
 }
 
 .opencode-session-view__rewind-boundary {
@@ -1403,7 +1413,7 @@
 }
 
 .opencode-session-view__rewind-empty {
-  color: var(--text-faint);
+  color: color-mix(in oklab, var(--text-faint) 80%, var(--color-blue));
   font-family: var(--font-interface);
   font-size: var(--font-ui-smaller);
   margin-top: var(--size-4-2);
@@ -1461,8 +1471,8 @@
 }
 
 .opencode-session-view__compaction-body {
-  background: color-mix(in srgb, var(--interactive-accent) 6%, var(--background-secondary));
-  border: var(--border-width) solid color-mix(in srgb, var(--interactive-accent) 20%, var(--background-modifier-border));
+  background: var(--background-secondary);
+  border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-m);
   margin: var(--size-4-3) auto 0;
   max-width: 760px;
@@ -1506,16 +1516,10 @@
 }
 
 .opencode-session-view__reasoning {
-  border-left: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   color: var(--text-muted);
   font-family: var(--font-interface);
   font-size: var(--font-ui-small);
   margin: 0;
-  padding-left: var(--size-4-3);
-}
-
-.opencode-session-view__reasoning[open] {
-  border-left-color: var(--background-modifier-border-hover);
 }
 
 .opencode-session-view__reasoning-summary {
@@ -1526,7 +1530,9 @@
   gap: var(--size-4-2);
   list-style: none;
   min-height: 28px;
-  padding: var(--size-2-1) var(--size-4-2);
+  min-width: 0;
+  overflow: hidden;
+  padding: var(--size-2-1);
 }
 
 .opencode-session-view__reasoning-summary:hover {
@@ -1538,9 +1544,9 @@
 }
 
 .opencode-session-view__reasoning-summary::after {
-  color: var(--text-faint);
+  color: color-mix(in oklab, var(--text-faint) 80%, var(--color-blue));
   content: "›";
-  margin-left: auto;
+  margin-inline-start: auto;
   transform: rotate(0deg);
   transition: transform 120ms ease-in-out;
 }
@@ -1551,7 +1557,7 @@
 
 .opencode-session-view__reasoning-icon {
   align-items: center;
-  color: var(--color-purple);
+  color: var(--text-faint);
   display: inline-flex;
   flex: 0 0 var(--icon-m);
   height: var(--icon-m);
@@ -1570,13 +1576,9 @@
   font-weight: 400 !important;
 }
 
-.opencode-session-view__reasoning-spinner {
-  animation: opencode-agent-panel-spin 1s linear infinite;
-  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
-  border-radius: 50%;
-  border-top-color: var(--color-purple);
-  height: var(--size-4-3);
-  width: var(--size-4-3);
+.opencode-session-view__reasoning--streaming .opencode-session-view__reasoning-icon {
+  animation: opencode-session-working-accent-shimmer 1.8s ease-in-out infinite;
+  color: var(--interactive-accent);
 }
 
 .opencode-session-view__reasoning-body {
@@ -1586,24 +1588,11 @@
 }
 
 .opencode-session-view__tool {
-  border-left: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   color: var(--text-muted);
+  container-type: inline-size;
   font-family: var(--font-interface);
   font-size: var(--font-ui-small);
   margin: 0;
-  padding-left: var(--size-4-3);
-}
-
-.opencode-session-view__tool[open] {
-  border-left-color: var(--background-modifier-border-hover);
-}
-
-.opencode-session-view__tool--error {
-  border-left-color: var(--text-error);
-}
-
-.opencode-session-view__tool--error[open] {
-  border-left-color: var(--text-error);
 }
 
 .opencode-session-view__tool-summary {
@@ -1616,7 +1605,7 @@
   min-height: 28px;
   min-width: 0;
   overflow: hidden;
-  padding: var(--size-2-1) var(--size-4-2);
+  padding: var(--size-2-1);
 }
 
 .opencode-session-view__tool-summary:hover {
@@ -1631,7 +1620,7 @@
   color: var(--text-faint);
   content: "›";
   flex: 0 0 auto;
-  margin-left: auto;
+  margin-inline-start: auto;
   transform: rotate(0deg);
   transition: transform 120ms ease-in-out;
 }
@@ -1673,6 +1662,16 @@
   width: var(--icon-s);
 }
 
+.opencode-session-view__tool--pending > .opencode-session-view__tool-summary .opencode-session-view__tool-icon,
+.opencode-session-view__tool--running > .opencode-session-view__tool-summary .opencode-session-view__tool-icon {
+  animation: opencode-session-working-accent-shimmer 1.8s ease-in-out infinite;
+  color: var(--interactive-accent);
+}
+
+.opencode-session-view__tool--error > .opencode-session-view__tool-summary .opencode-session-view__tool-icon {
+  color: var(--color-red);
+}
+
 .opencode-session-view__tool-title {
   color: var(--text-muted);
   font-weight: normal;
@@ -1702,8 +1701,43 @@
   font-weight: var(--font-medium);
 }
 
+.opencode-session-view__read-range {
+  color: var(--text-faint);
+  flex: 0 0 auto;
+  margin-inline-start: var(--size-2-1);
+}
+
 .opencode-session-view__tool-subtitle {
   color: var(--text-faint);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-session-view__task-description {
+  flex: 0 1 auto;
+}
+
+.opencode-session-view__task-session {
+  align-items: center;
+  color: var(--link-color);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 1 auto;
+  font-weight: var(--link-weight);
+  gap: var(--size-2-1);
+  min-width: 0;
+  text-decoration: var(--link-decoration);
+  text-decoration-thickness: var(--link-decoration-thickness);
+}
+
+.opencode-session-view__task-session:hover {
+  color: var(--link-color-hover);
+  text-decoration: var(--link-decoration-hover);
+}
+
+.opencode-session-view__task-session-title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1717,7 +1751,6 @@
   gap: var(--size-4-2);
 }
 
-.opencode-session-view__tool-status,
 .opencode-session-view__tool-tag {
   background: var(--background-modifier-hover);
   border: var(--border-width) solid var(--background-modifier-border);
@@ -1733,15 +1766,69 @@
   white-space: nowrap;
 }
 
-.opencode-session-view__tool--error .opencode-session-view__tool-status {
-  color: var(--text-error);
-}
-
 .opencode-session-view__tool-body {
   display: flex;
   flex-direction: column;
   gap: var(--size-4-2);
   padding: var(--size-2-2) var(--size-4-2) var(--size-4-2) 36px;
+}
+
+.opencode-session-view__tool-body-toolbar {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.opencode-session-view__tool-raw-name {
+  color: var(--text-faint);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-smaller);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-session-view__raw-toggle {
+  align-items: center;
+  color: var(--text-faint);
+  display: inline-flex;
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-smaller);
+  gap: var(--size-2-1);
+  width: auto;
+}
+
+.opencode-session-view__raw-toggle[aria-pressed="true"] {
+  background: var(--background-modifier-active-hover);
+  color: var(--text-muted);
+}
+
+.opencode-session-view__raw-toggle-icon,
+.opencode-session-view__raw-toggle-icon svg {
+  height: var(--icon-xs);
+  width: var(--icon-xs);
+}
+
+.opencode-session-view__tool-body-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  min-width: 0;
+}
+
+.opencode-session-view__tool-output-raw {
+  background: var(--background-secondary);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-smaller);
+  line-height: var(--line-height-tight);
+  margin: 0;
+  overflow-x: auto;
+  padding: var(--size-4-3);
+  white-space: pre-wrap;
 }
 
 .opencode-session-view__read-table {
@@ -1857,6 +1944,38 @@
   color: var(--color-red);
 }
 
+.opencode-session-view__file-operation {
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.opencode-session-view__file-operation--new {
+  color: var(--color-green);
+}
+
+.opencode-session-view__file-operation--deleted {
+  color: var(--color-red);
+}
+
+.opencode-session-view__file-operation--moved {
+  color: var(--text-faint);
+}
+
+.opencode-session-view__file-operation-compact {
+  display: none;
+}
+
+@container (max-width: 320px) {
+  .opencode-session-view__file-operation-full {
+    display: none;
+  }
+
+  .opencode-session-view__file-operation-compact {
+    display: inline;
+  }
+}
+
 .opencode-session-view__diagnostics {
   background: var(--background-secondary);
   border: var(--border-width) solid var(--background-modifier-border);
@@ -1953,6 +2072,33 @@
   position: absolute;
   right: var(--size-2-2);
   top: var(--size-2-2);
+}
+
+.opencode-settings__tool-display .setting-item-info {
+  display: none;
+}
+
+.opencode-settings__tool-display .setting-item-control {
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+}
+
+.opencode-settings__tool-display input[type="text"],
+.opencode-settings__tool-display input[type="search"] {
+  min-width: 12ch;
+}
+
+.opencode-settings__tool-icon-preview {
+  align-items: center;
+  color: var(--text-muted);
+  display: inline-flex;
+  margin-right: var(--size-4-2);
+  vertical-align: middle;
+}
+
+.opencode-settings__tool-icon-preview svg {
+  height: var(--icon-s);
+  width: var(--icon-s);
 }
 
 .opencode-session-view__empty,

@@ -1,4 +1,5 @@
 import { MarkdownRenderer, type Component } from "obsidian";
+import type { FollowLatestAnchor } from "../scroll-controller";
 
 interface StreamingMarkdownPatch {
   element: HTMLElement;
@@ -13,8 +14,8 @@ export interface MarkdownPatcherDeps {
   contentEl: HTMLElement;
   component: Component;
   getSessionId: () => string | undefined;
-  shouldFollowLatest: () => boolean;
-  scrollToBottom: (smooth: boolean) => void;
+  captureFollowLatest: () => FollowLatestAnchor | undefined;
+  restoreFollowLatest: (anchor: FollowLatestAnchor | undefined) => boolean;
   updateJumpButton: () => void;
 }
 
@@ -45,7 +46,8 @@ export class MarkdownPatcher {
     const row = this.deps.contentEl.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`);
     if (!row) return undefined;
     const selector = type === "reasoning" ? ".opencode-session-view__reasoning-body" : ".opencode-session-view__assistant-markdown";
-    return row.querySelector<HTMLElement>(`${selector}[data-part-id="${CSS.escape(partId)}"][data-stream-field="text"]`) ?? undefined;
+    return Array.from(row.querySelectorAll<HTMLElement>(`${selector}[data-stream-field="text"]`))
+      .find((element) => (element.dataset.partIds ?? element.dataset.partId ?? "").split(" ").includes(partId));
   }
 
   /** Cancels queued frames and prevents in-flight renders from mutating the disposed view. */
@@ -66,7 +68,7 @@ export class MarkdownPatcher {
 
     const markdown = patch.markdown;
     const element = patch.element;
-    const wasAtBottom = this.deps.shouldFollowLatest();
+    const followGeneration = this.deps.captureFollowLatest();
     patch.pending = false;
     patch.inFlight = true;
     try {
@@ -76,7 +78,7 @@ export class MarkdownPatcher {
       if (!element.isConnected || this.patches.get(key) !== patch) return;
       if (patch.pending && patch.markdown !== markdown) return;
       element.replaceChildren(...Array.from(scratch.childNodes));
-      if (wasAtBottom) this.deps.scrollToBottom(false);
+      this.deps.restoreFollowLatest(followGeneration);
       this.deps.updateJumpButton();
     } catch (error) {
       console.warn("[opencode-plugin:session-stream] markdown patch failed", error);

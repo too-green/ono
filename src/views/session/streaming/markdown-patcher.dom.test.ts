@@ -39,16 +39,21 @@ describe("MarkdownPatcher", () => {
     contentEl.appendChild(target);
     document.body.appendChild(contentEl);
     const scrollToBottom = vi.fn();
+    const followAnchor = followLatest ? { generation: 1, scrollTop: 0, explicit: true } : undefined;
+    const restoreFollowLatest = vi.fn((anchor: typeof followAnchor) => {
+      if (anchor) scrollToBottom(false);
+      return !!anchor;
+    });
     const updateJumpButton = vi.fn();
     const patcher = new MarkdownPatcher({
       contentEl,
       component: {} as Component,
       getSessionId: () => "session-1",
-      shouldFollowLatest: () => followLatest,
-      scrollToBottom,
+      captureFollowLatest: () => followAnchor,
+      restoreFollowLatest,
       updateJumpButton,
     });
-    return { contentEl, target, patcher, scrollToBottom, updateJumpButton };
+    return { contentEl, target, patcher, followAnchor, scrollToBottom, restoreFollowLatest, updateJumpButton };
   }
 
   /** Runs the oldest queued animation frame, matching browser one-shot frame behavior. */
@@ -64,16 +69,17 @@ describe("MarkdownPatcher", () => {
     contentEl.innerHTML = `
       <div data-message-id="message-1">
         <div class="opencode-session-view__assistant-markdown" data-part-id="text-1" data-stream-field="text"></div>
-        <div class="opencode-session-view__reasoning-body" data-part-id="reasoning-1" data-stream-field="text"></div>
+        <div class="opencode-session-view__reasoning-body" data-part-id="reasoning-1" data-part-ids="reasoning-1 reasoning-2" data-stream-field="text"></div>
       </div>`;
 
     expect(patcher.findPartTarget("message-1", "text-1", "text")).toBeInstanceOf(HTMLElement);
     expect(patcher.findPartTarget("message-1", "reasoning-1", "reasoning")).toBeInstanceOf(HTMLElement);
+    expect(patcher.findPartTarget("message-1", "reasoning-2", "reasoning")).toBeInstanceOf(HTMLElement);
     expect(patcher.findPartTarget("missing", "text-1", "text")).toBeUndefined();
   });
 
   it("deduplicates queued deltas and renders only the latest Markdown", async () => {
-    const { patcher, target, scrollToBottom, updateJumpButton } = setup();
+    const { patcher, target, followAnchor, scrollToBottom, restoreFollowLatest, updateJumpButton } = setup();
     const render = vi.spyOn(MarkdownRenderer, "renderMarkdown").mockImplementation(async (markdown, container) => {
       container.textContent = markdown;
     });
@@ -86,6 +92,7 @@ describe("MarkdownPatcher", () => {
     await vi.waitFor(() => expect(target.textContent).toBe("latest"));
     expect(render).toHaveBeenCalledTimes(1);
     expect(scrollToBottom).toHaveBeenCalledWith(false);
+    expect(restoreFollowLatest).toHaveBeenCalledWith(followAnchor);
     expect(updateJumpButton).toHaveBeenCalledOnce();
   });
 

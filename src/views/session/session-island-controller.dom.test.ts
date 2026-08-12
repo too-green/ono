@@ -52,13 +52,17 @@ describe("SessionIslandController", () => {
       callback(performance.now());
       return 1;
     });
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
     vi.spyOn(MarkdownRenderer, "renderMarkdown").mockImplementation(async (markdown, element) => {
       for (const line of markdown.split("\n")) {
         const match = line.match(/^- \[(.)\] (.*)$/);
-        if (!match) continue;
-        const row = element.createEl("li", { cls: "task-list-item", attr: { "data-task": match[1] ?? " " } });
-        row.createEl("input", { type: "checkbox" });
-        row.createSpan({ text: match[2] });
+        if (match) {
+          const row = element.createEl("li", { cls: "task-list-item", attr: { "data-task": match[1] ?? " " } });
+          row.createEl("input", { type: "checkbox" });
+          row.createSpan({ text: match[2] });
+          continue;
+        }
+        element.textContent = markdown;
       }
     });
   });
@@ -335,6 +339,131 @@ describe("SessionIslandController", () => {
     expect(dock.querySelector(".opencode-session-view__island-panel--detail")?.classList.contains("is-rolling-up")).toBe(true);
   });
 
+  it("focuses the selected detail panel's first row when opened", async () => {
+    const model = new SessionViewModel();
+    model.descendantSessions.set("child-1", { title: "Research", statusType: "busy" });
+    const { dock } = await setup({ model });
+
+    (dock.querySelector('[data-island-tab="subagents"]') as HTMLButtonElement).click();
+
+    await vi.waitFor(() => expect(document.activeElement).toBe(dock.querySelector(".opencode-session-view__island-subagent")));
+  });
+
+  it("navigates subagent rows and opens the selected session with Space", async () => {
+    const model = new SessionViewModel();
+    model.descendantSessions.set("child-1", { title: "Research", directory: "/child", statusType: "busy" });
+    model.descendantSessions.set("child-2", { title: "Review", directory: "/child", statusType: "idle" });
+    const { dock, plugin } = await setup({ model });
+    (dock.querySelector('[data-island-tab="subagents"]') as HTMLButtonElement).click();
+    const rows = Array.from(dock.querySelectorAll<HTMLButtonElement>(".opencode-session-view__island-subagent"));
+
+    rows[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(rows[1]);
+    rows[1].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    expect(document.activeElement).toBe(rows[0]);
+
+    rows[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(dock.querySelector("[data-subagent-response]")).toBeNull();
+    expect(plugin.openSessionTab).not.toHaveBeenCalled();
+
+    rows[0].dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    expect(plugin.openSessionTab).toHaveBeenCalledTimes(1);
+    expect(plugin.openSessionTab).toHaveBeenCalledWith("child-1", "Research");
+  });
+
+  it("navigates diff file rows and enters an expanded file's line cursor", async () => {
+    const message = userDiffMessage();
+    message.info.summary = {
+      diffs: [
+        { file: "src/a.ts", additions: 2, deletions: 1, patch: "+a" },
+        { file: "src/b.ts", additions: 1, deletions: 0, patch: "+b" },
+      ],
+    };
+    const { dock } = await setup({ git: true, messages: [message] });
+    (dock.querySelector('[data-island-tab="session"]') as HTMLButtonElement).click();
+    const summaries = Array.from(dock.querySelectorAll<HTMLElement>(".opencode-session-view__rollup-file-summary"));
+
+    await vi.waitFor(() => expect(document.activeElement).toBe(summaries[0]));
+    summaries[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement).toBe(summaries[1]);
+    summaries[1].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    const files = Array.from(dock.querySelectorAll<HTMLDetailsElement>(".opencode-session-view__rollup-file"));
+    expect(files[1].open).toBe(true);
+    const body = await vi.waitFor(() => files[1].querySelector<HTMLElement>(".opencode-session-view__rollup-file-body")!);
+    await vi.waitFor(() => expect(body.querySelectorAll("[data-diff-row]")).toHaveLength(1));
+    const enterEvent = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+    summaries[1].dispatchEvent(enterEvent);
+    expect(enterEvent.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(body);
+    expect(body.getAttribute("aria-activedescendant")).toBe(body.querySelector("[data-diff-row]")?.id);
+
+    body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }));
+    expect(files[1].open).toBe(false);
+    expect(document.activeElement).toBe(summaries[1]);
+  });
+
+  it("expands folded context and collapses it from any restored line", async () => {
+    const message = userDiffMessage();
+    message.info.summary = {
+      diffs: [{
+        file: "src/a.ts",
+        additions: 1,
+        deletions: 1,
+        patch: [
+          "@@ -1,12 +1,12 @@",
+          ...Array.from({ length: 5 }, (_, index) => ` before ${index + 1}`),
+          "-old",
+          "+new",
+          ...Array.from({ length: 5 }, (_, index) => ` after ${index + 1}`),
+        ].join("\n"),
+      }],
+    };
+    const { dock } = await setup({ git: true, messages: [message] });
+    (dock.querySelector('[data-island-tab="session"]') as HTMLButtonElement).click();
+    const details = dock.querySelector<HTMLDetailsElement>(".opencode-session-view__rollup-file")!;
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    const body = await vi.waitFor(() => details.querySelector<HTMLElement>(".opencode-session-view__rollup-file-body")!);
+    await vi.waitFor(() => expect(body.querySelectorAll("[data-diff-folded]")).toHaveLength(2));
+    const firstFold = body.querySelector<HTMLElement>("[data-diff-folded]")!;
+    body.focus();
+    body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(body.getAttribute("aria-activedescendant")).toBe(firstFold.id);
+    body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+
+    const restored = Array.from(body.querySelectorAll<HTMLElement>("[data-diff-fold-id]"));
+    expect(restored).toHaveLength(2);
+    expect(body.getAttribute("aria-activedescendant")).toBe(restored[0].id);
+    body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(body.getAttribute("aria-activedescendant")).toBe(restored[1].id);
+    body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }));
+
+    expect(body.querySelectorAll("[data-diff-fold-id]")).toHaveLength(0);
+    expect(body.querySelectorAll("[data-diff-folded]")).toHaveLength(2);
+    expect(body.querySelector<HTMLElement>(`#${body.getAttribute("aria-activedescendant")}`)?.hasAttribute("data-diff-folded")).toBe(true);
+  });
+
+  it("collapses an expanded file when another tab trigger or the cycle command is used", async () => {
+    const message = userDiffMessage();
+    message.info.summary = { diffs: [{ file: "src/a.ts", additions: 1, deletions: 0, patch: "+a" }] };
+    const { controller, dock } = await setup({ git: true, todos: [{ content: "Task", status: "pending", priority: "medium" }], messages: [message] });
+    (dock.querySelector('[data-island-tab="session"]') as HTMLButtonElement).click();
+    let details = dock.querySelector<HTMLDetailsElement>(".opencode-session-view__rollup-file")!;
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+
+    (dock.querySelector('[data-island-tab="todos"]') as HTMLButtonElement).click();
+    expect(details.open).toBe(false);
+    (dock.querySelector('[data-island-tab="session"]') as HTMLButtonElement).click();
+    details = dock.querySelector<HTMLDetailsElement>(".opencode-session-view__rollup-file")!;
+    expect(details.open).toBe(false);
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+
+    controller.cycleTab();
+    expect(details.open).toBe(false);
+  });
+
   it("collapses the active panel without unmounting Prompt and reopens it from the same trigger", async () => {
     const { dock, promptContent } = await setup();
     const marker = promptContent.createSpan({ text: "Draft stays mounted" });
@@ -428,6 +557,10 @@ describe("SessionIslandController", () => {
     (dock.querySelector('[data-island-tab="subagents"]') as HTMLButtonElement).click();
     const rows = dock.querySelectorAll<HTMLButtonElement>(".opencode-session-view__island-subagent");
     expect(rows).toHaveLength(2);
+    expect(rows[0].querySelector(".opencode-session-view__message-working-indicator")?.getAttribute("aria-hidden")).toBe("true");
+    expect(rows[0].getAttribute("aria-busy")).toBe("true");
+    expect(rows[0].textContent).not.toContain("Working");
+    expect(rows[1].textContent).toContain("Idle");
     rows[0].click();
     expect(plugin.openSessionTab).toHaveBeenCalledWith("child-1", "Research");
 

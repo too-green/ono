@@ -9,6 +9,10 @@ export interface UnifiedDiffRow {
   text: string;
 }
 
+export type FoldedUnifiedDiffRow =
+  | { type: "row"; row: UnifiedDiffRow }
+  | { type: "fold"; rows: UnifiedDiffRow[] };
+
 export interface ReadOutputRow {
   line: number;
   text: string;
@@ -112,6 +116,52 @@ export function parseUnifiedDiffRows(patch: string): UnifiedDiffRow[] {
   }
 
   return rows;
+}
+
+/** Collapses context farther than the requested distance from changes; referenced by Session Island diff rendering. */
+export function foldUnifiedDiffContext(rows: UnifiedDiffRow[], contextLines = 3): FoldedUnifiedDiffRow[] {
+  if (contextLines < 0) return rows.map((row) => ({ type: "row", row }));
+  const result: FoldedUnifiedDiffRow[] = [];
+  let hunkStart = 0;
+
+  for (let index = 0; index <= rows.length; index += 1) {
+    if (index < rows.length && rows[index]?.kind !== "meta") continue;
+    appendFoldedHunk(result, rows.slice(hunkStart, index), contextLines);
+    if (index < rows.length) result.push({ type: "row", row: rows[index]! });
+    hunkStart = index + 1;
+  }
+  return result;
+}
+
+/** Appends one parsed hunk while retaining nearby context and grouping omitted runs. */
+function appendFoldedHunk(result: FoldedUnifiedDiffRow[], rows: UnifiedDiffRow[], contextLines: number): void {
+  const changed = rows.flatMap((row, index) => row.kind === "add" || row.kind === "del" ? [index] : []);
+  if (changed.length === 0) {
+    result.push(...rows.map((row) => ({ type: "row" as const, row })));
+    return;
+  }
+
+  let folded: UnifiedDiffRow[] = [];
+  const flushFold = (): void => {
+    if (folded.length > 0) result.push({ type: "fold", rows: folded });
+    folded = [];
+  };
+  let nextChange = 0;
+  for (const [index, row] of rows.entries()) {
+    while (changed[nextChange] !== undefined && changed[nextChange]! < index) nextChange += 1;
+    const previousIndex = changed[nextChange - 1];
+    const nextIndex = changed[nextChange];
+    const nearChange = row.kind !== "context"
+      || (previousIndex !== undefined && index - previousIndex <= contextLines)
+      || (nextIndex !== undefined && nextIndex - index <= contextLines);
+    if (!nearChange) {
+      folded.push(row);
+      continue;
+    }
+    flushFold();
+    result.push({ type: "row", row });
+  }
+  flushFold();
 }
 
 /** Extracts OpenCode read tool `<content>` rows like `123: code` while omitting path/type wrappers. */

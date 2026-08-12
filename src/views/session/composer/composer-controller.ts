@@ -249,6 +249,7 @@ export class ComposerController {
     if (this.composerTextarea) this.resizeComposerInput(this.composerTextarea);
     this.progressBar.update();
     this.updateInsetSoon();
+    window.setTimeout(() => this.composerTextarea?.focus({ preventScroll: true }), 0);
   }
 
   /** Captures text selection and focus so token renders do not disrupt active drafting. */

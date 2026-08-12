@@ -336,6 +336,9 @@ describe("apply_patch tool rendering", () => {
     blocks[0].open = true;
     blocks[0].dispatchEvent(new Event("toggle"));
     await vi.waitFor(() => expect(blocks[0].querySelector(".opencode-session-view__diff-table")).not.toBeNull());
+    const diffLines = Array.from(blocks[0].querySelectorAll<HTMLElement>(".opencode-session-view__diff-line"));
+    expect(diffLines.every((line) => line.querySelectorAll(".opencode-session-view__diff-line-number").length === 1)).toBe(true);
+    expect(diffLines.map((line) => line.querySelector(".opencode-session-view__diff-line-number")?.textContent)).toEqual(["", "1", "1"]);
     expect(blocks[0].querySelector(".opencode-session-view__tool-raw-name")?.textContent).toBe("apply_patch");
     expect(blocks[0].querySelector(".opencode-session-view__raw-toggle")?.textContent).toBe("Show raw");
     expect(blocks[0].textContent).not.toContain("Move error");

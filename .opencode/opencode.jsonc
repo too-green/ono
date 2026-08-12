@@ -11,6 +11,11 @@
       "branch": "main",
       "description": "a popular 3rd party opensource opencode GUI client app"
     },
+    "paseo": {
+      "repository": "getpaseo/paseo",
+      "branch": "main",
+      "description": "a popular multi-harness client for working with opencode, codex, claude code etc"
+    },
     "product-spec": {
       "path": "../docs/product-spec",
       "description": "living product spec for current project - organized in multiple markdown note files linked to each other using obsidian wikilinks to allow tracing related pieces of information"

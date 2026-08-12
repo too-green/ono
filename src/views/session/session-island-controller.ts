@@ -16,7 +16,7 @@ import type { OpenCodeMessageBundle, OpenCodeTodo } from "../../services/opencod
 import { normalizeSessionIslandContextLabel, normalizeTodoStatusCharacter } from "../../settings";
 import { isActiveSessionStatus } from "../../session-state";
 import type { SessionViewModel } from "./session-view-model";
-import { renderDiffSection } from "./blocks/edit-tool";
+import { collapseExpandedDiffContext, DIFF_ACTIVE_ROW_EVENT, renderDiffSection } from "./blocks/edit-tool";
 import { configuredToolIcon, toolIcon } from "./blocks/tool-renderer";
 import { contextUsage } from "./composer/context-progress-bar";
 import { formatCompactNumber } from "./format-helpers";
@@ -79,6 +79,9 @@ export class SessionIslandController {
   private removedMessageIds = new Set<string>();
   private openFiles = new Set<string>();
   private forcedLargeDiffs = new Set<string>();
+  private selectedSubagentId?: string;
+  private readonly selectedFileKeys = new Map<"turn" | "session", string>();
+  private pendingDetailFocus?: "subagents" | "turn" | "session";
 
   constructor(private readonly deps: SessionIslandDeps) {}
 
@@ -104,6 +107,7 @@ export class SessionIslandController {
     this.removedMessageIds.clear();
     this.openFiles.clear();
     this.forcedLargeDiffs.clear();
+    this.clearDetailNavigationState();
     this.needsRecovery = false;
     this.detailContentEl?.empty();
     this.refreshDom();
@@ -131,6 +135,7 @@ export class SessionIslandController {
       this.removedMessageIds.clear();
       this.openFiles.clear();
       this.forcedLargeDiffs.clear();
+      this.clearDetailNavigationState();
       this.activeTab = "prompt";
       this.tabStop = "prompt";
       this.animationTab = undefined;
@@ -457,6 +462,7 @@ export class SessionIslandController {
   /** Selects one available tab, or collapses the island when its active trigger is selected again. */
   private selectTab(tab: SessionIslandTab): void {
     if (!this.availableTabs().includes(tab)) return;
+    if (this.activeTab === "turn" || this.activeTab === "session") this.collapseOpenFiles();
     if (this.activeTab === tab) {
       this.collapsePanels(tab);
       return;
@@ -464,6 +470,7 @@ export class SessionIslandController {
     this.activeTab = tab;
     this.tabStop = tab;
     this.animationTab = tab;
+    if (tab === "subagents" || tab === "turn" || tab === "session") this.pendingDetailFocus = tab;
     this.refreshDom();
     const selected = this.tabListEl?.querySelector<HTMLElement>(`[data-island-tab="${tab}"]`);
     selected?.focus({ preventScroll: true });
@@ -473,9 +480,11 @@ export class SessionIslandController {
 
   /** Hides both panels while retaining the last active trigger as the keyboard tab stop. */
   private collapsePanels(tab: SessionIslandTab): void {
+    this.collapseOpenFiles();
     this.activeTab = undefined;
     this.tabStop = tab;
     this.animationTab = undefined;
+    this.pendingDetailFocus = undefined;
     this.refreshDom();
     this.tabListEl?.querySelector<HTMLElement>(`[data-island-tab="${tab}"]`)?.focus({ preventScroll: true });
   }
@@ -539,10 +548,17 @@ export class SessionIslandController {
     }
     else this.renderSessionDiffs(staging);
     if (version !== this.renderVersion || panel !== this.detailContentEl || tab !== this.activeTab) return;
+    const restoreNavigationFocus = panel.contains(document.activeElement);
     panel.replaceChildren(...Array.from(staging.childNodes));
     if (this.animationTab === tab && this.detailPanelEl) {
       this.animatePanel(this.detailPanelEl);
       this.animationTab = undefined;
+    }
+    if (this.pendingDetailFocus === tab || restoreNavigationFocus) {
+      this.pendingDetailFocus = undefined;
+      window.setTimeout(() => {
+        if (this.activeTab === tab) this.focusDetailNavigation(tab);
+      }, 0);
     }
   }
 
@@ -553,22 +569,69 @@ export class SessionIslandController {
     panel.addClass("is-rolling-up");
   }
 
-  /** Renders descendant sessions as compact native buttons that open their owning session. */
+  /** Renders descendant sessions as a roving list whose rows open their owning session. */
   private renderSubagents(panel: HTMLElement): void {
     const list = panel.createDiv({ cls: "opencode-session-view__island-subagents" });
+    const descendants = [...this.deps.model.descendantSessions];
+    if (!descendants.some(([sessionId]) => sessionId === this.selectedSubagentId)) this.selectedSubagentId = descendants[0]?.[0];
+    list.addEventListener("keydown", (event) => this.handleSubagentKeydown(event, list));
     for (const [sessionId, info] of this.deps.model.descendantSessions) {
       const working = isActiveSessionStatus(info.statusType);
       const row = list.createEl("button", {
         cls: "opencode-session-view__island-subagent",
-        attr: { type: "button", "aria-label": `Open subagent ${info.title}${working ? ", working" : ""}` },
+        attr: {
+          type: "button",
+          tabindex: this.selectedSubagentId === sessionId ? "0" : "-1",
+          "aria-label": `Open subagent ${info.title}${working ? ", working" : ""}`,
+          "aria-busy": String(working),
+        },
       });
+      row.dataset.subagentId = sessionId;
       const icon = row.createSpan({ cls: "opencode-session-view__island-subagent-icon", attr: { "aria-hidden": "true" } });
       setIcon(icon, "bot");
       row.createSpan({ text: info.title, cls: "opencode-session-view__island-subagent-title" });
-      row.createSpan({ text: working ? "Working" : "Idle", cls: "opencode-session-view__island-subagent-status" });
+      if (working) {
+        row.createSpan({
+          cls: "opencode-session-view__island-subagent-status opencode-session-view__message-working-indicator",
+          attr: { "aria-hidden": "true" },
+        });
+      } else {
+        row.createSpan({ text: "Idle", cls: "opencode-session-view__island-subagent-status" });
+      }
       row.toggleClass("is-working", working);
+      row.addEventListener("focus", () => this.selectSubagentRow(list, row, sessionId, false));
       row.addEventListener("click", () => void this.deps.plugin.openSessionTab(sessionId, info.title));
     }
+  }
+
+  /** Handles row movement and open-in-workspace actions for the Subagents panel. */
+  private handleSubagentKeydown(event: KeyboardEvent, list: HTMLElement): void {
+    const row = (event.target as HTMLElement).closest<HTMLButtonElement>(".opencode-session-view__island-subagent");
+    if (!row) return;
+    const rows = Array.from(list.querySelectorAll<HTMLButtonElement>(".opencode-session-view__island-subagent"));
+    const sessionId = row.dataset.subagentId;
+    const index = rows.indexOf(row);
+    if (!sessionId || index < 0) return;
+    if (event.key === " " || event.key === "Spacebar") {
+      event.preventDefault();
+      const info = this.deps.model.descendantSessions.get(sessionId);
+      if (info) void this.deps.plugin.openSessionTab(sessionId, info.title);
+      return;
+    }
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const target = rows[index + (event.key === "ArrowDown" ? 1 : -1)];
+    if (!target) return;
+    this.selectSubagentRow(list, target, target.dataset.subagentId!, true);
+  }
+
+  /** Selects one subagent row and keeps the native tab order on that row alone. */
+  private selectSubagentRow(list: HTMLElement, row: HTMLButtonElement, sessionId: string, focus: boolean): void {
+    this.selectedSubagentId = sessionId;
+    for (const item of Array.from(list.querySelectorAll<HTMLButtonElement>(".opencode-session-view__island-subagent"))) {
+      item.tabIndex = item === row ? 0 : -1;
+    }
+    if (focus) row.focus({ preventScroll: true });
   }
 
   /** Renders the complete endpoint todo list through Obsidian's MarkdownRenderer. */
@@ -613,11 +676,18 @@ export class SessionIslandController {
       return;
     }
     const list = panel.createDiv({ cls: "opencode-session-view__rollup-files" });
+    const fileKeys = new Set(files.map((file) => `${scope}:${file.file}`));
+    if (!fileKeys.has(this.selectedFileKeys.get(scope) ?? "")) this.selectedFileKeys.set(scope, `${scope}:${files[0]?.file ?? ""}`);
+    list.addEventListener("keydown", (event) => this.handleDiffKeydown(event, list, scope));
     for (const file of files) {
       const key = `${scope}:${file.file}`;
       const details = list.createEl("details", { cls: "opencode-session-view__rollup-file" });
       details.open = this.openFiles.has(key);
-      const summary = details.createEl("summary", { cls: "opencode-session-view__rollup-file-summary", attr: { title: file.file } });
+      const summary = details.createEl("summary", {
+        cls: "opencode-session-view__rollup-file-summary",
+        attr: { title: file.file, tabindex: this.selectedFileKeys.get(scope) === key ? "0" : "-1" },
+      });
+      summary.dataset.fileKey = key;
       const chevron = summary.createSpan({ cls: "opencode-session-view__rollup-file-chevron" });
       setIcon(chevron, "chevron-right");
       this.renderDisplayPath(summary.createSpan({ cls: "opencode-session-view__rollup-file-path" }), file.file);
@@ -628,19 +698,163 @@ export class SessionIslandController {
       const hydrate = (): void => {
         if (!details.open || hydrated) return;
         hydrated = true;
-        const body = details.createDiv({ cls: "opencode-session-view__rollup-file-body" });
-        void this.renderTurnPatches(body, file.turns, key);
+        const body = details.createDiv({
+          cls: "opencode-session-view__rollup-file-body",
+          attr: { role: "grid", tabindex: "0", "aria-label": `Diff for ${file.file}` },
+        });
+        body.addEventListener("focus", () => this.ensureActiveDiffRow(body));
+        body.addEventListener("click", (event) => {
+          const row = (event.target as HTMLElement).closest<HTMLElement>("[data-diff-row]");
+          if (row && body.contains(row)) this.selectActiveDiffRow(body, row, true);
+        });
+        body.addEventListener("keydown", (event) => this.handleDiffLineKeydown(event, body, summary));
+        body.addEventListener(DIFF_ACTIVE_ROW_EVENT, (event) => {
+          const row = (event as CustomEvent<{ row?: HTMLElement }>).detail.row;
+          if (row && body.contains(row)) this.selectActiveDiffRow(body, row, true);
+        });
+        const renderVersion = this.renderVersion;
+        void this.renderTurnPatches(body, file.turns, key, () => renderVersion === this.renderVersion);
       };
       details.addEventListener("toggle", () => {
         if (details.open) this.openExclusiveFile(list, details, key, scope);
         else this.openFiles.delete(key);
         hydrate();
       });
+      summary.addEventListener("focus", () => this.selectDiffRow(list, summary, scope, key, false));
       hydrate();
     }
   }
 
-  /** Keeps one expanded file per diff scope while preserving Last Turn and Session state independently. */
+  /** Implements disclosure-row movement and entry into an expanded file's line cursor. */
+  private handleDiffKeydown(event: KeyboardEvent, list: HTMLElement, scope: "turn" | "session"): void {
+    const summary = (event.target as HTMLElement).closest<HTMLElement>(".opencode-session-view__rollup-file-summary");
+    if (!summary) return;
+    const details = summary.parentElement as HTMLDetailsElement | null;
+    const rows = Array.from(list.querySelectorAll<HTMLElement>(".opencode-session-view__rollup-file-summary"));
+    const index = rows.indexOf(summary);
+    if (!details || index < 0) return;
+    if (event.key === "ArrowLeft" && details.open) {
+      event.preventDefault();
+      details.open = false;
+      details.dispatchEvent(new Event("toggle"));
+      return;
+    }
+    if ((event.key === "ArrowRight" || event.key === " " || event.key === "Spacebar") && !details.open) {
+      event.preventDefault();
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+      return;
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      const target = event.key === "Home" ? rows[0] : rows.at(-1);
+      if (target) this.selectDiffRow(list, target, scope, target.dataset.fileKey!, true);
+      return;
+    }
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    if (details.open) {
+      const body = details.querySelector<HTMLElement>(".opencode-session-view__rollup-file-body");
+      if (!body) return;
+      event.preventDefault();
+      const rows = Array.from(body.querySelectorAll<HTMLElement>("[data-diff-row]"));
+      const target = event.key === "ArrowDown" ? rows[0] : rows.at(-1);
+      if (target) this.selectActiveDiffRow(body, target, true);
+      return;
+    }
+    event.preventDefault();
+    const target = rows[index + (event.key === "ArrowDown" ? 1 : -1)];
+    if (!target) return;
+    this.selectDiffRow(list, target, scope, target.dataset.fileKey!, true);
+  }
+
+  /** Moves the active line cursor and expands or restores folded context without creating extra tab stops. */
+  private handleDiffLineKeydown(event: KeyboardEvent, body: HTMLElement, summary: HTMLElement): void {
+    const rows = Array.from(body.querySelectorAll<HTMLElement>("[data-diff-row]"));
+    const current = this.activeDiffRow(body) ?? rows[0];
+    if (!current) return;
+    const index = rows.indexOf(current);
+    if (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      const target = event.key === "Home"
+        ? rows[0]
+        : event.key === "End"
+          ? rows.at(-1)
+          : rows[index + (event.key === "ArrowDown" ? 1 : -1)];
+      if (target) this.selectActiveDiffRow(body, target, false);
+      return;
+    }
+    if ((event.key === "ArrowRight" || event.key === " " || event.key === "Spacebar") && current.hasAttribute("data-diff-folded")) {
+      event.preventDefault();
+      current.click();
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (collapseExpandedDiffContext(current)) return;
+      const details = summary.parentElement as HTMLDetailsElement | null;
+      if (details?.open) {
+        details.open = false;
+        details.dispatchEvent(new Event("toggle"));
+        summary.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      summary.focus({ preventScroll: true });
+    }
+  }
+
+  /** Ensures one rendered row is exposed as the grid's active descendant when keyboard focus enters. */
+  private ensureActiveDiffRow(body: HTMLElement): void {
+    if (this.activeDiffRow(body)) return;
+    const first = body.querySelector<HTMLElement>("[data-diff-row]");
+    if (first) this.selectActiveDiffRow(body, first, false);
+  }
+
+  /** Updates active-descendant semantics and keeps the current line inside the scroll viewport. */
+  private selectActiveDiffRow(body: HTMLElement, row: HTMLElement, focus: boolean): void {
+    for (const item of Array.from(body.querySelectorAll<HTMLElement>("[data-diff-row]"))) {
+      item.toggleClass("is-active", item === row);
+    }
+    body.setAttr("aria-activedescendant", row.id);
+    if (focus) body.focus({ preventScroll: true });
+    row.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }
+
+  /** Returns the visible row currently owned by one diff grid's active-descendant cursor. */
+  private activeDiffRow(body: HTMLElement): HTMLElement | undefined {
+    const id = body.getAttribute("aria-activedescendant");
+    const row = id ? document.getElementById(id) : null;
+    return row && body.contains(row) ? row : undefined;
+  }
+
+  /** Selects one diff row and retains it as the only normal tab stop in its panel. */
+  private selectDiffRow(list: HTMLElement, summary: HTMLElement, scope: "turn" | "session", key: string, focus: boolean): void {
+    this.selectedFileKeys.set(scope, key);
+    for (const item of Array.from(list.querySelectorAll<HTMLElement>(".opencode-session-view__rollup-file-summary"))) {
+      item.tabIndex = item === summary ? 0 : -1;
+    }
+    if (focus) summary.focus({ preventScroll: true });
+  }
+
+  /** Focuses the selected first row after a keyboard-navigable detail panel becomes visible. */
+  private focusDetailNavigation(tab: SessionIslandTab): void {
+    if (!this.detailContentEl) return;
+    if (tab === "subagents") {
+      const selected = this.detailContentEl.querySelector<HTMLButtonElement>(`[data-subagent-id="${this.selectedSubagentId}"]`)
+        ?? this.detailContentEl.querySelector<HTMLButtonElement>(".opencode-session-view__island-subagent");
+      selected?.focus({ preventScroll: true });
+      return;
+    }
+    if (tab === "turn" || tab === "session") {
+      const selected = this.detailContentEl.querySelector<HTMLElement>(`[data-file-key="${this.selectedFileKeys.get(tab)}"]`)
+        ?? this.detailContentEl.querySelector<HTMLElement>(".opencode-session-view__rollup-file-summary");
+      selected?.focus({ preventScroll: true });
+    }
+  }
+
+  /** Keeps one expanded file in the visible diff panel. */
   private openExclusiveFile(list: HTMLElement, active: HTMLDetailsElement, key: string, scope: "turn" | "session"): void {
     for (const details of Array.from(list.querySelectorAll<HTMLDetailsElement>(".opencode-session-view__rollup-file"))) {
       if (details !== active && details.open) details.open = false;
@@ -651,8 +865,16 @@ export class SessionIslandController {
     this.openFiles.add(key);
   }
 
+  /** Collapses every remembered file when panel focus moves to another Session Island tab. */
+  private collapseOpenFiles(): void {
+    this.openFiles.clear();
+    for (const details of Array.from(this.detailContentEl?.querySelectorAll<HTMLDetailsElement>(".opencode-session-view__rollup-file[open]") ?? [])) {
+      details.open = false;
+    }
+  }
+
   /** Renders chronological per-turn patches for one expanded session file. */
-  private async renderTurnPatches(container: HTMLElement, turns: TurnFileDiff[], fileKey: string): Promise<void> {
+  private async renderTurnPatches(container: HTMLElement, turns: TurnFileDiff[], fileKey: string, shouldCommit: () => boolean): Promise<void> {
     for (const [index, turn] of turns.entries()) {
       if (turns.length > 1) container.createDiv({ text: `Turn ${index + 1}`, cls: "opencode-session-view__rollup-turn-heading" });
       const patch = turn.diff.patch;
@@ -668,7 +890,7 @@ export class SessionIslandController {
         render.addEventListener("click", () => {
           this.forcedLargeDiffs.add(largeKey);
           container.empty();
-          void this.renderTurnPatches(container, turns, fileKey);
+          void this.renderTurnPatches(container, turns, fileKey, shouldCommit);
         });
         continue;
       }
@@ -676,7 +898,7 @@ export class SessionIslandController {
         component: this.deps.component,
         sessionId: this.sessionId,
         sessionDirectory: this.directory,
-      });
+      }, { foldContext: true, shouldCommit });
     }
   }
 
@@ -715,6 +937,13 @@ export class SessionIslandController {
   /** Checks that asynchronous hydration still belongs to the mounted session binding. */
   private isCurrent(version: number, sessionId: string): boolean {
     return !this.disposed && version === this.bindingVersion && sessionId === this.sessionId;
+  }
+
+  /** Clears row/disclosure state that belongs to the previous server session binding. */
+  private clearDetailNavigationState(): void {
+    this.selectedSubagentId = undefined;
+    this.selectedFileKeys.clear();
+    this.pendingDetailFocus = undefined;
   }
 
   /** Converts unknown request failures into compact user-visible text. */

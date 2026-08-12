@@ -139,6 +139,66 @@ export async function renderHighlightedCodeLine(container: HTMLElement, code: st
   while (highlighted.firstChild) container.appendChild(highlighted.firstChild);
 }
 
+/** Highlights many code rows in one fenced block; referenced by the shared diff renderer. */
+export async function renderHighlightedCodeLines(
+  containers: HTMLElement[],
+  lines: string[],
+  language: string,
+  ctx: BlockRenderCtx,
+  shouldCommit: () => boolean = () => true,
+): Promise<void> {
+  if (containers.length === 0) return;
+  const scratch = document.createElement("div");
+  scratch.addClass("markdown-rendered");
+  await MarkdownRenderer.renderMarkdown(`\`\`\`${language}\n${escapeFence(lines.join("\n"))}\n\`\`\``, scratch, markdownSourcePath(ctx), ctx.component);
+  if (!shouldCommit()) return;
+  const highlighted = scratch.querySelector("code");
+  const highlightedLines = highlighted ? splitHighlightedCodeLines(highlighted, lines.length) : [];
+  for (const [index, container] of containers.entries()) {
+    if (!container.parentElement?.parentElement) continue;
+    const highlightedLine = highlightedLines[index];
+    if (!highlightedLine?.hasChildNodes()) {
+      container.setText(lines[index] ?? " ");
+      continue;
+    }
+    container.appendChild(highlightedLine);
+  }
+}
+
+/** Splits highlighted markup at text newlines while preserving token spans within each returned fragment. */
+function splitHighlightedCodeLines(code: Element, lineCount: number): DocumentFragment[] {
+  const text = code.textContent ?? "";
+  const fragments: DocumentFragment[] = [];
+  let start = 0;
+  for (let index = 0; index < lineCount; index += 1) {
+    const newline = text.indexOf("\n", start);
+    const end = newline === -1 ? text.length : newline;
+    const range = document.createRange();
+    const startPoint = textBoundary(code, start);
+    const endPoint = textBoundary(code, end);
+    range.setStart(startPoint.node, startPoint.offset);
+    range.setEnd(endPoint.node, endPoint.offset);
+    fragments.push(range.cloneContents());
+    range.detach();
+    start = newline === -1 ? text.length : newline + 1;
+  }
+  return fragments;
+}
+
+/** Resolves one text offset to the DOM boundary needed for highlighted-range cloning. */
+function textBoundary(root: Element, target: number): { node: Node; offset: number } {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let consumed = 0;
+  let last: Text | undefined;
+  for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+    last = node;
+    const end = consumed + node.data.length;
+    if (target <= end) return { node, offset: target - consumed };
+    consumed = end;
+  }
+  return last ? { node: last, offset: last.data.length } : { node: root, offset: 0 };
+}
+
 /** Renders a labeled JSON section through Obsidian's code block highlighter. */
 export async function renderJsonSection(container: HTMLElement, label: string, value: JsonObject, ctx: BlockRenderCtx): Promise<void> {
   container.createDiv({ text: label, cls: "opencode-session-view__tool-section-title" });

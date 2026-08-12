@@ -138,6 +138,16 @@ describe("ComposerController input stability", () => {
     expect(actions.every((button) => !button.classList.contains("is-stop"))).toBe(true);
   });
 
+  it("focuses the textarea after the Session Island reopens Prompt", async () => {
+    const { contentEl, controller } = setup();
+    const textarea = contentEl.querySelector<HTMLTextAreaElement>("textarea")!;
+
+    controller.onPromptActivated();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(document.activeElement).toBe(textarea);
+  });
+
   it("updates busy and idle controls without replacing textarea state", () => {
     const { contentEl, controller, model } = setup();
     const textarea = contentEl.querySelector<HTMLTextAreaElement>("textarea")!;

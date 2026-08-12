@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { beforeAfterDiff, escapeFence, inlineValue, languageFromPath, parseReadOutputRows, parseUnifiedDiffRows, stripAnsi } from "./diff-parsing";
+import { beforeAfterDiff, escapeFence, foldUnifiedDiffContext, inlineValue, languageFromPath, parseReadOutputRows, parseUnifiedDiffRows, stripAnsi } from "./diff-parsing";
 
 describe("languageFromPath", () => {
   it("maps known extensions to Obsidian fenced-code languages", () => {
@@ -166,6 +166,52 @@ describe("parseUnifiedDiffRows", () => {
       ["add", undefined, 3],
       ["context", 4, 4],
     ]);
+  });
+});
+
+describe("foldUnifiedDiffContext", () => {
+  it("keeps three context lines around changes and folds distant runs", () => {
+    const rows = parseUnifiedDiffRows([
+      "@@ -1,12 +1,12 @@",
+      ...Array.from({ length: 5 }, (_, index) => ` before ${index + 1}`),
+      "-old",
+      "+new",
+      ...Array.from({ length: 5 }, (_, index) => ` after ${index + 1}`),
+    ].join("\n"));
+
+    const folded = foldUnifiedDiffContext(rows);
+
+    expect(folded.filter((item) => item.type === "fold").map((item) => item.rows.length)).toEqual([2, 2]);
+    expect(folded.flatMap((item) => item.type === "row" ? [item.row.text] : [])).toEqual([
+      "Lines 1-1",
+      "before 3",
+      "before 4",
+      "before 5",
+      "old",
+      "new",
+      "after 1",
+      "after 2",
+      "after 3",
+    ]);
+  });
+
+  it("does not merge context across hunk metadata rows", () => {
+    const rows = parseUnifiedDiffRows([
+      "@@ -1,5 +1,5 @@",
+      " one",
+      " two",
+      " three",
+      " four",
+      "+change",
+      "@@ -20,5 +20,5 @@",
+      "+change two",
+      " one",
+      " two",
+      " three",
+      " four",
+    ].join("\n"));
+
+    expect(foldUnifiedDiffContext(rows).filter((item) => item.type === "fold").map((item) => item.rows.length)).toEqual([1, 1]);
   });
 });
 

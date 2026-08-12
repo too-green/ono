@@ -1,6 +1,7 @@
 import type { JsonObject } from "../../../services/opencode-types";
 import {
   beforeAfterDiff,
+  foldUnifiedDiffContext,
   languageFromPath,
   parseUnifiedDiffRows,
   stripAnsi,
@@ -10,10 +11,17 @@ import { readNumber, readObject, readObjectArray, readString } from "../json-hel
 import { displayPath } from "../path-utils";
 import {
   renderCodeBlock,
-  renderHighlightedCodeLine,
+  renderHighlightedCodeLines,
   renderMarkdownSection,
   type BlockRenderCtx,
 } from "./tool-primitives";
+
+export const DIFF_ACTIVE_ROW_EVENT = "opencode-diff-active-row";
+
+export interface DiffRenderOptions {
+  foldContext?: boolean;
+  shouldCommit?: () => boolean;
+}
 
 export interface EditDiff {
   file?: string;
@@ -67,18 +75,113 @@ export async function renderEditDiff(
   renderDiagnostics(container, diff.targetPath ?? diff.file, state, false);
 }
 
-/** Renders one unified diff block with an optional affected-file label. */
-export async function renderDiffSection(container: HTMLElement, diff: EditDiff, ctx: BlockRenderCtx): Promise<void> {
+/** Renders one unified diff block, optionally folding distant context for Session Island navigation. */
+export async function renderDiffSection(container: HTMLElement, diff: EditDiff, ctx: BlockRenderCtx, options: DiffRenderOptions = {}): Promise<void> {
   const table = container.createDiv({ cls: "opencode-session-view__diff-table" });
+  if (options.foldContext) table.setAttr("role", "rowgroup");
   const language = languageFromPath(diff.file);
-  for (const row of parseUnifiedDiffRows(diff.patch)) {
-    const line = table.createDiv({ cls: `opencode-session-view__diff-line opencode-session-view__diff-line--${row.kind}` });
-    line.createSpan({ text: row.oldLine === undefined ? "" : String(row.oldLine), cls: "opencode-session-view__diff-line-number" });
-    line.createSpan({ text: row.newLine === undefined ? "" : String(row.newLine), cls: "opencode-session-view__diff-line-number" });
-    const code = line.createSpan({ cls: "opencode-session-view__diff-code" });
-    if (row.kind === "meta") code.setText(row.text || " ");
-    else await renderHighlightedCodeLine(code, row.text || " ", language, ctx);
+  const parsed = parseUnifiedDiffRows(diff.patch);
+  const rows = options.foldContext ? foldUnifiedDiffContext(parsed) : parsed.map((row) => ({ type: "row" as const, row }));
+  const codeContainers: HTMLElement[] = [];
+  const codeLines: string[] = [];
+  for (const item of rows) {
+    if (item.type === "fold") {
+      renderContextFold(table, item.rows, language, ctx, options.shouldCommit);
+      continue;
+    }
+    const code = renderDiffLine(table, item.row, options.foldContext === true);
+    if (item.row.kind === "meta") code.setText(item.row.text || " ");
+    else {
+      codeContainers.push(code);
+      codeLines.push(item.row.text || " ");
+    }
   }
+  await renderHighlightedCodeLines(codeContainers, codeLines, language, ctx, options.shouldCommit);
+}
+
+/** Requests collapse of the context region containing one active row; referenced by Session Island key handling. */
+export function collapseExpandedDiffContext(row: HTMLElement): boolean {
+  if (!row.dataset.diffFoldId) return false;
+  row.dispatchEvent(new Event("opencode-diff-collapse"));
+  return true;
+}
+
+let diffRowSequence = 0;
+
+/** Creates one line-numbered row and marks navigable Session Island rows as active-descendant targets. */
+function renderDiffLine(table: HTMLElement, row: UnifiedDiffRow, navigable: boolean, before?: Node, foldId?: string): HTMLElement {
+  const line = document.createElement("div");
+  line.className = `opencode-session-view__diff-line opencode-session-view__diff-line--${row.kind}`;
+  if (navigable) {
+    line.id = `opencode-diff-row-${++diffRowSequence}`;
+    line.dataset.diffRow = "";
+    line.setAttribute("role", "row");
+  }
+  if (foldId) line.dataset.diffFoldId = foldId;
+  const lineNumber = row.kind === "del" ? row.oldLine : row.newLine;
+  const gutter = line.createSpan({ text: lineNumber === undefined ? "" : String(lineNumber), cls: "opencode-session-view__diff-line-number" });
+  const code = line.createSpan({ cls: "opencode-session-view__diff-code" });
+  if (navigable) {
+    gutter.setAttr("role", "gridcell");
+    code.setAttr("role", "gridcell");
+  }
+  table.insertBefore(line, before ?? null);
+  return code;
+}
+
+/** Renders one expandable placeholder that can restore and re-collapse its omitted context rows. */
+function renderContextFold(
+  table: HTMLElement,
+  rows: UnifiedDiffRow[],
+  language: string,
+  ctx: BlockRenderCtx,
+  shouldCommit: () => boolean = () => true,
+  before?: Node,
+): HTMLElement {
+  const foldId = `opencode-diff-fold-${++diffRowSequence}`;
+  const placeholder = document.createElement("div");
+  placeholder.className = "opencode-session-view__diff-line opencode-session-view__diff-line--fold";
+  placeholder.id = `opencode-diff-row-${++diffRowSequence}`;
+  placeholder.dataset.diffRow = "";
+  placeholder.dataset.diffFolded = "";
+  placeholder.setAttribute("role", "row");
+  placeholder.setAttribute("aria-expanded", "false");
+  placeholder.setAttribute("aria-label", `${rows.length} unchanged lines collapsed. Press Space or Right Arrow to expand.`);
+  placeholder.createSpan({ cls: "opencode-session-view__diff-line-number", attr: { role: "gridcell" } });
+  placeholder.createSpan({ text: `${rows.length} unchanged lines`, cls: "opencode-session-view__diff-code", attr: { role: "gridcell" } });
+  table.insertBefore(placeholder, before ?? null);
+
+  const collapse = (): void => {
+    const expanded = Array.from(table.querySelectorAll<HTMLElement>(`[data-diff-fold-id="${foldId}"]`));
+    const first = expanded[0];
+    if (!first) return;
+    const restored = renderContextFold(table, rows, language, ctx, shouldCommit, first);
+    for (const line of expanded) line.remove();
+    requestActiveDiffRow(restored);
+  };
+  placeholder.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const containers: HTMLElement[] = [];
+    const lines: string[] = [];
+    let first: HTMLElement | undefined;
+    for (const row of rows) {
+      const code = renderDiffLine(table, row, true, placeholder, foldId);
+      const line = code.parentElement!;
+      first ??= line;
+      line.addEventListener("opencode-diff-collapse", collapse);
+      containers.push(code);
+      lines.push(row.text || " ");
+    }
+    placeholder.remove();
+    if (first) requestActiveDiffRow(first);
+    void renderHighlightedCodeLines(containers, lines, language, ctx, shouldCommit);
+  });
+  return placeholder;
+}
+
+/** Moves the Session Island active descendant after a context fold changes shape. */
+function requestActiveDiffRow(row: HTMLElement): void {
+  row.dispatchEvent(new CustomEvent(DIFF_ACTIVE_ROW_EVENT, { bubbles: true, detail: { row } }));
 }
 
 /** Renders LSP diagnostic errors reported in edit/write/apply_patch metadata. */

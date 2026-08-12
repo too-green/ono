@@ -18,6 +18,7 @@ import type { DiffFileSummary } from "../../diff-utils";
 export interface DescendantSessionInfo {
   title: string;
   directory?: string;
+  statusType?: string;
 }
 
 export class SessionViewModel {

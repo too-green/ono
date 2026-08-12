@@ -102,7 +102,7 @@ export function sectionsToGradient(sections: { startFraction: number; endFractio
   return `linear-gradient(to right, ${stops.join(", ")})`;
 }
 
-/** Returns total tokens (input + output + reasoning + cache read + cache write) from the latest assistant message, or 0. */
+/** Returns total tokens from the latest assistant message, or 0; used by the bar and Session Island label. */
 function currentContextLength(model: SessionViewModel): number {
   for (let i = model.loadedMessages.length - 1; i >= 0; i -= 1) {
     const bundle = model.loadedMessages[i];
@@ -127,6 +127,20 @@ function currentModelContextLimit(model: SessionViewModel): number {
   const info = model.availableModels.find((item) => sameModel(modelRefFromInfo(item), model.selectedModel));
   const limit = info ? readObject(info, "limit") : undefined;
   return limit ? readNumber(limit, ["context"]) ?? 0 : 0;
+}
+
+export interface ContextUsage {
+  used: number;
+  limit: number;
+  percentage: number;
+}
+
+/** Returns usable context data shared by the progress bar and Session Island Prompt trigger. */
+export function contextUsage(model: SessionViewModel): ContextUsage | undefined {
+  const used = currentContextLength(model);
+  const limit = currentModelContextLimit(model);
+  if (used <= 0 || limit <= 0) return undefined;
+  return { used, limit, percentage: Math.min(100, Math.round((used / limit) * 100)) };
 }
 
 export interface ContextProgressBarDeps {
@@ -174,8 +188,9 @@ export class ContextProgressBarController {
     const track = this.trackEl;
     const fill = this.fillEl;
     if (!bar?.isConnected) return;
-    const limit = currentModelContextLimit(this.model);
-    const used = currentContextLength(this.model);
+    const usage = contextUsage(this.model);
+    const limit = usage?.limit ?? currentModelContextLimit(this.model);
+    const used = usage?.used ?? 0;
     const hasAssistant = this.model.loadedMessages.some((bundle) => readString(bundle.info, ["role"]) === "assistant");
     const isEmpty = !hasAssistant || limit === 0 || used === 0;
     const showThresholdLabels = this.showThresholdLabels();

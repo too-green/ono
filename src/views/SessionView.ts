@@ -1,6 +1,5 @@
 import { ItemView, Menu, Notice, WorkspaceLeaf, type ViewStateResult } from "obsidian";
 import type OpenCodePlugin from "../../main";
-import type { DiffPanelContext } from "./DiffPanelView";
 import { DELETE_CURRENT_FILE_COMMANDS, RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
 import { diffFilesFromUnifiedPatch, type DiffFileSummary } from "../diff-utils";
 import { confirmSessionRewind } from "../session-actions";
@@ -27,6 +26,7 @@ import type { DomEventRegistrar } from "./session/dom-registrar";
 import { MarkdownPatcher } from "./session/streaming/markdown-patcher";
 import { StreamController } from "./session/streaming/stream-controller";
 import { TimelineRenderer } from "./session/streaming/timeline-renderer";
+import { SessionIslandController } from "./session/session-island-controller";
 
 export const VIEW_TYPE_OPENCODE_SESSION = "opencode-session";
 
@@ -54,6 +54,7 @@ export class SessionView extends ItemView {
   private composer!: ComposerController;
   private markdownPatcher!: MarkdownPatcher;
   private timeline!: TimelineRenderer;
+  private island!: SessionIslandController;
   private stream!: StreamController;
   private sessionBindingVersion = 0;
   private canonicalRequestVersion = 0;
@@ -109,6 +110,16 @@ export class SessionView extends ItemView {
       onRedo: () => void this.redoSessionRewind(),
       onOpenSession: (sessionId, title) => this.plugin.openSessionTab(sessionId, title),
     });
+    this.island = new SessionIslandController({
+      plugin: this.plugin,
+      component: this,
+      model: this.model,
+      getRevertMessageId: () => this.revertMessageId(),
+      isActive: () => this.app.workspace.activeLeaf === this.leaf,
+      isSessionMuted: () => this.isSessionMuted(),
+      shouldAutoApprove: () => this.docks.shouldAutoApprove(),
+      onPromptActivated: () => this.composer.onPromptActivated(),
+    });
     this.registerInterval(window.setInterval(() => this.timeline.refreshActiveTurnDuration(), 1_000));
     this.stream = new StreamController({
       model: this.model,
@@ -120,14 +131,23 @@ export class SessionView extends ItemView {
       onSessionDiff: (diffs) => {
         this.model.revertDiffFiles = diffs;
       },
+      onTodosUpdated: (todos) => this.island.applyTodos(todos),
+      onMessageChanged: (message) => this.island.reconcileMessages([message]),
+      onMessageRemoved: (messageId) => this.island.removeMessage(messageId),
+      onStreamOpen: (reconnected) => {
+        if (reconnected) this.island.recoverAfterReconnect();
+      },
       onStatusChange: (status) => this.applySessionStatus(status, true),
+      onDescendantsChanged: () => this.island.refreshState(),
       onPermissionAsked: (request) => this.plugin.routePermissionRequest(request),
       onPermissionReplied: (requestId) => this.plugin.settleSessionRequest(requestId),
       onQuestionAsked: (request) => this.plugin.routeQuestionRequest(request),
       onQuestionSettled: (requestId) => this.plugin.settleSessionRequest(requestId),
       requestTimelineRender: () => this.timeline.renderStreaming(),
-      requestDiffPanelRefresh: (force) => this.syncDiffPanel(force),
-      requestComposerProgressRefresh: () => this.composer.updateProgressBar(),
+      requestComposerProgressRefresh: () => {
+        this.composer.updateProgressBar();
+        this.island.refreshChrome();
+      },
       requestCanonicalSync: () => this.syncCanonicalMessages(),
     });
     this.docks = new RequestDocksController({
@@ -144,7 +164,10 @@ export class SessionView extends ItemView {
     this.variants = new ModelVariantsController({
       plugin: this.plugin,
       model: this.model,
-      requestRefresh: () => this.composer.refresh(),
+      requestRefresh: async () => {
+        await this.composer.refresh();
+        this.island.refreshChrome();
+      },
     });
     this.composer = new ComposerController({
       plugin: this.plugin,
@@ -163,7 +186,6 @@ export class SessionView extends ItemView {
       renderModelPill: (container) => this.variants.renderModelPill(container),
       renderThinkingPill: (container) => this.variants.renderThinkingPill(container),
       // Docks surface
-      mountDocks: (container) => this.docks.mount(container),
       isComposerBlocked: () => this.docks.isComposerBlocked(),
       shouldAutoApprove: () => this.docks.shouldAutoApprove(),
       // Scroll surface
@@ -290,6 +312,8 @@ export class SessionView extends ItemView {
       if (leaf !== this.leaf) {
         this.slash.hide();
         this.variants.hideModelMenu();
+      } else {
+        this.island.activate();
       }
     }));
     await this.refresh();
@@ -297,7 +321,6 @@ export class SessionView extends ItemView {
 
   /** Releases event streams and timers when the tab closes. */
   async onClose(): Promise<void> {
-    this.plugin.notifySessionViewClosed(this.leaf, this.model.sessionId);
     this.composer.persistDraft();
     this.sessionBindingVersion += 1;
     this.loadingSessionId = undefined;
@@ -307,6 +330,7 @@ export class SessionView extends ItemView {
     this.variants.dispose();
     this.slash.dispose();
     this.composer.dispose();
+    this.island.dispose();
     this.markdownPatcher.dispose();
     this.nativeTitleEl?.removeEventListener("click", this.handleNativeTitleClick);
     this.nativeTitleEl = undefined;
@@ -354,7 +378,6 @@ export class SessionView extends ItemView {
         await this.timeline.reconcileAppendOnly(this.model.loadedMessages);
       }
       if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
-      await this.syncDiffPanel(true);
     } catch (error) {
       if (this.isCurrentSessionBinding(sessionId, bindingVersion)) this.renderError(error);
     } finally {
@@ -365,6 +388,7 @@ export class SessionView extends ItemView {
   /** Clears cursor/page state when the view is rebound to another session. */
   private resetTimelineState(options: { preserveSubmission?: boolean } = {}): void {
     const submittingPrompt = options.preserveSubmission === true && this.model.submittingPrompt;
+    this.island.unbind();
     this.model.loadedMessages = [];
     this.model.olderCursor = undefined;
     this.model.historyComplete = true;
@@ -401,17 +425,6 @@ export class SessionView extends ItemView {
     return this.model.sessionId === sessionId && this.sessionBindingVersion === bindingVersion;
   }
 
-  /** Returns the active session identity for the right-sidebar diff panel and plugin focus listener. */
-  diffPanelContext(): DiffPanelContext {
-    return { sessionId: this.model.sessionId, sessionTitle: this.model.sessionTitle, sessionDirectory: this.model.sessionDirectory };
-  }
-
-  /** Synchronizes this session's diff context only while its leaf owns the panel context. */
-  private syncDiffPanel(force = false): Promise<void> {
-    if (force && this.model.sessionId) this.plugin.markDiffPanelSessionDirty(this.model.sessionId);
-    return this.plugin.updateDiffPanelContext(this.diffPanelContext(), { force, sourceLeaf: this.leaf });
-  }
-
   /** Fetches canonical session data after idle and reconciles only the timeline tail. */
   private async syncCanonicalMessages(): Promise<void> {
     const sessionId = this.model.sessionId;
@@ -429,7 +442,6 @@ export class SessionView extends ItemView {
       this.docks.refresh();
       await this.timeline.reconcileAppendOnly(this.model.loadedMessages);
       if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
-      await this.syncDiffPanel();
     } catch (error) {
       if (this.isCurrentSessionBinding(sessionId, bindingVersion)) console.warn("[opencode-plugin:session-stream] canonical sync failed", error);
     }
@@ -473,6 +485,7 @@ export class SessionView extends ItemView {
     this.model.descendantSessions = new Map(descendants.map((item) => [item.id, {
       title: jsonHelpers.readString(item, ["title", "name", "slug"]) ?? item.id,
       directory: this.sessionDirectoryFromSession(item) ?? directory,
+      statusType: jsonHelpers.readString(jsonHelpers.readObject(statuses, item.id) ?? {}, ["type", "status", "state"]) ?? "idle",
     }]));
     this.docks.reconcileRequestScope();
     const visibleSessionIds = new Set([sessionId, ...this.model.descendantSessions.keys()]);
@@ -534,6 +547,7 @@ export class SessionView extends ItemView {
     this.model.selectedAgent = this.variants.resolveAgentForSession(session);
     this.model.selectedModel = this.variants.resolveModelForSession(session, this.model.selectedAgent);
     this.model.renderedSessionId = this.model.sessionId;
+    if (this.model.sessionId) this.island.bind(this.model.sessionId, this.model.sessionDirectory, this.model.loadedMessages);
     this.refreshLeafTitle();
     this.composer.updateInsetSoon();
   }
@@ -542,7 +556,6 @@ export class SessionView extends ItemView {
   private applySessionUpdate(session: JsonObject): void {
     this.canonicalRequestVersion += 1;
     this.applyCanonicalSession(session);
-    void this.syncDiffPanel();
   }
 
   /** Applies the current session's status from the global v1 status snapshot. */
@@ -627,7 +640,10 @@ export class SessionView extends ItemView {
       const shell = this.contentEl.createDiv({ cls: "opencode-session-view__shell opencode-session-view__shell--draft" });
       const body = shell.createDiv({ cls: "opencode-session-view__draft-body" });
       body.createDiv({ text: "What would you like to work on?", cls: "opencode-session-view__draft-title" });
-      this.composer.mount(shell, {}, true);
+      const bottomDock = shell.createDiv({ cls: "opencode-session-view__bottom-dock" });
+      this.docks.mount(bottomDock);
+      const promptPanel = this.island.mount(bottomDock);
+      this.composer.mount(promptPanel, {}, true);
       this.refreshLeafTitle();
     } catch (error) {
       if (this.sessionBindingVersion === bindingVersion && this.model.draftId === draftId && !this.model.sessionId) this.renderError(error);
@@ -676,7 +692,10 @@ export class SessionView extends ItemView {
     this.contentEl.dataset.workingAnimation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
     this.contentEl.replaceChildren(shell);
     this.refreshSessionStateChrome();
-    this.composer.mount(shell, session, options.initialLoad && visibleMessageCount === 0);
+    const bottomDock = shell.createDiv({ cls: "opencode-session-view__bottom-dock" });
+    this.docks.mount(bottomDock);
+    const promptPanel = this.island.mount(bottomDock);
+    this.composer.mount(promptPanel, session, options.initialLoad && visibleMessageCount === 0);
     this.composer.restoreDomState(composerState);
     this.scroll.renderJumpToBottomButton();
     this.scroll.bindScrollListener();
@@ -800,6 +819,7 @@ export class SessionView extends ItemView {
     await this.plugin.rememberSessionAutoApprove(key, enabled);
     if (enabled) await this.docks.autoApprovePending();
     await this.composer.refresh();
+    this.island.refreshChrome();
   }
 
   /** Toggles local notification muting for the current session/draft. */
@@ -808,6 +828,7 @@ export class SessionView extends ItemView {
     if (!key) return;
     await this.plugin.rememberSessionMute(key, !this.isSessionMuted());
     await this.composer.refresh();
+    this.island.refreshChrome();
   }
 
   /** Forks the current session and opens the resulting session tab. */
@@ -875,7 +896,7 @@ export class SessionView extends ItemView {
     this.model.revertDiffFiles = this.revertDiffFilesFromSession(session);
     await this.timeline.renderStreaming().catch((error) => console.warn("[opencode-plugin:rewind] timeline render failed", error));
     if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return false;
-    await this.syncDiffPanel(true).catch((error) => console.warn("[opencode-plugin:rewind] diff panel refresh failed", error));
+    this.island.reconcileMessages(this.model.loadedMessages);
     return this.isCurrentSessionBinding(sessionId, bindingVersion);
   }
 
@@ -890,7 +911,7 @@ export class SessionView extends ItemView {
     this.model.revertDiffFiles = [];
     await this.timeline.renderStreaming().catch((error) => console.warn("[opencode-plugin:rewind] timeline render failed", error));
     if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return false;
-    await this.syncDiffPanel(true).catch((error) => console.warn("[opencode-plugin:rewind] diff panel refresh failed", error));
+    this.island.reconcileMessages(this.model.loadedMessages);
     return this.isCurrentSessionBinding(sessionId, bindingVersion);
   }
 
@@ -1032,7 +1053,6 @@ export class SessionView extends ItemView {
   /** Promotes this Obsidian draft leaf to a normal server-backed session leaf. */
   private async promoteDraftView(sessionId: string, sessionTitle?: string): Promise<void> {
     await this.leaf.setViewState({ type: VIEW_TYPE_OPENCODE_SESSION, state: { sessionId, sessionTitle }, active: true });
-    await this.syncDiffPanel(true);
   }
 
   /** Extracts the user-facing session title used by the native Obsidian tab and view header. */
@@ -1045,7 +1065,21 @@ export class SessionView extends ItemView {
     this.model.sessionTitle = title;
     if (this.model.currentSession) this.model.currentSession.title = title;
     this.refreshLeafTitle();
-    void this.syncDiffPanel();
+  }
+
+  /** Re-renders the mounted Session Island after its context/todo display settings change. */
+  refreshSessionIsland(): void {
+    this.island.refreshDisplay();
+  }
+
+  /** Returns whether the active Session Island has more than one present tab. */
+  canCycleSessionIslandTabs(): boolean {
+    return this.island.canCycleTabs();
+  }
+
+  /** Selects the next present Session Island tab; referenced by the plugin command. */
+  cycleSessionIslandTab(): void {
+    this.island.cycleTab();
   }
 
   /** Reads the workspace directory used for directory-scoped agent and prompt APIs. */

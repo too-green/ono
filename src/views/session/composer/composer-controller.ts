@@ -62,8 +62,6 @@ export interface ComposerDeps {
   renderModelPill: (container: HTMLElement) => void;
   /** `variants.renderThinkingPill(container)`. */
   renderThinkingPill: (container: HTMLElement) => void;
-  /** `docks.mount(container)` — attach the dock container to the composer. */
-  mountDocks: (container: HTMLElement) => void;
   /** `docks.isComposerBlocked()` — disables the textarea when a request is pending. */
   isComposerBlocked: () => boolean;
   /** `docks.shouldAutoApprove()` — initial state of the auto-approve toggle pill. */
@@ -88,6 +86,9 @@ export interface ComposerDeps {
 /** Renders and orchestrates the bottom composer cluster used to send prompts from a session tab. */
 export class ComposerController {
   private composerEl?: HTMLElement;
+  private mountContainerEl?: HTMLElement;
+  private insetTargetEl?: HTMLElement;
+  private insetObserver?: ResizeObserver;
   private composerTextarea?: HTMLTextAreaElement;
   private composerSendButtons: HTMLButtonElement[] = [];
   private composerQueuedBadges: HTMLElement[] = [];
@@ -117,10 +118,11 @@ export class ComposerController {
     const composerKey = this.deps.model.composerStorageKey;
     if (!composerKey) return;
     const composer = container.createDiv({ cls: "opencode-session-view__composer" });
+    this.mountContainerEl = container;
+    this.observeInsetTarget(container.closest<HTMLElement>(".opencode-session-view__bottom-dock") ?? composer);
     this.composerEl = composer;
     this.composerSendButtons = [];
     this.composerQueuedBadges = [];
-    this.deps.mountDocks(composer);
     this.renderAttachmentChips(composer, composerKey);
     const inputRow = composer.createDiv({ cls: "opencode-session-view__composer-input-row" });
     const textarea = inputRow.createEl("textarea", {
@@ -174,7 +176,11 @@ export class ComposerController {
     this.pendingInterruptConfirm = false;
     this.abortingSession = false;
     this.composerEl?.remove();
+    this.insetObserver?.disconnect();
     this.composerEl = undefined;
+    this.mountContainerEl = undefined;
+    this.insetTargetEl = undefined;
+    this.insetObserver = undefined;
     this.composerTextarea = undefined;
     this.composerSendButtons = [];
     this.composerQueuedBadges = [];
@@ -193,13 +199,15 @@ export class ComposerController {
 
   /** Rebuilds the sticky composer while preserving draft text and the existing timeline. Replaces `refreshComposerOnly`. */
   async refresh(): Promise<void> {
-    const shell = this.deps.contentEl.querySelector<HTMLElement>(".opencode-session-view__shell");
-    if (!shell) return;
+    const container = this.mountContainerEl?.isConnected
+      ? this.mountContainerEl
+      : this.deps.contentEl.querySelector<HTMLElement>(".opencode-session-view__bottom-dock, .opencode-session-view__shell");
+    if (!container) return;
     const state = this.captureDomState();
     this.persistDraft();
     this.deps.onBeforeRemount();
     this.composerEl?.remove();
-    this.mount(shell, this.deps.model.currentSession ?? {}, false);
+    this.mount(container, this.deps.model.currentSession ?? {}, false);
     this.restoreDomState(state);
   }
 
@@ -233,6 +241,13 @@ export class ComposerController {
     if (this.composerTextarea?.isConnected) this.composerTextarea.disabled = this.deps.isComposerBlocked();
     for (const badge of this.composerQueuedBadges) badge.toggleClass("is-visible", this.deps.model.sessionBusy);
     this.syncSendButtons();
+    this.updateInsetSoon();
+  }
+
+  /** Recalculates hidden-panel geometry when the Session Island returns to Prompt. */
+  onPromptActivated(): void {
+    if (this.composerTextarea) this.resizeComposerInput(this.composerTextarea);
+    this.progressBar.update();
     this.updateInsetSoon();
   }
 
@@ -357,12 +372,21 @@ export class ComposerController {
 
   /** Updates the CSS custom property that prevents latest messages from hiding behind the composer. */
   private updateInset(): void {
-    if (!this.composerEl?.isConnected) {
+    if (!this.insetTargetEl?.isConnected) {
       this.deps.contentEl.style.removeProperty("--opencode-composer-height");
       return;
     }
-    const height = Math.ceil(this.composerEl.getBoundingClientRect().height);
+    const height = Math.ceil(this.insetTargetEl.getBoundingClientRect().height);
     if (height > 0) this.deps.contentEl.style.setProperty("--opencode-composer-height", `${height}px`);
+  }
+
+  /** Observes the complete sticky bottom dock so island-panel and request changes share one inset. */
+  private observeInsetTarget(target: HTMLElement): void {
+    this.insetObserver?.disconnect();
+    this.insetTargetEl = target;
+    if (typeof ResizeObserver === "undefined") return;
+    this.insetObserver = new ResizeObserver(() => this.updateInset());
+    this.insetObserver.observe(target);
   }
 
   // ---- Attachments ----

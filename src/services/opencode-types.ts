@@ -16,6 +16,21 @@ export interface OpenCodeSession extends JsonObject {
   time?: { created?: number; updated?: number; archived?: number };
 }
 
+export interface OpenCodeProject extends JsonObject {
+  id: string;
+  worktree: string;
+  vcsDir?: string;
+  vcs?: "git";
+  time?: { created?: number; initialized?: number };
+}
+
+export interface OpenCodeTodo extends JsonObject {
+  id?: string;
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
+  priority: "high" | "medium" | "low";
+}
+
 export interface OpenCodeSessionRevert extends JsonObject {
   messageID: string;
   partID?: string;
@@ -56,6 +71,7 @@ export interface OpenCodeListSessionsParams {
 export interface OpenCodeListMessagesParams {
   limit?: number;
   cursor?: string;
+  directory?: string;
 }
 
 export interface OpenCodeMessagePage {

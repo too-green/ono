@@ -68,13 +68,17 @@ describe("StreamController", () => {
       extendFollowLatest: vi.fn(),
       onSessionUpdated: vi.fn(),
       onSessionDiff: vi.fn(),
+      onTodosUpdated: vi.fn(),
+      onMessageChanged: vi.fn(),
+      onMessageRemoved: vi.fn(),
+      onStreamOpen: vi.fn(),
       onStatusChange: vi.fn(),
+      onDescendantsChanged: vi.fn(),
       onPermissionAsked: vi.fn(),
       onPermissionReplied: vi.fn(),
       onQuestionAsked: vi.fn(),
       onQuestionSettled: vi.fn(),
       requestTimelineRender: vi.fn<() => Promise<void>>(async () => undefined),
-      requestDiffPanelRefresh: vi.fn<(force: boolean) => Promise<void>>(async () => undefined),
       requestComposerProgressRefresh: vi.fn(),
       requestCanonicalSync: vi.fn(),
     };
@@ -117,7 +121,11 @@ describe("StreamController", () => {
     const { handlers, deps, controller } = setup();
     handlers[0]?.onOpen?.();
     vi.runOnlyPendingTimers();
+    expect(deps.onStreamOpen).toHaveBeenCalledWith(false);
     expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
+
+    handlers[0]?.onOpen?.();
+    expect(deps.onStreamOpen).toHaveBeenLastCalledWith(true);
 
     controller.scheduleCanonicalSync(100);
     controller.scheduleCanonicalSync(20);
@@ -140,11 +148,12 @@ describe("StreamController", () => {
     runNextFrame();
     await vi.waitFor(() => expect(deps.requestComposerProgressRefresh).toHaveBeenCalledOnce());
     expect(deps.requestTimelineRender).toHaveBeenCalledOnce();
-    expect(deps.requestDiffPanelRefresh).toHaveBeenCalledWith(false);
+    expect(deps.onMessageChanged).toHaveBeenCalledTimes(2);
 
     emit(handlers, "message.removed", { sessionID: "s1", messageID: "user" });
     expect(model.loadedMessages.map((bundle) => bundle.info.id)).toEqual(["assistant"]);
     expect(model.queuedMessageIds.has("user")).toBe(false);
+    expect(deps.onMessageRemoved).toHaveBeenCalledWith("user");
   });
 
   it("upserts and removes parts, including parts received before their message", () => {
@@ -205,7 +214,8 @@ describe("StreamController", () => {
 
     emit(handlers, "session.diff", { sessionID: "s1", diff: [{ file: "src/a.ts", additions: 2, deletions: 1 }] });
     expect(deps.onSessionDiff).toHaveBeenCalledWith([{ file: "src/a.ts", additions: 2, deletions: 1, patch: undefined, status: undefined }]);
-    expect(deps.requestDiffPanelRefresh).toHaveBeenCalledWith(true);
+    emit(handlers, "todo.updated", { sessionID: "s1", todos: [{ content: "Implement", status: "in_progress", priority: "high" }] });
+    expect(deps.onTodosUpdated).toHaveBeenCalledWith([{ content: "Implement", status: "in_progress", priority: "high" }]);
     emit(handlers, "session.status", { sessionID: "s1", status: { type: "busy" } });
     expect(deps.onStatusChange).toHaveBeenCalledWith({ type: "busy" });
 
@@ -230,13 +240,19 @@ describe("StreamController", () => {
     expect(model.loadedMessages).toEqual([]);
 
     emit(handlers, "session.created", { info: { id: "child", parentID: "s1", title: "Research child", directory: "/workspace" } });
-    expect(model.descendantSessions.get("child")).toEqual({ title: "Research child", directory: "/workspace" });
+    expect(model.descendantSessions.get("child")).toEqual({ title: "Research child", directory: "/workspace", statusType: undefined });
+    expect(deps.onDescendantsChanged).toHaveBeenCalledOnce();
     expect(frames.size).toBe(1);
     vi.runOnlyPendingTimers();
     expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
 
+    emit(handlers, "session.status", { sessionID: "child", status: { type: "busy" } });
+    expect(model.descendantSessions.get("child")?.statusType).toBe("busy");
+    expect(deps.onDescendantsChanged).toHaveBeenCalledTimes(2);
+
     emit(handlers, "session.updated", { info: { id: "child", title: "Renamed child" } });
-    expect(model.descendantSessions.get("child")).toEqual({ title: "Renamed child", directory: "/workspace" });
+    expect(model.descendantSessions.get("child")).toEqual({ title: "Renamed child", directory: "/workspace", statusType: "busy" });
+    expect(deps.onDescendantsChanged).toHaveBeenCalledTimes(3);
     vi.advanceTimersByTime(499);
     expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
     vi.advanceTimersByTime(1);
@@ -280,21 +296,17 @@ describe("StreamController", () => {
     releaseRender?.();
     await Promise.resolve();
     await Promise.resolve();
-    expect(deps.requestDiffPanelRefresh).not.toHaveBeenCalled();
     expect(deps.requestComposerProgressRefresh).not.toHaveBeenCalled();
     expect(frames.size).toBe(0);
   });
 
-  it("contains rejected fire-and-forget canonical and diff refresh callbacks", async () => {
+  it("contains rejected fire-and-forget canonical refresh callbacks", async () => {
     const { handlers, deps, controller } = setup();
     deps.requestCanonicalSync.mockRejectedValueOnce(new Error("canonical failed"));
     controller.scheduleCanonicalSync(0);
     vi.runAllTimers();
     await vi.waitFor(() => expect(console.warn).toHaveBeenCalledWith("[opencode-plugin:session-stream] canonical sync request failed", expect.any(Error)));
 
-    deps.requestDiffPanelRefresh.mockRejectedValueOnce(new Error("diff failed"));
-    emit(handlers, "session.diff", { sessionID: "s1", diff: [] });
-    await vi.waitFor(() => expect(console.warn).toHaveBeenCalledWith("[opencode-plugin:session-stream] diff panel refresh failed", expect.any(Error)));
   });
 
   it("cancels subscriptions, timers, frames, and stale handlers on disposal", () => {

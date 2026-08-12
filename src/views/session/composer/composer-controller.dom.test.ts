@@ -57,7 +57,6 @@ function setup(options: { busy?: boolean } = {}) {
     renderAgentLabel: (container) => container.createSpan({ text: "Plan", cls: "opencode-session-view__agent-label" }),
     renderModelPill: (container) => container.createSpan({ text: "GLM 5.2", cls: "opencode-session-view__model-pill" }),
     renderThinkingPill: (container) => container.createSpan({ text: "High", cls: "opencode-session-view__thinking-pill" }),
-    mountDocks: vi.fn(),
     isComposerBlocked: vi.fn(() => false),
     shouldAutoApprove: vi.fn(() => true),
     enableFollowLatest: vi.fn(),

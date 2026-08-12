@@ -16,9 +16,11 @@ import type {
   OpenCodePermissionRequest,
   OpenCodePromptInput,
   OpenCodeQuestionAnswer,
+  OpenCodeProject,
   OpenCodeQuestionRequest,
   OpenCodeRevertSessionInput,
   OpenCodeSession,
+  OpenCodeTodo,
   OpenCodeUpdateSessionInput,
 } from "./opencode-types";
 
@@ -58,8 +60,8 @@ export class OpenCodeService {
   }
 
   /** Reads the current OpenCode project from `GET /project/current`; referenced by the open-directory flow. */
-  getCurrentProject(directory?: string): Promise<JsonObject> {
-    return this.http.get<JsonObject>("/project/current", { directory });
+  getCurrentProject(directory?: string): Promise<OpenCodeProject> {
+    return this.http.get<OpenCodeProject>("/project/current", { directory });
   }
 
   /** Reads current path metadata from `GET /path`. */
@@ -107,7 +109,7 @@ export class OpenCodeService {
     return this.http.get<OpenCodeSession>(`/session/${encodeURIComponent(sessionId)}`, { directory });
   }
 
-  /** Creates a session through `POST /session`; referenced by the agents panel new-session placeholder. */
+  /** Creates a session through `POST /session`; referenced by session creation workflows. */
   createSession(input?: OpenCodeCreateSessionInput, directory?: string): Promise<OpenCodeSession> {
     return this.http.post<OpenCodeSession>("/session", input ?? {}, { directory });
   }
@@ -201,9 +203,9 @@ export class OpenCodeService {
     return this.http.get<OpenCodeSession[]>(`/session/${encodeURIComponent(sessionId)}/children`, { directory });
   }
 
-  /** Reads a session todo list from `GET /session/:id/todo`. */
-  getSessionTodo(sessionId: string): Promise<JsonObject[]> {
-    return this.http.get<JsonObject[]>(`/session/${encodeURIComponent(sessionId)}/todo`);
+  /** Reads a directory-scoped session todo list from `GET /session/:id/todo`; referenced by session roll-ups. */
+  getSessionTodo(sessionId: string, directory?: string): Promise<OpenCodeTodo[]> {
+    return this.http.get<OpenCodeTodo[]>(`/session/${encodeURIComponent(sessionId)}/todo`, { directory });
   }
 
   /** Reads directory-scoped session diff metadata from `GET /session/:id/diff`. */
@@ -211,7 +213,7 @@ export class OpenCodeService {
     return this.http.get<JsonObject[]>(`/session/${encodeURIComponent(sessionId)}/diff`, { messageID: messageId, directory });
   }
 
-  /** Lists all message bundles from `GET /session/:id/message`; referenced by full-session side panels. */
+  /** Lists all message bundles from `GET /session/:id/message`; referenced by full-session diff roll-ups. */
   async listMessages(sessionId: string, params?: OpenCodeListMessagesParams): Promise<OpenCodeMessageBundle[]> {
     const payload = await this.http.get<OpenCodeMessageBundle[] | { data?: OpenCodeMessageBundle[] }>(`/session/${encodeURIComponent(sessionId)}/message`, params);
     return Array.isArray(payload) ? payload : payload.data ?? [];
@@ -219,7 +221,7 @@ export class OpenCodeService {
 
   /** Reads one normalized cursor page from `GET /session/:id/message`; referenced by lazy session timelines. */
   async listMessagePage(sessionId: string, params?: OpenCodeListMessagesParams): Promise<OpenCodeMessagePage> {
-    const query = { limit: params?.limit, before: params?.cursor };
+    const query = { limit: params?.limit, before: params?.cursor, directory: params?.directory };
     const response = await this.http.getResponse<OpenCodeMessageBundle[] | { data?: OpenCodeMessageBundle[]; cursor?: { previous?: string; next?: string } }>(
       `/session/${encodeURIComponent(sessionId)}/message`,
       query,

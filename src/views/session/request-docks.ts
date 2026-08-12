@@ -36,7 +36,7 @@ export class RequestDocksController {
 
   // ---- lifecycle
 
-  /** Creates the dock container inside the composer and renders the initial set; called by `renderComposer`. */
+  /** Creates the blocking dock container above the Session Island and renders the initial set. */
   mount(parent: HTMLElement): void {
     this.requestDockEl = parent.createDiv({ cls: "opencode-session-view__request-docks" });
     this.renderRequestDocks(this.requestDockEl);

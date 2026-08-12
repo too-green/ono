@@ -8,12 +8,23 @@ import {
   type WorkingAnimation,
 } from "./session-state";
 
+export type SessionIslandContextLabel = "percentage" | "tokens";
+
+export const SESSION_ISLAND_CONTEXT_LABELS: Record<SessionIslandContextLabel, string> = {
+  tokens: "Token count",
+  percentage: "Percentage",
+};
+
+export const DEFAULT_SESSION_ISLAND_CONTEXT_LABEL: SessionIslandContextLabel = "tokens";
+
 export interface OpenCodePluginSettings {
   server: OpenCodeServerConfig;
   openedDirectories: string[];
   groupContextTools: boolean;
   showReasoningBlocks: boolean;
   showContextBarThresholdLabels: boolean;
+  sessionIslandContextLabel: SessionIslandContextLabel;
+  todoInProgressStatusCharacter: string;
   interruptConfirmSeconds: number;
   archiveConfirmation: boolean;
   sessionScroll: Record<string, { top: number; atBottom: boolean }>;
@@ -44,6 +55,8 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   groupContextTools: false,
   showReasoningBlocks: true,
   showContextBarThresholdLabels: true,
+  sessionIslandContextLabel: DEFAULT_SESSION_ISLAND_CONTEXT_LABEL,
+  todoInProgressStatusCharacter: "",
   interruptConfirmSeconds: 3,
   archiveConfirmation: true,
   sessionScroll: {},
@@ -59,6 +72,19 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   favoriteModels: [],
   customToolDisplays: [],
 };
+
+/** Returns a supported Prompt-tab context label for persisted settings and live rendering. */
+export function normalizeSessionIslandContextLabel(value: unknown): SessionIslandContextLabel {
+  if (typeof value === "string" && value in SESSION_ISLAND_CONTEXT_LABELS) return value as SessionIslandContextLabel;
+  return DEFAULT_SESSION_ISLAND_CONTEXT_LABEL;
+}
+
+/** Normalizes the optional theme-defined in-progress task marker; empty means highlighted unchecked. */
+export function normalizeTodoStatusCharacter(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const character = Array.from(value.trim())[0];
+  return character && !"[]xX-".includes(character) ? character : "";
+}
 
 class IconSuggest extends AbstractInputSuggest<string> {
   private readonly icons = getIconIds();
@@ -108,6 +134,65 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           await this.plugin.refreshSessionViews();
         }),
       );
+
+    new Setting(this.containerEl)
+      .setName("Show session context as percentage")
+      .setDesc("Show a percentage in the Session Island Prompt tab instead of the default compact token count.")
+      .addToggle((toggle) => {
+        toggle.setValue(normalizeSessionIslandContextLabel(this.plugin.settings.sessionIslandContextLabel) === "percentage").onChange(async (value) => {
+          this.plugin.settings.sessionIslandContextLabel = value ? "percentage" : "tokens";
+          await this.plugin.saveSettings();
+          this.plugin.refreshSessionIslands();
+        });
+      });
+
+    const todoStatus = new Setting(this.containerEl)
+      .setName("In-progress todo status")
+      .setDesc("Highlight the current todo by default, or use a task character supported by your theme.");
+    const currentTodoStatus = normalizeTodoStatusCharacter(this.plugin.settings.todoInProgressStatusCharacter);
+    const commonStatuses = new Set(["", "/", ">", "!", "?"]);
+    let customStatusInput: HTMLInputElement | undefined;
+    todoStatus.addDropdown((dropdown) => {
+      dropdown
+        .addOption("", "Highlight (default)")
+        .addOption("/", "/ task status")
+        .addOption(">", "> task status")
+        .addOption("!", "! task status")
+        .addOption("?", "? task status")
+        .addOption("__custom__", "Custom character")
+        .setValue(commonStatuses.has(currentTodoStatus) ? currentTodoStatus : "__custom__")
+        .onChange(async (value) => {
+          if (value === "__custom__") {
+            this.plugin.settings.todoInProgressStatusCharacter = "";
+            if (customStatusInput) {
+              customStatusInput.disabled = false;
+              customStatusInput.value = "";
+              customStatusInput.focus();
+            }
+            await this.plugin.saveSettings();
+            this.plugin.refreshSessionIslands();
+            return;
+          }
+          this.plugin.settings.todoInProgressStatusCharacter = value;
+          if (customStatusInput) customStatusInput.disabled = true;
+          await this.plugin.saveSettings();
+          this.plugin.refreshSessionIslands();
+        });
+    });
+    todoStatus.addText((text) => {
+      customStatusInput = text.inputEl;
+      text.setPlaceholder("Character").setValue(commonStatuses.has(currentTodoStatus) ? "" : currentTodoStatus).onChange(async (value) => {
+        if (customStatusInput?.disabled) return;
+        const character = normalizeTodoStatusCharacter(value);
+        this.plugin.settings.todoInProgressStatusCharacter = character;
+        if (customStatusInput && customStatusInput.value !== character) customStatusInput.value = character;
+        await this.plugin.saveSettings();
+        this.plugin.refreshSessionIslands();
+      });
+      text.inputEl.maxLength = 2;
+      text.inputEl.disabled = commonStatuses.has(currentTodoStatus);
+      text.inputEl.setAttr("aria-label", "Custom in-progress todo task character");
+    });
 
     new Setting(this.containerEl)
       .setName("Working indicator animation")

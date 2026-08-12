@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import OpenCodePlugin from "../main.ts";
+import OpenCodePlugin, { LEGACY_DIFF_PANEL_VIEW_TYPE } from "../main.ts";
 import { VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./views/AgentPanelView";
-import { VIEW_TYPE_OPENCODE_DIFF_PANEL } from "./views/DiffPanelView";
 import { VIEW_TYPE_OPENCODE_SESSION } from "./views/SessionView";
 
 describe("OpenCodePlugin unload lifecycle", () => {
@@ -21,7 +20,7 @@ describe("OpenCodePlugin unload lifecycle", () => {
     expect(order).toEqual([
       VIEW_TYPE_OPENCODE_AGENT_PANEL,
       VIEW_TYPE_OPENCODE_SESSION,
-      VIEW_TYPE_OPENCODE_DIFF_PANEL,
+      LEGACY_DIFF_PANEL_VIEW_TYPE,
       "dispose",
     ]);
   });

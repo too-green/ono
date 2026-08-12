@@ -1,6 +1,6 @@
 import { diffFilesFromRecords, type DiffFileSummary } from "../../../diff-utils";
 import type { OpenCodeEventHandlers, OpenCodeEventSubscription } from "../../../services/opencode-events";
-import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest } from "../../../services/opencode-types";
+import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeTodo } from "../../../services/opencode-types";
 import * as jsonHelpers from "../json-helpers";
 import { messageId, messageTime } from "../message-helpers";
 import type { SessionViewModel } from "../session-view-model";
@@ -21,13 +21,17 @@ export interface StreamDeps {
   extendFollowLatest: (durationMs: number) => void;
   onSessionUpdated: (session: JsonObject) => void;
   onSessionDiff: (diffs: DiffFileSummary[]) => void;
+  onTodosUpdated: (todos: OpenCodeTodo[]) => void;
+  onMessageChanged: (message: OpenCodeMessageBundle) => void;
+  onMessageRemoved: (messageId: string) => void;
+  onStreamOpen: (reconnected: boolean) => void;
   onStatusChange: (status: JsonObject) => void;
+  onDescendantsChanged: () => void;
   onPermissionAsked: (request: OpenCodePermissionRequest) => void;
   onPermissionReplied: (requestId: string | undefined) => void;
   onQuestionAsked: (request: OpenCodeQuestionRequest) => void;
   onQuestionSettled: (requestId: string | undefined) => void;
   requestTimelineRender: () => Promise<void>;
-  requestDiffPanelRefresh: (force: boolean) => Promise<void>;
   requestComposerProgressRefresh: () => void;
   requestCanonicalSync: () => void | Promise<void>;
 }
@@ -50,6 +54,7 @@ export class StreamController {
   private renderPending = false;
   private subscription?: OpenCodeEventSubscription;
   private subscriptionDirectory?: string;
+  private connectionOpened = false;
   private workVersion = 0;
   private disposed = false;
 
@@ -76,6 +81,9 @@ export class StreamController {
       },
       onOpen: () => {
         if (this.disposed || version !== this.workVersion) return;
+        const reconnected = this.connectionOpened;
+        this.connectionOpened = true;
+        this.deps.onStreamOpen(reconnected);
         if (this.deps.model.renderedSessionId === this.deps.model.sessionId) this.scheduleCanonicalSync(0);
       },
     }, directory);
@@ -86,12 +94,23 @@ export class StreamController {
     return type === "permission.asked" || type === "permission.replied" || type === "question.asked" || type === "question.replied" || type === "question.rejected";
   }
 
-  /** Refreshes descendant identity after a relevant child session is created, updated, or deleted. */
+  /** Refreshes descendant identity/status after relevant directory-scoped session events. */
   private reconcileDescendantSessionEvent(event: OpenCodeEvent): void {
-    if (event.type !== "session.created" && event.type !== "session.updated" && event.type !== "session.deleted") return;
+    if (event.type !== "session.created" && event.type !== "session.updated" && event.type !== "session.deleted" && event.type !== "session.status") return;
     const properties = event.properties;
     const info = jsonHelpers.readObject(properties ?? {}, "info");
     const eventSessionId = jsonHelpers.readString(properties ?? {}, ["sessionID", "sessionId"]) ?? (info ? jsonHelpers.readString(info, ["id", "sessionID", "sessionId"]) : undefined);
+    if (event.type === "session.status") {
+      const previous = eventSessionId ? this.deps.model.descendantSessions.get(eventSessionId) : undefined;
+      const status = jsonHelpers.readObject(properties ?? {}, "status");
+      if (!eventSessionId || !previous || !status) return;
+      this.deps.model.descendantSessions.set(eventSessionId, {
+        ...previous,
+        statusType: jsonHelpers.readString(status, ["type", "status", "state"]) ?? "idle",
+      });
+      this.deps.onDescendantsChanged();
+      return;
+    }
     const parentId = info ? jsonHelpers.readString(info, ["parentID", "parentId"]) : undefined;
     const inTree = !!eventSessionId && this.deps.model.descendantSessions.has(eventSessionId);
     const parentInTree = !!parentId && (parentId === this.deps.model.sessionId || this.deps.model.descendantSessions.has(parentId));
@@ -103,8 +122,10 @@ export class StreamController {
       this.deps.model.descendantSessions.set(eventSessionId, {
         title: jsonHelpers.readString(info, ["title", "name", "slug"]) ?? previous?.title ?? eventSessionId,
         directory: jsonHelpers.readString(info, ["directory"]) ?? previous?.directory ?? this.deps.model.sessionDirectory,
+        statusType: previous?.statusType,
       });
     }
+    this.deps.onDescendantsChanged();
     this.scheduleRender();
     this.scheduleCanonicalSync(event.type === "session.created" ? 0 : 500);
   }
@@ -115,6 +136,7 @@ export class StreamController {
     this.subscription?.close();
     this.subscription = undefined;
     this.subscriptionDirectory = undefined;
+    this.connectionOpened = false;
     if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer);
     if (this.renderFrame !== undefined) window.cancelAnimationFrame(this.renderFrame);
     this.refreshTimer = undefined;
@@ -151,7 +173,10 @@ export class StreamController {
 
     if (event.type === "message.updated") {
       const info = jsonHelpers.readObject(properties, "info");
-      if (info) this.upsertMessage(info);
+      if (info) {
+        const message = this.upsertMessage(info);
+        if (message) this.deps.onMessageChanged(message);
+      }
       this.scheduleRender();
       return;
     }
@@ -160,6 +185,7 @@ export class StreamController {
       if (removedId) {
         this.deps.model.loadedMessages = this.deps.model.loadedMessages.filter((message) => messageId(message) !== removedId);
         this.deps.model.queuedMessageIds.delete(removedId);
+        this.deps.onMessageRemoved(removedId);
         this.scheduleRender();
       }
       return;
@@ -209,9 +235,10 @@ export class StreamController {
     if (event.type === "session.diff") {
       this.deps.onSessionDiff(diffFilesFromRecords(jsonHelpers.readObjectArray(properties, "diff")));
       this.scheduleRender();
-      void this.deps.requestDiffPanelRefresh(true).catch((error) => {
-        console.warn("[opencode-plugin:session-stream] diff panel refresh failed", error);
-      });
+      return;
+    }
+    if (event.type === "todo.updated") {
+      this.deps.onTodosUpdated(jsonHelpers.readObjectArray(properties, "todos") as OpenCodeTodo[]);
       return;
     }
     if (event.type === "session.status") {
@@ -237,9 +264,9 @@ export class StreamController {
   }
 
   /** Inserts or replaces one streamed message while preserving already received parts. */
-  private upsertMessage(info: JsonObject): void {
+  private upsertMessage(info: JsonObject): OpenCodeMessageBundle | undefined {
     const id = jsonHelpers.readString(info, ["id", "messageID", "messageId"]);
-    if (!id) return;
+    if (!id) return undefined;
     const role = jsonHelpers.readString(info, ["role"]);
     const index = this.deps.model.loadedMessages.findIndex((bundle) => messageId(bundle) === id);
     const isNew = index < 0;
@@ -250,6 +277,7 @@ export class StreamController {
       this.deps.model.queuedMessageIds.add(id);
     }
     this.deps.model.loadedMessages.sort((left, right) => messageTime(left) - messageTime(right));
+    return this.deps.model.loadedMessages.find((bundle) => messageId(bundle) === id);
   }
 
   /** Inserts or replaces a full streamed part in its parent message bundle. */
@@ -327,8 +355,6 @@ export class StreamController {
     try {
       console.debug("[opencode-plugin:session-stream] render", { sessionId: this.deps.model.sessionId, messages: this.deps.model.loadedMessages.length });
       await this.deps.requestTimelineRender();
-      if (this.disposed || version !== this.workVersion) return;
-      await this.deps.requestDiffPanelRefresh(false);
       if (this.disposed || version !== this.workVersion) return;
       this.deps.requestComposerProgressRefresh();
     } catch (error) {

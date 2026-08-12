@@ -234,7 +234,7 @@ export function customToolDisplay(
 }
 
 /** Chooses a configured icon while preserving specialized summary content such as patch-file paths. */
-function configuredToolIcon(tool: string, displays: ToolDisplaySetting[] | undefined): string {
+export function configuredToolIcon(tool: string, displays: ToolDisplaySetting[] | undefined): string {
   return displays?.find((item) => item.tool.trim().toLowerCase() === tool)?.icon || toolIcon(tool);
 }
 

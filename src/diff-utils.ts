@@ -8,6 +8,22 @@ export interface DiffFileSummary {
   status?: "added" | "deleted" | "modified";
 }
 
+export interface TurnFileDiff {
+  messageId: string;
+  created: number;
+  diff: DiffFileSummary;
+}
+
+export interface SessionDiffFileSummary extends DiffFileSummary {
+  turns: TurnFileDiff[];
+}
+
+export interface SummarizedTurnDiffs {
+  messageId: string;
+  created: number;
+  diffs: DiffFileSummary[];
+}
+
 /** Returns true when an unknown value is a plain JSON object; referenced by loose OpenCode payload readers. */
 export function isJsonObject(value: unknown): value is JsonObject {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -49,14 +65,20 @@ export function readNumber(source: JsonObject | undefined, keys: string[]): numb
   return undefined;
 }
 
-/** Extracts normalized file diffs from a user message summary; referenced by the right-sidebar diff panel. */
+/** Extracts normalized file diffs from a user message summary; referenced by session roll-ups. */
 export function diffFilesFromMessage(bundle: OpenCodeMessageBundle): DiffFileSummary[] {
   const summary = readObject(bundle.info, "summary");
   const candidates = [...readObjectArray(summary, "diffs"), ...readObjectArray(bundle.info, "diffs")];
   return diffFilesFromRecords(candidates);
 }
 
-/** Normalizes raw OpenCode file-diff records; referenced by rewind boundaries and the diff panel. */
+/** Returns whether a user message has received its authoritative turn-diff summary, including an empty summary. */
+export function hasMessageDiffSummary(bundle: OpenCodeMessageBundle): boolean {
+  const summary = readObject(bundle.info, "summary");
+  return Array.isArray(summary?.diffs) || Array.isArray(bundle.info.diffs);
+}
+
+/** Normalizes raw OpenCode file-diff records; referenced by rewind boundaries and session roll-ups. */
 export function diffFilesFromRecords(records: JsonObject[]): DiffFileSummary[] {
   return records.flatMap(normalizeDiffFile);
 }
@@ -134,7 +156,46 @@ export function latestUserTurnId(messages: OpenCodeMessageBundle[]): string | un
   return undefined;
 }
 
-/** Aggregates per-turn file summaries into a session-level file list; referenced by the right-sidebar diff panel. */
+/** Returns the latest completed user turn carrying a diff summary before the active rewind boundary. */
+export function latestSummarizedTurnDiffs(messages: OpenCodeMessageBundle[], boundary?: string): SummarizedTurnDiffs | undefined {
+  const summarized = summarizedUserTurns(messages, boundary);
+  return summarized.at(-1);
+}
+
+/** Groups all active summarized turn patches by file for the session-level roll-up. */
+export function sessionDiffFiles(messages: OpenCodeMessageBundle[], boundary?: string): SessionDiffFileSummary[] {
+  const byFile = new Map<string, SessionDiffFileSummary>();
+  for (const turn of summarizedUserTurns(messages, boundary)) {
+    for (const diff of turn.diffs) {
+      const existing = byFile.get(diff.file);
+      if (!existing) {
+        byFile.set(diff.file, {
+          file: diff.file,
+          additions: diff.additions,
+          deletions: diff.deletions,
+          status: diff.status,
+          turns: [{ messageId: turn.messageId, created: turn.created, diff }],
+        });
+        continue;
+      }
+      existing.additions += diff.additions;
+      existing.deletions += diff.deletions;
+      existing.status = existing.status === diff.status ? existing.status : "modified";
+      existing.turns.push({ messageId: turn.messageId, created: turn.created, diff });
+    }
+  }
+  return [...byFile.values()].sort((left, right) => left.file.localeCompare(right.file));
+}
+
+/** Sums additions and deletions for one tab or file-list summary. */
+export function diffTotals(diffs: DiffFileSummary[]): { additions: number; deletions: number } {
+  return diffs.reduce(
+    (totals, diff) => ({ additions: totals.additions + diff.additions, deletions: totals.deletions + diff.deletions }),
+    { additions: 0, deletions: 0 },
+  );
+}
+
+/** Aggregates per-turn file summaries into a session-level file list; retained for compact summary consumers. */
 export function aggregateDiffFiles(diffs: DiffFileSummary[]): DiffFileSummary[] {
   const byFile = new Map<string, DiffFileSummary>();
   for (const diff of diffs) {
@@ -148,6 +209,27 @@ export function aggregateDiffFiles(diffs: DiffFileSummary[]): DiffFileSummary[] 
     existing.status = existing.status === diff.status ? existing.status : "modified";
   }
   return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file));
+}
+
+/** Normalizes chronologically ordered user-message summaries before session and latest-turn aggregation. */
+function summarizedUserTurns(messages: OpenCodeMessageBundle[], boundary?: string): SummarizedTurnDiffs[] {
+  return [...messages]
+    .filter((message) => messageRole(message) === "user")
+    .filter((message) => !boundary || (messageId(message) ?? "") < boundary)
+    .filter(hasMessageDiffSummary)
+    .map((message) => ({
+      messageId: messageId(message) ?? "",
+      created: messageCreated(message),
+      diffs: diffFilesFromMessage(message),
+    }))
+    .filter((turn) => !!turn.messageId)
+    .sort((left, right) => left.created - right.created || left.messageId.localeCompare(right.messageId));
+}
+
+/** Reads the creation timestamp used to order summarized turns with an id fallback. */
+function messageCreated(bundle: OpenCodeMessageBundle): number {
+  const time = readObject(bundle.info, "time");
+  return readNumber(time, ["created"]) ?? 0;
 }
 
 /** Returns the stable message id from a bundle; referenced by turn matching in session and diff views. */

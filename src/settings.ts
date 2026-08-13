@@ -7,6 +7,13 @@ import {
   normalizeWorkingAnimation,
   type WorkingAnimation,
 } from "./session-state";
+import {
+  DEFAULT_OPEN_IDE_ID,
+  detectInstalledIdes,
+  getIdeById,
+  getIdeOrDefault,
+  type IdeDescriptor,
+} from "./utils/ide-launcher";
 
 export type SessionIslandContextLabel = "percentage" | "tokens";
 
@@ -39,6 +46,8 @@ export interface OpenCodePluginSettings {
   workingAnimation: WorkingAnimation;
   favoriteModels: Array<{ providerID: string; modelID: string; variant?: string }>;
   customToolDisplays: ToolDisplaySetting[];
+  /** Configured IDE/editor id for the "Open project in IDE" command and menu item. */
+  openIde: string;
 }
 
 export interface ToolDisplaySetting {
@@ -71,6 +80,7 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   workingAnimation: DEFAULT_WORKING_ANIMATION,
   favoriteModels: [],
   customToolDisplays: [],
+  openIde: DEFAULT_OPEN_IDE_ID,
 };
 
 /** Returns a supported Prompt-tab context label for persisted settings and live rendering. */
@@ -84,6 +94,11 @@ export function normalizeTodoStatusCharacter(value: unknown): string {
   if (typeof value !== "string") return "";
   const character = Array.from(value.trim())[0];
   return character && !"[]xX-".includes(character) ? character : "";
+}
+
+/** Returns a valid IDE id for persisted settings, falling back to the canonical default. */
+export function normalizeOpenIde(value: unknown): string {
+  return typeof value === "string" && getIdeById(value) ? value : DEFAULT_OPEN_IDE_ID;
 }
 
 class IconSuggest extends AbstractInputSuggest<string> {
@@ -114,6 +129,19 @@ export class OpenCodeSettingTab extends PluginSettingTab {
   /** Renders the plugin settings currently exposed by the product specification. */
   display(): void {
     this.containerEl.empty();
+
+    new Setting(this.containerEl)
+      .setName("Open project in IDE")
+      .setDesc("Editor launched by the \u201COpen current project in IDE\u201D command and the session menu item.")
+      .addDropdown((dropdown) => {
+        const configured = getIdeOrDefault(this.plugin.settings.openIde);
+        for (const ide of this.openIdeOptions(configured)) dropdown.addOption(ide.id, ide.label);
+        dropdown.setValue(configured.id).onChange(async (value) => {
+          this.plugin.settings.openIde = normalizeOpenIde(value);
+          await this.plugin.saveSettings();
+        });
+      });
+
     new Setting(this.containerEl)
       .setName("Confirm session archival")
       .setDesc("Show the affected session and all descendants before archiving them.")
@@ -265,5 +293,13 @@ export class OpenCodeSettingTab extends PluginSettingTab {
         this.display();
       }),
     );
+  }
+
+  /** Detected IDEs for the dropdown, always including the configured value even if not detected. */
+  private openIdeOptions(configured: IdeDescriptor): IdeDescriptor[] {
+    const options = detectInstalledIdes();
+    const ids = new Set(options.map((ide) => ide.id));
+    if (!ids.has(configured.id)) options.unshift(configured);
+    return options;
   }
 }

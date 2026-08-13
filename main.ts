@@ -2,6 +2,7 @@ import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import {
   DEFAULT_OPENCODE_SETTINGS,
   OpenCodeSettingTab,
+  normalizeOpenIde,
   normalizeSessionIslandContextLabel,
   normalizeTodoStatusCharacter,
   type OpenCodePluginSettings,
@@ -12,6 +13,7 @@ import { confirmSessionArchive, requestSessionTitle, type SessionArchiveNode } f
 import { AgentPanelView, VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./src/views/AgentPanelView";
 import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView";
 import { normalizeWorkingAnimation } from "./src/session-state";
+import { getIdeOrDefault, launchIde } from "./src/utils/ide-launcher";
 
 export const LEGACY_DIFF_PANEL_VIEW_TYPE = "opencode-diff-panel";
 
@@ -82,6 +84,17 @@ export default class OpenCodePlugin extends Plugin {
         return true;
       },
     });
+
+    this.addCommand({
+      id: "opencode-open-project-in-ide",
+      name: "Open current project in IDE",
+      checkCallback: (checking) => {
+        const directory = this.getActiveSessionDirectory();
+        if (!directory) return false;
+        if (!checking) void this.openProjectInIde(directory, this.settings.openIde);
+        return true;
+      },
+    });
   }
 
   /** Detaches plugin-owned views before releasing service resources during unload or reload. */
@@ -127,6 +140,16 @@ export default class OpenCodePlugin extends Plugin {
     const draftId = crypto.randomUUID();
     await leaf.setViewState({ type: VIEW_TYPE_OPENCODE_SESSION, state: { draftId, draftDirectory: directory }, active: true });
     this.app.workspace.revealLeaf(leaf);
+  }
+
+  /** Launches the configured IDE for a project directory; surfaces failures via Notice. */
+  async openProjectInIde(directory: string, ideId: string | undefined): Promise<void> {
+    const ide = getIdeOrDefault(ideId);
+    try {
+      await launchIde(ide, directory);
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : `Unable to open project in ${ide.label}.`);
+    }
   }
 
   /** Prompts for a title and applies the v1 session rename; referenced by menu-based rename entry points. */
@@ -193,6 +216,12 @@ export default class OpenCodePlugin extends Plugin {
     return this.sessionIdFromLeaf(this.app.workspace.activeLeaf);
   }
 
+  /** Returns the working directory of the focused session tab; referenced by the open-in-IDE command/menu. */
+  getActiveSessionDirectory(): string | undefined {
+    const view = this.app.workspace.activeLeaf?.view;
+    return view instanceof SessionView ? view.getSessionDirectory() : undefined;
+  }
+
   /** Extracts the session id from a leaf when it is an OpenCode session view. */
   private sessionIdFromLeaf(leaf: WorkspaceLeaf | null | undefined): string | undefined {
     if (!leaf) return undefined;
@@ -229,6 +258,7 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.showContextBarThresholdLabels = this.settings.showContextBarThresholdLabels !== false;
     this.settings.sessionIslandContextLabel = normalizeSessionIslandContextLabel(this.settings.sessionIslandContextLabel);
     this.settings.todoInProgressStatusCharacter = normalizeTodoStatusCharacter(this.settings.todoInProgressStatusCharacter);
+    this.settings.openIde = normalizeOpenIde(this.settings.openIde);
     this.settings.archiveConfirmation = this.settings.archiveConfirmation !== false;
     this.settings.sessionScroll = this.settings.sessionScroll && typeof this.settings.sessionScroll === "object" ? this.settings.sessionScroll : {};
     this.settings.sessionDrafts = this.settings.sessionDrafts && typeof this.settings.sessionDrafts === "object" ? this.settings.sessionDrafts : {};

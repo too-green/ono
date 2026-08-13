@@ -27,6 +27,7 @@ import { MarkdownPatcher } from "./session/streaming/markdown-patcher";
 import { StreamController } from "./session/streaming/stream-controller";
 import { TimelineRenderer } from "./session/streaming/timeline-renderer";
 import { SessionIslandController } from "./session/session-island-controller";
+import { getIdeOrDefault } from "../utils/ide-launcher";
 
 export const VIEW_TYPE_OPENCODE_SESSION = "opencode-session";
 
@@ -259,6 +260,23 @@ export class SessionView extends ItemView {
         .setIcon("archive")
         .onClick(() => void this.plugin.requestSessionArchive(this.model.sessionId!, this.model.sessionDirectory)),
     );
+    // Open the session's project folder in the IDE configured in plugin settings.
+    const directory = this.getSessionDirectory();
+    if (directory) {
+      const ide = getIdeOrDefault(this.plugin.settings.openIde);
+      menu.addSeparator();
+      menu.addItem((item) =>
+        item
+          .setTitle(`Open project in ${ide.label}`)
+          .setIcon(ide.icon)
+          .onClick(() => void this.plugin.openProjectInIde(directory, ide.id)),
+      );
+    }
+  }
+
+  /** Returns the active session directory, or the draft directory before promotion. */
+  getSessionDirectory(): string | undefined {
+    return this.model.sessionDirectory ?? this.model.draftDirectory;
   }
 
   /** Restores persisted view state when Obsidian reopens this custom tab. */

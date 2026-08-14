@@ -66,6 +66,8 @@ export interface ComposerDeps {
   isComposerBlocked: () => boolean;
   /** `docks.shouldAutoApprove()` — initial state of the auto-approve toggle pill. */
   shouldAutoApprove: () => boolean;
+  /** Whether the active auto-approve policy comes from an ancestor session. */
+  isAutoApproveInherited: () => boolean;
   // ---- Scroll surface ----
   enableFollowLatest: () => void;
   disableFollowLatest: () => void;
@@ -159,7 +161,9 @@ export class ComposerController {
     const right = controls.createDiv({ cls: "opencode-session-view__composer-right" });
     this.renderQueuedBadge(right);
     this.renderTogglePill(right, "", this.deps.isSessionMuted() ? "bell-off" : "bell", this.deps.isSessionMuted(), () => this.deps.onToggleMute(), "Mute notifications for this session");
-    const autoApprove = this.renderTogglePill(right, "", "shield-alert", this.deps.shouldAutoApprove(), () => this.deps.onToggleAutoApprove(), "Auto-allow permission requests once");
+    const inheritedAutoApprove = this.deps.isAutoApproveInherited();
+    const autoApproveTitle = inheritedAutoApprove ? "Auto-allow permission requests once (inherited from an ancestor session)" : "Auto-allow permission requests once";
+    const autoApprove = this.renderTogglePill(right, "", "shield-alert", this.deps.shouldAutoApprove(), () => this.deps.onToggleAutoApprove(), autoApproveTitle);
     autoApprove.classList.add("opencode-session-view__composer-toggle--auto-accept");
     this.renderSendButton(right, textarea);
     this.deps.onSlashUpdate(textarea);

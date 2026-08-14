@@ -24,6 +24,29 @@ export const SESSION_ISLAND_CONTEXT_LABELS: Record<SessionIslandContextLabel, st
 
 export const DEFAULT_SESSION_ISLAND_CONTEXT_LABEL: SessionIslandContextLabel = "tokens";
 
+export const FOLDER_COLLAPSE_DISPLAY_LABELS = {
+  inset: "Inset icon",
+  size: "Smaller icon",
+  chevron: "Trailing chevron",
+} as const;
+
+export type FolderCollapseDisplay = keyof typeof FOLDER_COLLAPSE_DISPLAY_LABELS;
+
+export const DEFAULT_FOLDER_COLLAPSE_DISPLAY: FolderCollapseDisplay = "inset";
+
+export const AGENT_PANEL_SESSION_SORT_LABELS = {
+  "created-desc": "Created: newest first",
+  "created-asc": "Created: oldest first",
+  "modified-desc": "Modified: newest first",
+  "modified-asc": "Modified: oldest first",
+  "title-asc": "Title: A to Z",
+  "title-desc": "Title: Z to A",
+} as const;
+
+export type AgentPanelSessionSort = keyof typeof AGENT_PANEL_SESSION_SORT_LABELS;
+
+export const DEFAULT_AGENT_PANEL_SESSION_SORT: AgentPanelSessionSort = "created-desc";
+
 export interface OpenCodePluginSettings {
   server: OpenCodeServerConfig;
   openedDirectories: string[];
@@ -44,6 +67,8 @@ export interface OpenCodePluginSettings {
   sessionAttachedFiles: Record<string, string[]>;
   sessionUnread: Record<string, boolean>;
   workingAnimation: WorkingAnimation;
+  folderCollapseDisplay: FolderCollapseDisplay;
+  agentPanelSessionSort: AgentPanelSessionSort;
   favoriteModels: Array<{ providerID: string; modelID: string; variant?: string }>;
   customToolDisplays: ToolDisplaySetting[];
   /** Configured IDE/editor id for the "Open project in IDE" command and menu item. */
@@ -78,6 +103,8 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   sessionAttachedFiles: {},
   sessionUnread: {},
   workingAnimation: DEFAULT_WORKING_ANIMATION,
+  folderCollapseDisplay: DEFAULT_FOLDER_COLLAPSE_DISPLAY,
+  agentPanelSessionSort: DEFAULT_AGENT_PANEL_SESSION_SORT,
   favoriteModels: [],
   customToolDisplays: [],
   openIde: DEFAULT_OPEN_IDE_ID,
@@ -87,6 +114,18 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
 export function normalizeSessionIslandContextLabel(value: unknown): SessionIslandContextLabel {
   if (typeof value === "string" && value in SESSION_ISLAND_CONTEXT_LABELS) return value as SessionIslandContextLabel;
   return DEFAULT_SESSION_ISLAND_CONTEXT_LABEL;
+}
+
+/** Returns a supported agents-panel folder collapse treatment for persisted settings. */
+export function normalizeFolderCollapseDisplay(value: unknown): FolderCollapseDisplay {
+  if (typeof value === "string" && value in FOLDER_COLLAPSE_DISPLAY_LABELS) return value as FolderCollapseDisplay;
+  return DEFAULT_FOLDER_COLLAPSE_DISPLAY;
+}
+
+/** Returns a supported agents-panel session ordering for persisted settings. */
+export function normalizeAgentPanelSessionSort(value: unknown): AgentPanelSessionSort {
+  if (typeof value === "string" && value in AGENT_PANEL_SESSION_SORT_LABELS) return value as AgentPanelSessionSort;
+  return DEFAULT_AGENT_PANEL_SESSION_SORT;
 }
 
 /** Normalizes the optional theme-defined in-progress task marker; empty means highlighted unchecked. */
@@ -151,6 +190,18 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }),
       );
+
+    new Setting(this.containerEl)
+      .setName("Folder collapse indicator")
+      .setDesc("Choose how collapsed project and worktree rows are distinguished in the agents panel.")
+      .addDropdown((dropdown) => {
+        for (const [value, label] of Object.entries(FOLDER_COLLAPSE_DISPLAY_LABELS)) dropdown.addOption(value, label);
+        dropdown.setValue(normalizeFolderCollapseDisplay(this.plugin.settings.folderCollapseDisplay)).onChange(async (value) => {
+          this.plugin.settings.folderCollapseDisplay = normalizeFolderCollapseDisplay(value);
+          await this.plugin.saveSettings();
+          await this.plugin.refreshAgentPanels({ showLoading: false });
+        });
+      });
 
     new Setting(this.containerEl)
       .setName("Show context bar threshold labels")

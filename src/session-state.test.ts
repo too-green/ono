@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_WORKING_ANIMATION, normalizeWorkingAnimation } from "./session-state";
 
 describe("normalizeWorkingAnimation", () => {
-  it.each(["bounce", "pulse", "orbit", "scanner"] as const)("preserves the %s animation", (animation) => {
+  it.each(["bounce", "pulse", "orbit", "scanner", "puzzle"] as const)("preserves the %s animation", (animation) => {
     expect(normalizeWorkingAnimation(animation)).toBe(animation);
   });
 

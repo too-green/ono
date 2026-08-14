@@ -2,6 +2,8 @@ import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import {
   DEFAULT_OPENCODE_SETTINGS,
   OpenCodeSettingTab,
+  normalizeAgentPanelSessionSort,
+  normalizeFolderCollapseDisplay,
   normalizeOpenIde,
   normalizeSessionIslandContextLabel,
   normalizeTodoStatusCharacter,
@@ -13,6 +15,8 @@ import { confirmSessionArchive, requestSessionTitle, type SessionArchiveNode } f
 import { AgentPanelView, VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./src/views/AgentPanelView";
 import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView";
 import { normalizeWorkingAnimation } from "./src/session-state";
+import { PermissionCoordinator } from "./src/permission-coordinator";
+import type { SessionAutoApproveState } from "./src/session-auto-approve";
 import { getIdeOrDefault, launchIde } from "./src/utils/ide-launcher";
 
 export const LEGACY_DIFF_PANEL_VIEW_TYPE = "opencode-diff-panel";
@@ -21,7 +25,14 @@ export default class OpenCodePlugin extends Plugin {
   settings: OpenCodePluginSettings = DEFAULT_OPENCODE_SETTINGS;
   opencode?: OpenCodeService;
   private archivingSessionIds = new Set<string>();
-  private respondingSessionRequestIds = new Set<string>();
+  private permissionCoordinator = new PermissionCoordinator({
+    getSettings: () => this.settings.sessionAutoApprove,
+    getService: () => this.requireOpenCodeService(),
+    onSurface: (request) => this.surfacePermissionRequest(request),
+    onSettled: (requestId) => this.removeSettledRequestFromViews(requestId),
+    onRespondingChanged: () => this.refreshSessionRequestDocks(),
+    onError: (error) => new Notice(error instanceof Error ? error.message : "Unable to auto-approve permission request."),
+  });
 
   /** Initializes plugin settings and the OpenCode API service used by future UI views. */
   async onload(): Promise<void> {
@@ -275,6 +286,8 @@ export default class OpenCodePlugin extends Plugin {
       this.settings.sessionAttachedFiles && typeof this.settings.sessionAttachedFiles === "object" ? this.settings.sessionAttachedFiles : {};
     this.settings.sessionUnread = this.settings.sessionUnread && typeof this.settings.sessionUnread === "object" ? this.settings.sessionUnread : {};
     this.settings.workingAnimation = normalizeWorkingAnimation(this.settings.workingAnimation);
+    this.settings.folderCollapseDisplay = normalizeFolderCollapseDisplay(this.settings.folderCollapseDisplay);
+    this.settings.agentPanelSessionSort = normalizeAgentPanelSessionSort(this.settings.agentPanelSessionSort);
     this.settings.customToolDisplays = Array.isArray(this.settings.customToolDisplays)
       ? this.settings.customToolDisplays.flatMap((item) => {
         if (!item || typeof item !== "object") return [];
@@ -370,11 +383,33 @@ export default class OpenCodePlugin extends Plugin {
     await this.saveSettings();
   }
 
-  /** Persists whether the session should automatically allow permission prompts once. */
-  async rememberSessionAutoApprove(sessionId: string, enabled: boolean): Promise<void> {
-    if (enabled) this.settings.sessionAutoApprove[sessionId] = true;
-    else delete this.settings.sessionAutoApprove[sessionId];
+  /** Persists one explicit auto-approve override; `undefined` restores ancestry inheritance. */
+  async rememberSessionAutoApprove(sessionId: string, enabled: boolean | undefined): Promise<void> {
+    if (enabled === undefined) delete this.settings.sessionAutoApprove[sessionId];
+    else this.settings.sessionAutoApprove[sessionId] = enabled;
     await this.saveSettings();
+    this.refreshSessionAutoApproveControls();
+    await this.permissionCoordinator.reconcile();
+  }
+
+  /** Toggles the effective session policy while removing overrides that equal the inherited value. */
+  async toggleSessionAutoApprove(sessionId: string, directory?: string): Promise<void> {
+    await this.rememberSessionAutoApprove(sessionId, await this.permissionCoordinator.overrideForToggle(sessionId, directory));
+  }
+
+  /** Returns the effective cached policy used by mounted session controls and request docks. */
+  getSessionAutoApproveState(sessionId: string | undefined): SessionAutoApproveState {
+    return this.permissionCoordinator.getState(sessionId);
+  }
+
+  /** Hydrates missing ancestors before mounted controls read the synchronous effective policy. */
+  async hydrateSessionAutoApproveState(sessionId: string, directory?: string): Promise<SessionAutoApproveState> {
+    return this.permissionCoordinator.hydrateState(sessionId, directory);
+  }
+
+  /** Caches canonical session ancestry and directories for inherited permission policy resolution. */
+  cacheSessionHierarchy(sessions: OpenCodeSession[], authoritative = false): void {
+    this.permissionCoordinator.cacheSessionHierarchy(sessions, authoritative);
   }
 
   /** Persists the local muted-notification state for a session composer. */
@@ -420,7 +455,7 @@ export default class OpenCodePlugin extends Plugin {
     if (history) this.settings.sessionPromptHistory[sessionId] = history;
     if (agent) this.settings.sessionAgentChoices[sessionId] = agent;
     if (model) this.settings.sessionModelChoices[sessionId] = model;
-    if (autoApprove) this.settings.sessionAutoApprove[sessionId] = autoApprove;
+    if (autoApprove !== undefined) this.settings.sessionAutoApprove[sessionId] = autoApprove;
     if (muted) this.settings.sessionMute[sessionId] = muted;
     if (files) this.settings.sessionAttachedFiles[sessionId] = files;
     delete this.settings.sessionDrafts[draftKey];
@@ -471,11 +506,24 @@ export default class OpenCodePlugin extends Plugin {
     }
   }
 
-  /** Routes one permission request to every open session view that contains its owning session. */
-  routePermissionRequest(request: OpenCodePermissionRequest): void {
+  /** Resolves one permission centrally, auto-approving inherited policies before any view surfaces it. */
+  routePermissionRequest(request: OpenCodePermissionRequest, directory?: string): void {
+    this.permissionCoordinator.route(request, directory);
+  }
+
+  /** Returns true while a permission is being resolved, auto-replied, or already settled. */
+  shouldSuppressPermissionRequest(requestId: string): boolean {
+    return this.permissionCoordinator.shouldSuppress(requestId);
+  }
+
+  /** Routes one non-auto-approved permission to every visible ancestor/owner surface. */
+  private surfacePermissionRequest(request: OpenCodePermissionRequest): void {
     // TODO(notification-routing): emit at most one notification per permission request ID. Decide whether clicking it opens the surfaced parent or the owning child session.
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
       if (leaf.view instanceof SessionView) leaf.view.ingestPermissionRequest(request);
+    }
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL)) {
+      if (leaf.view instanceof AgentPanelView) leaf.view.ingestPermissionRequest(request);
     }
   }
 
@@ -488,27 +536,26 @@ export default class OpenCodePlugin extends Plugin {
 
   /** Claims one request response globally so parent and child controls cannot submit concurrently. */
   beginSessionRequestResponse(requestId: string): boolean {
-    if (this.respondingSessionRequestIds.has(requestId)) return false;
-    this.respondingSessionRequestIds.add(requestId);
-    this.refreshSessionRequestDocks();
-    return true;
+    return this.permissionCoordinator.beginResponse(requestId);
   }
 
   /** Releases a failed request response and re-enables every visible copy of its controls. */
   finishSessionRequestResponse(requestId: string): void {
-    this.respondingSessionRequestIds.delete(requestId);
-    this.refreshSessionRequestDocks();
+    this.permissionCoordinator.finishResponse(requestId);
   }
 
   /** Returns whether either a parent or child view is currently responding to one request. */
   isSessionRequestResponding(requestId: string): boolean {
-    return this.respondingSessionRequestIds.has(requestId);
+    return this.permissionCoordinator.isResponding(requestId);
   }
 
   /** Removes a settled request from every visible parent and child view. */
   settleSessionRequest(requestId: string | undefined): void {
-    if (!requestId) return;
-    this.respondingSessionRequestIds.delete(requestId);
+    this.permissionCoordinator.settle(requestId);
+  }
+
+  /** Removes a settled request from every visible parent and child session view. */
+  private removeSettledRequestFromViews(requestId: string): void {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
       if (leaf.view instanceof SessionView) leaf.view.settleSessionRequest(requestId);
     }
@@ -518,6 +565,13 @@ export default class OpenCodePlugin extends Plugin {
   private refreshSessionRequestDocks(): void {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
       if (leaf.view instanceof SessionView) leaf.view.refreshSessionRequestDocks();
+    }
+  }
+
+  /** Refreshes effective/inherited toggle chrome across every open session view. */
+  private refreshSessionAutoApproveControls(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
+      if (leaf.view instanceof SessionView) leaf.view.refreshSessionAutoApproveState();
     }
   }
 

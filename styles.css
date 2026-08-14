@@ -87,11 +87,12 @@
   width: 100%;
 }
 
-.opencode-agent-panel__project-avatar {
+.opencode-sidebar-panel--agents .tree-item-icon.opencode-agent-panel__project-avatar {
   align-items: center;
   background: color-mix(in srgb, var(--opencode-project-avatar-color) 22%, transparent);
   border: var(--border-width) solid color-mix(in srgb, var(--opencode-project-avatar-color) 45%, transparent);
   border-radius: var(--radius-s);
+  box-sizing: border-box;
   color: var(--text-normal);
   display: inline-flex;
   flex: 0 0 var(--icon-m);
@@ -100,14 +101,33 @@
   height: var(--icon-m);
   justify-content: center;
   line-height: 1;
+  max-width: var(--icon-m);
+  min-width: var(--icon-m);
   width: var(--icon-m);
 }
 
-.opencode-agent-panel__status,
-.opencode-agent-panel__notification,
-.opencode-agent-panel__worktree-icon {
+.opencode-agent-panel__folder-row--inset.is-collapsed .opencode-agent-panel__project-avatar,
+.opencode-agent-panel__folder-row--inset.is-collapsed .opencode-agent-panel__worktree-icon {
+  box-shadow: inset 0 0 0 var(--size-2-1) color-mix(in srgb, var(--text-faint) 45%, transparent);
+}
+
+.opencode-agent-panel__folder-row--inset.is-collapsed .opencode-agent-panel__worktree-icon {
+  border-radius: var(--radius-s);
+}
+
+.opencode-agent-panel__folder-row--size .opencode-agent-panel__project-avatar,
+.opencode-agent-panel__folder-row--size .opencode-agent-panel__worktree-icon svg {
+  transition: transform var(--anim-duration-fast) ease-out;
+}
+
+.opencode-agent-panel__folder-row--size.is-collapsed .opencode-agent-panel__project-avatar,
+.opencode-agent-panel__folder-row--size.is-collapsed .opencode-agent-panel__worktree-icon svg {
+  transform: scale(0.81);
+}
+
+.opencode-agent-panel__collapse-indicator {
   align-items: center;
-  color: var(--text-muted);
+  color: var(--text-faint);
   display: inline-flex;
   flex: 0 0 var(--icon-s);
   height: var(--icon-s);
@@ -115,11 +135,38 @@
   width: var(--icon-s);
 }
 
-.opencode-agent-panel__status svg,
-.opencode-agent-panel__notification svg,
-.opencode-agent-panel__worktree-icon svg {
+.opencode-agent-panel__collapse-indicator svg {
   height: var(--icon-xs);
   width: var(--icon-xs);
+}
+
+.opencode-agent-panel__status,
+.opencode-agent-panel__notification,
+.opencode-agent-panel__worktree-icon {
+  color: var(--text-muted);
+}
+
+.opencode-agent-panel__notification {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 var(--icon-s);
+  height: var(--icon-s);
+  justify-content: center;
+  width: var(--icon-s);
+}
+
+.opencode-agent-panel__notification svg {
+  height: var(--icon-xs);
+  width: var(--icon-xs);
+}
+
+.opencode-agent-panel__session-modified {
+  color: var(--text-faint);
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  margin-inline-start: auto;
+  white-space: nowrap;
 }
 
 .opencode-agent-panel__status--attention {
@@ -274,6 +321,28 @@
   }
 }
 
+@keyframes opencode-session-working-puzzle {
+  0%,
+  8% {
+    background-position: 0% 0%, 100% 0%, 0% 100%;
+  }
+  25%,
+  33% {
+    background-position: 0% 0%, 100% 0%, 100% 100%;
+  }
+  50%,
+  58% {
+    background-position: 0% 100%, 100% 0%, 100% 100%;
+  }
+  75%,
+  83% {
+    background-position: 0% 100%, 0% 0%, 100% 100%;
+  }
+  100% {
+    background-position: 0% 100%, 0% 0%, 100% 0%;
+  }
+}
+
 .opencode-session-view {
   background: var(--background-primary);
   color: var(--text-normal);
@@ -357,6 +426,20 @@
   animation: opencode-session-working-scanner 1.4s ease-in-out infinite alternate;
   background: linear-gradient(90deg, transparent, var(--interactive-accent), transparent) 100% 50% / 200% 33.333% no-repeat;
   border-radius: var(--pill-radius);
+}
+
+.opencode-agent-panel__status--working[data-working-animation="puzzle"] span,
+.opencode-session-view[data-working-animation="puzzle"] .opencode-session-view__message-working-indicator,
+.opencode-session-view-container .view-header-icon[data-opencode-session-state="working"][data-working-animation="puzzle"]::after,
+.workspace-tab-header-inner-icon[data-opencode-session-state="working"][data-working-animation="puzzle"]::after {
+  animation: opencode-session-working-puzzle 2.4s linear infinite;
+  background-color: transparent;
+  background-image:
+    linear-gradient(var(--text-normal), var(--text-normal)),
+    linear-gradient(var(--text-normal), var(--text-normal)),
+    linear-gradient(var(--text-normal), var(--text-normal));
+  background-repeat: no-repeat;
+  background-size: 40% 40%;
 }
 
 @media (prefers-reduced-motion: reduce) {

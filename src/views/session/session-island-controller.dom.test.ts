@@ -99,6 +99,7 @@ describe("SessionIslandController", () => {
       isActive: () => true,
       isSessionMuted: () => input.muted === true,
       shouldAutoApprove: () => input.autoApprove === true,
+      isAutoApproveInherited: () => false,
       onPromptActivated: vi.fn(),
     });
     const dock = document.body.createDiv();
@@ -191,6 +192,7 @@ describe("SessionIslandController", () => {
       isActive: () => true,
       isSessionMuted: () => false,
       shouldAutoApprove: () => false,
+      isAutoApproveInherited: () => false,
       onPromptActivated: vi.fn(),
     });
     const dock = document.body.createDiv();
@@ -265,6 +267,7 @@ describe("SessionIslandController", () => {
       isActive: () => true,
       isSessionMuted: () => false,
       shouldAutoApprove: () => false,
+      isAutoApproveInherited: () => false,
       onPromptActivated: vi.fn(),
     });
     const dock = document.body.createDiv();
@@ -309,6 +312,7 @@ describe("SessionIslandController", () => {
       isActive: () => active,
       isSessionMuted: () => false,
       shouldAutoApprove: () => false,
+      isAutoApproveInherited: () => false,
       onPromptActivated: vi.fn(),
     });
     controller.bind("s1", "/workspace", []);

@@ -5,6 +5,7 @@ export const WORKING_ANIMATION_LABELS = {
   pulse: "Soft pulse",
   orbit: "Braille orbit",
   scanner: "Scanner",
+  puzzle: "Sliding puzzle",
 } as const;
 
 export type WorkingAnimation = keyof typeof WORKING_ANIMATION_LABELS;

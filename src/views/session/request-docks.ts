@@ -49,7 +49,7 @@ export class RequestDocksController {
 
   // ---- stream-event ingestion (replaces inline shell blocks in applyStreamingEvent)
 
-  /** Applies a `permission.asked` event: silently auto-reply if enabled, otherwise surface a dock. */
+  /** Applies a centrally routed non-auto-approved `permission.asked` event. */
   ingestPermissionAsked(request: OpenCodePermissionRequest): void {
     if (!this.requestBelongsToVisibleTree(request.sessionID)) {
       this.upsertUnscopedPermission(request);
@@ -57,10 +57,6 @@ export class RequestDocksController {
       return;
     }
     this.upsertPendingPermission(request);
-    if (this.isAutoApproveEnabledFor(request.sessionID)) {
-      void this.autoReplyPermission(request);
-      return;
-    }
     this.refresh();
   }
 
@@ -91,24 +87,21 @@ export class RequestDocksController {
 
   /** True while a permission/question dock must be answered before more input is sent. */
   isComposerBlocked(): boolean {
-    return this.deps.model.pendingPermissions.length > 0 || this.deps.model.pendingQuestions.length > 0;
+    return this.visiblePermissions().length > 0 || this.deps.model.pendingQuestions.length > 0;
   }
 
   /** True when the per-session composer toggle should auto-allow permission prompts once. */
   shouldAutoApprove(): boolean {
     const key = this.deps.model.composerStorageKey;
-    return !!key && this.deps.plugin.settings.sessionAutoApprove[key] === true;
+    return this.deps.plugin.getSessionAutoApproveState(key).enabled;
+  }
+
+  /** True when the current session's effective setting comes from an ancestor. */
+  isAutoApproveInherited(): boolean {
+    return this.deps.plugin.getSessionAutoApproveState(this.deps.model.composerStorageKey).inherited;
   }
 
   // ---- canonical sync + toggle-driven mutations
-
-  /** Auto-replies to all visible pending permissions if the composer auto-approve toggle is enabled. */
-  async autoApprovePending(): Promise<void> {
-    const { model } = this.deps;
-    const requests = model.pendingPermissions.filter((request) => this.isAutoApproveEnabledFor(request.sessionID));
-    if (requests.length === 0) return;
-    await Promise.all(requests.map((request) => this.autoReplyPermission(request)));
-  }
 
   /** Promotes held directory requests after canonical descendant discovery confirms their ownership. */
   reconcileRequestScope(): void {
@@ -190,11 +183,6 @@ export class RequestDocksController {
     return sessionId === this.deps.model.sessionId || this.deps.model.descendantSessions.has(sessionId);
   }
 
-  /** Returns the owner session's explicit auto-approval setting without inheriting an ancestor's setting. */
-  private isAutoApproveEnabledFor(sessionId: string): boolean {
-    return this.deps.plugin.settings.sessionAutoApprove[sessionId] === true;
-  }
-
   /** Records one live request mutation so a concurrent canonical fetch cannot overwrite it. */
   private recordRequestMutation(requestId: string): void {
     const revision = this.deps.model.pendingRequestRevision + 1;
@@ -207,10 +195,15 @@ export class RequestDocksController {
   /** Renders pending permission and question requests into a container. */
   private renderRequestDocks(container: HTMLElement): void {
     const { model } = this.deps;
-    const permissions = model.pendingPermissions.filter((request) => !(this.isAutoApproveEnabledFor(request.sessionID) && this.deps.plugin.isSessionRequestResponding(request.id)));
+    const permissions = this.visiblePermissions();
     container.toggleClass("is-empty", permissions.length === 0 && model.pendingQuestions.length === 0);
     for (const request of this.requestsInDisplayOrder(permissions)) this.renderPermissionDock(container, request);
     for (const request of this.requestsInDisplayOrder(model.pendingQuestions)) this.renderQuestionDock(container, request);
+  }
+
+  /** Excludes centrally evaluating, auto-responding, and stale settled permission snapshots. */
+  private visiblePermissions(): OpenCodePermissionRequest[] {
+    return this.deps.model.pendingPermissions.filter((request) => !this.deps.plugin.shouldSuppressPermissionRequest(request.id));
   }
 
   /** Keeps current-session requests ahead of descendant requests while preserving arrival order. */
@@ -334,18 +327,6 @@ export class RequestDocksController {
     } catch (error) {
       this.deps.plugin.finishSessionRequestResponse(request.id);
       new Notice(error instanceof Error ? error.message : "Unable to reject question request.");
-    }
-  }
-
-  /** Sends a client-side auto-approval reply without surfacing a permission dock. */
-  private async autoReplyPermission(request: OpenCodePermissionRequest): Promise<void> {
-    if (!request.id || !this.requestBelongsToVisibleTree(request.sessionID) || !this.isAutoApproveEnabledFor(request.sessionID) || !this.deps.plugin.beginSessionRequestResponse(request.id)) return;
-    try {
-      await this.deps.plugin.requireOpenCodeService().replyPermission(request.id, "once", this.requestDirectory(request.sessionID));
-      this.deps.plugin.settleSessionRequest(request.id);
-    } catch (error) {
-      this.deps.plugin.finishSessionRequestResponse(request.id);
-      new Notice(error instanceof Error ? error.message : "Unable to auto-approve permission request.");
     }
   }
 

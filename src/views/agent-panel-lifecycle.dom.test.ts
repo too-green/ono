@@ -47,6 +47,7 @@ describe("AgentPanelView lifecycle", () => {
       subscribeToEvents: vi.fn(() => ({ close })),
     };
     const plugin = {
+      settings: { agentPanelSessionSort: "created-desc" },
       getOpenedDirectories: () => ["/workspace"],
       getActiveSessionId: () => undefined,
       requireOpenCodeService: () => service,
@@ -84,10 +85,13 @@ describe("AgentPanelView lifecycle", () => {
       listQuestionRequests: vi.fn(async () => []),
     };
     const plugin = {
-      settings: { sessionMute: {}, sessionUnread: {}, sessionAutoApprove: {}, workingAnimation: "pulse" },
+      settings: { sessionMute: {}, sessionUnread: {}, sessionAutoApprove: {}, workingAnimation: "pulse", folderCollapseDisplay: "inset" },
       getOpenedDirectories: () => ["/workspace"],
       getActiveSessionId: () => undefined,
       requireOpenCodeService: () => service,
+      cacheSessionHierarchy: vi.fn(),
+      routePermissionRequest: vi.fn(),
+      shouldSuppressPermissionRequest: vi.fn(() => false),
       openDirectoryWithPicker: vi.fn(),
       openSessionTab,
       openNewSessionTab,
@@ -98,6 +102,7 @@ describe("AgentPanelView lifecycle", () => {
 
     expect(view.contentEl.querySelector('[data-session-id="parent"]')).not.toBeNull();
     expect(view.contentEl.querySelector('[data-session-id="child"]')).toBeNull();
+    expect(view.contentEl.querySelector('button[aria-label^="Sort sessions:"]')).not.toBeNull();
     expect(listSessionChildren).not.toHaveBeenCalled();
     expect(view.contentEl.querySelector(".opencode-agent-panel__new-session")).toBeNull();
 

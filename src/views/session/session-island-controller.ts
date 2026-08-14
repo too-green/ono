@@ -41,6 +41,7 @@ interface SessionIslandDeps {
   isActive: () => boolean;
   isSessionMuted: () => boolean;
   shouldAutoApprove: () => boolean;
+  isAutoApproveInherited: () => boolean;
   onPromptActivated: () => void;
 }
 
@@ -447,7 +448,7 @@ export class SessionIslandController {
     if (this.deps.shouldAutoApprove()) {
       const indicator = container.createSpan({ cls: "opencode-session-view__island-tab-indicator is-auto-accept", attr: { "aria-hidden": "true" } });
       setIcon(indicator, "shield-alert");
-      states.push("auto-accept enabled");
+      states.push(this.deps.isAutoApproveInherited() ? "auto-accept inherited from an ancestor session" : "auto-accept enabled");
     }
     if (this.deps.isSessionMuted()) {
       const indicator = container.createSpan({ cls: "opencode-session-view__island-tab-indicator", attr: { "aria-hidden": "true" } });

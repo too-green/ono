@@ -59,6 +59,7 @@ function setup(options: { busy?: boolean } = {}) {
     renderThinkingPill: (container) => container.createSpan({ text: "High", cls: "opencode-session-view__thinking-pill" }),
     isComposerBlocked: vi.fn(() => false),
     shouldAutoApprove: vi.fn(() => true),
+    isAutoApproveInherited: vi.fn(() => false),
     enableFollowLatest: vi.fn(),
     disableFollowLatest: vi.fn(),
     scrollToBottom: vi.fn(),

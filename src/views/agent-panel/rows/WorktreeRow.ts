@@ -1,0 +1,23 @@
+import { setIcon } from "obsidian";
+import { renderFolderCollapseState, renderNewSessionAction } from "./row-primitives";
+import type { AgentPanelFolderRowHandle, AgentPanelWorktreeRowComponent, WorktreeRowProps } from "./types";
+
+/** Default Obsidian-native worktree grouping row used by AgentPanelView. */
+export class WorktreeRow implements AgentPanelWorktreeRowComponent {
+  /** Renders the worktree shell while leaving navigation and actions panel-owned. */
+  render(container: HTMLElement, props: WorktreeRowProps): AgentPanelFolderRowHandle {
+    const itemEl = container.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__worktree" });
+    const rowEl = itemEl.createDiv({ cls: "tree-item-self nav-folder-title is-clickable" });
+    rowEl.setAttribute("aria-expanded", String(!props.collapsed));
+
+    const icon = rowEl.createDiv({ cls: "tree-item-icon opencode-agent-panel__worktree-icon" });
+    setIcon(icon, "git-branch");
+    rowEl.createDiv({ text: props.worktree.name, cls: "tree-item-inner nav-folder-title-content" });
+    renderFolderCollapseState(rowEl, props.collapsed, props.collapseDisplay);
+    rowEl.title = props.worktree.path;
+
+    const newSessionButtonEl = renderNewSessionAction(rowEl);
+    const childrenEl = props.collapsed ? undefined : itemEl.createDiv({ cls: "tree-item-children nav-folder-children" });
+    return { itemEl, rowEl, childrenEl, newSessionButtonEl };
+  }
+}

@@ -119,6 +119,7 @@ export class SessionView extends ItemView {
       isActive: () => this.app.workspace.activeLeaf === this.leaf,
       isSessionMuted: () => this.isSessionMuted(),
       shouldAutoApprove: () => this.docks.shouldAutoApprove(),
+      isAutoApproveInherited: () => this.docks.isAutoApproveInherited(),
       onPromptActivated: () => this.composer.onPromptActivated(),
     });
     this.registerInterval(window.setInterval(() => this.timeline.refreshActiveTurnDuration(), 1_000));
@@ -140,7 +141,7 @@ export class SessionView extends ItemView {
       },
       onStatusChange: (status) => this.applySessionStatus(status, true),
       onDescendantsChanged: () => this.island.refreshState(),
-      onPermissionAsked: (request) => this.plugin.routePermissionRequest(request),
+      onPermissionAsked: (request) => this.plugin.routePermissionRequest(request, this.model.sessionDirectory),
       onPermissionReplied: (requestId) => this.plugin.settleSessionRequest(requestId),
       onQuestionAsked: (request) => this.plugin.routeQuestionRequest(request),
       onQuestionSettled: (requestId) => this.plugin.settleSessionRequest(requestId),
@@ -189,6 +190,7 @@ export class SessionView extends ItemView {
       // Docks surface
       isComposerBlocked: () => this.docks.isComposerBlocked(),
       shouldAutoApprove: () => this.docks.shouldAutoApprove(),
+      isAutoApproveInherited: () => this.docks.isAutoApproveInherited(),
       // Scroll surface
       enableFollowLatest: () => this.scroll.enableFollowLatest(),
       disableFollowLatest: () => this.scroll.disableFollowLatest(),
@@ -500,6 +502,9 @@ export class SessionView extends ItemView {
     this.model.availableModels = models;
     this.model.availableCommands = commands;
     this.model.serverConfig = config;
+    this.plugin.cacheSessionHierarchy([session as OpenCodeSession, ...descendants], true);
+    await this.plugin.hydrateSessionAutoApproveState(sessionId, directory);
+    if (!isCurrentRequest()) return undefined;
     this.model.descendantSessions = new Map(descendants.map((item) => [item.id, {
       title: jsonHelpers.readString(item, ["title", "name", "slug"]) ?? item.id,
       directory: this.sessionDirectoryFromSession(item) ?? directory,
@@ -507,8 +512,10 @@ export class SessionView extends ItemView {
     }]));
     this.docks.reconcileRequestScope();
     const visibleSessionIds = new Set([sessionId, ...this.model.descendantSessions.keys()]);
+    const visiblePermissions = permissions.filter((item) => visibleSessionIds.has(item.sessionID));
+    for (const permission of visiblePermissions) this.plugin.routePermissionRequest(permission, directory);
     this.model.pendingPermissions = reconcilePendingRequests(
-      permissions.filter((item) => visibleSessionIds.has(item.sessionID)),
+      visiblePermissions,
       this.model.pendingPermissions,
       pendingRequestRevision,
       this.model.pendingRequestRevision,
@@ -531,7 +538,6 @@ export class SessionView extends ItemView {
     this.model.historyComplete = effectivePage.complete && !this.model.olderCursor;
     this.applyCanonicalSession(session);
     this.applySessionStatusSnapshot(statuses);
-    await this.docks.autoApprovePending();
     if (this.descendantDiscoveryIncomplete) {
       this.stream.scheduleCanonicalSync(this.descendantDiscoveryRetryDelay);
       this.descendantDiscoveryRetryDelay = Math.min(this.descendantDiscoveryRetryDelay * 2, 30_000);
@@ -557,6 +563,7 @@ export class SessionView extends ItemView {
 
   /** Hydrates canonical session identity and chrome state without rebuilding the shell. */
   private applyCanonicalSession(session: JsonObject): void {
+    this.plugin.cacheSessionHierarchy([session as OpenCodeSession]);
     this.model.currentSession = session;
     this.model.revertDiffFiles = this.revertDiffFilesFromSession(session);
     this.model.sessionTitle = this.sessionTitleFromSession(session);
@@ -833,11 +840,7 @@ export class SessionView extends ItemView {
   private async toggleAutoApprove(): Promise<void> {
     const key = this.model.composerStorageKey;
     if (!key) return;
-    const enabled = !this.docks.shouldAutoApprove();
-    await this.plugin.rememberSessionAutoApprove(key, enabled);
-    if (enabled) await this.docks.autoApprovePending();
-    await this.composer.refresh();
-    this.island.refreshChrome();
+    await this.plugin.toggleSessionAutoApprove(key, this.model.sessionDirectory ?? this.model.draftDirectory);
   }
 
   /** Toggles local notification muting for the current session/draft. */
@@ -1088,6 +1091,13 @@ export class SessionView extends ItemView {
   /** Re-renders the mounted Session Island after its context/todo display settings change. */
   refreshSessionIsland(): void {
     this.island.refreshDisplay();
+  }
+
+  /** Re-renders effective/inherited auto-accept chrome after a policy mutation. */
+  refreshSessionAutoApproveState(): void {
+    this.docks.refresh();
+    void this.composer.refresh();
+    this.island.refreshChrome();
   }
 
   /** Returns whether the active Session Island has more than one present tab. */

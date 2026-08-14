@@ -5,31 +5,23 @@ import type { OpenCodeEventSubscription } from "../services/opencode-events";
 import { logServiceError } from "../services/opencode-http";
 import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "../services/opencode-types";
 import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
+import {
+  AGENT_PANEL_SESSION_SORT_LABELS,
+  normalizeAgentPanelSessionSort,
+  normalizeFolderCollapseDisplay,
+  type AgentPanelSessionSort,
+} from "../settings";
+import {
+  createDefaultAgentPanelRowComponents,
+  type AgentPanelProject,
+  type AgentPanelRowComponents,
+  type AgentPanelSession,
+  type AgentPanelSessionRowHandle,
+  type AgentPanelWorktree,
+} from "./agent-panel/rows";
+import { sortAgentPanelSessions } from "./agent-panel/session-sort";
 
 export const VIEW_TYPE_OPENCODE_AGENT_PANEL = "opencode-agent-panel";
-
-interface AgentPanelProject {
-  id: string;
-  name: string;
-  openedDirectories: string[];
-  worktrees: AgentPanelWorktree[];
-}
-
-interface AgentPanelWorktree {
-  id: string;
-  name: string;
-  path: string;
-  sessions: AgentPanelSession[];
-}
-
-interface AgentPanelSession {
-  id: string;
-  title: string;
-  directory: string;
-  status: SessionVisualStatus;
-  muted: boolean;
-  requiresAttention: boolean;
-}
 
 interface OpenCodeProjectMeta {
   id: string;
@@ -74,12 +66,16 @@ export class AgentPanelView extends ItemView {
   private transientLoadFailure = false;
   private refreshRetryDelay = 1_000;
   private opened = false;
+  private readonly rowComponents: AgentPanelRowComponents;
+  private readonly sessionRowHandles = new Map<string, AgentPanelSessionRowHandle>();
 
   constructor(
     leaf: WorkspaceLeaf,
     private readonly plugin: OpenCodePlugin,
+    rowComponents: Partial<AgentPanelRowComponents> = {},
   ) {
     super(leaf);
+    this.rowComponents = { ...createDefaultAgentPanelRowComponents(), ...rowComponents };
   }
 
   /** Returns the stable Obsidian view type used by plugin registration. */
@@ -137,6 +133,13 @@ export class AgentPanelView extends ItemView {
       this.plugin.requireOpenCodeService().subscribeToEvents(
         {
           onEvent: (event) => {
+            if (event.type === "permission.asked" && event.properties) {
+              this.plugin.routePermissionRequest(event.properties as OpenCodePermissionRequest, directory);
+              return;
+            }
+            if (event.type === "permission.replied" && event.properties) {
+              this.plugin.settleSessionRequest(this.readString(event.properties, ["requestID", "requestId", "id"]));
+            }
             this.applyLiveSessionEvent(event);
             if (this.shouldRefreshForEvent(event.type)) this.scheduleRefresh();
           },
@@ -218,6 +221,11 @@ export class AgentPanelView extends ItemView {
         sessionsForDirectory.forEach((session) => sessionDirectoryById.set(session.id, directory));
       });
       const sessions = this.uniqueSessions(sessionGroups.flat()).filter((session) => !this.isArchived(session));
+      this.plugin.cacheSessionHierarchy(sessions, true);
+      permissionGroups.forEach((requests, index) => {
+        const directory = openedDirectories[index];
+        for (const request of requests) this.plugin.routePermissionRequest(request, directory);
+      });
       this.sessionParentIds = new Map(
         sessions.flatMap((session) => {
           const parentId = this.readString(session, ["parentID", "parentId"]);
@@ -226,7 +234,7 @@ export class AgentPanelView extends ItemView {
       );
       const statusSnapshot = statuses && typeof statuses === "object" && !Array.isArray(statuses) ? (statuses as JsonObject) : {};
       const requestOwnerIds = new Set<string>();
-      for (const request of [...permissionGroups.flat(), ...questionGroups.flat()]) {
+      for (const request of [...permissionGroups.flat().filter((item) => !this.plugin.shouldSuppressPermissionRequest(item.id)), ...questionGroups.flat()]) {
         const sessionId = this.readString(request, ["sessionID", "sessionId"]);
         if (sessionId) requestOwnerIds.add(sessionId);
       }
@@ -245,7 +253,7 @@ export class AgentPanelView extends ItemView {
       const nextRequestAttentionIds = this.collectRequestAttentionIds(tree);
       if (this.transientLoadFailure) this.requestAttentionSessionIds.forEach((sessionId) => nextRequestAttentionIds.add(sessionId));
       this.requestAttentionSessionIds = nextRequestAttentionIds;
-      const treeSignature = JSON.stringify(tree);
+      const treeSignature = JSON.stringify([this.plugin.settings.folderCollapseDisplay, this.plugin.settings.agentPanelSessionSort, tree]);
       if (treeSignature === this.lastRenderedTreeSignature && this.contentEl.querySelector(".opencode-agent-panel__tree")) return;
       this.lastRenderedTreeSignature = treeSignature;
       this.renderTree(tree);
@@ -338,7 +346,7 @@ export class AgentPanelView extends ItemView {
   /** Builds visible top-level session rows and excludes child/subagent sessions. */
   private async buildSessionNodes(sessions: OpenCodeSession[], statuses: JsonObject, requestOwnerIds: Set<string>): Promise<AgentPanelSession[]> {
     const roots = sessions.filter((session) => !this.readString(session, ["parentID", "parentId"]));
-    return roots.sort((a, b) => this.sessionTitle(a).localeCompare(this.sessionTitle(b))).map((session) => this.buildSessionNode(session, statuses, requestOwnerIds));
+    return roots.map((session) => this.buildSessionNode(session, statuses, requestOwnerIds));
   }
 
   /** Builds one top-level session row from the list snapshot without fetching descendants. */
@@ -351,6 +359,8 @@ export class AgentPanelView extends ItemView {
       id,
       title: this.sessionTitle(session),
       directory,
+      createdAt: this.sessionTime(session, "created"),
+      updatedAt: this.sessionTime(session, "updated"),
       status: this.visualStatusFor(id, statuses, requiresAttention),
       muted: this.plugin.settings.sessionMute[id] === true,
       requiresAttention,
@@ -443,6 +453,7 @@ export class AgentPanelView extends ItemView {
     this.contentEl.empty();
     this.visibleRows = [];
     this.rowParentKey.clear();
+    this.sessionRowHandles.clear();
     this.renderHeader();
 
     const nav = this.contentEl.createDiv({ cls: "nav-files-container node-insert-event opencode-sidebar-panel__content opencode-agent-panel__tree" });
@@ -468,9 +479,45 @@ export class AgentPanelView extends ItemView {
     const openDirectory = actions.createEl("button", { attr: { "aria-label": "Open directory in OpenCode" }, cls: "clickable-icon" });
     setIcon(openDirectory, "folder-plus");
     openDirectory.addEventListener("click", () => void this.plugin.openDirectoryWithPicker());
+    const sortValue = normalizeAgentPanelSessionSort(this.plugin.settings.agentPanelSessionSort);
+    const sort = actions.createEl("button", {
+      attr: {
+        "aria-label": `Sort sessions: ${AGENT_PANEL_SESSION_SORT_LABELS[sortValue]}`,
+        title: `Sort sessions: ${AGENT_PANEL_SESSION_SORT_LABELS[sortValue]}`,
+      },
+      cls: "clickable-icon",
+    });
+    setIcon(sort, "arrow-up-down");
+    sort.addEventListener("click", (event) => this.showSessionSortMenu(event));
     const refresh = actions.createEl("button", { attr: { "aria-label": "Refresh OpenCode sessions" }, cls: "clickable-icon" });
     setIcon(refresh, "refresh-cw");
     refresh.addEventListener("click", () => void this.refresh());
+  }
+
+  /** Opens the header menu containing every supported session sort order. */
+  private showSessionSortMenu(event: MouseEvent): void {
+    const current = normalizeAgentPanelSessionSort(this.plugin.settings.agentPanelSessionSort);
+    const menu = new Menu();
+    const options = Object.entries(AGENT_PANEL_SESSION_SORT_LABELS) as Array<[AgentPanelSessionSort, string]>;
+    options.forEach(([value, label], index) => {
+      if (index === 2 || index === 4) menu.addSeparator();
+      menu.addItem((item) =>
+        item
+          .setTitle(label)
+          .setChecked(value === current)
+          .onClick(() => void this.setSessionSort(value)),
+      );
+    });
+    menu.showAtMouseEvent(event);
+  }
+
+  /** Persists a sort selection and immediately reorders the cached session tree. */
+  private async setSessionSort(sort: AgentPanelSessionSort): Promise<void> {
+    if (sort === normalizeAgentPanelSessionSort(this.plugin.settings.agentPanelSessionSort)) return;
+    this.plugin.settings.agentPanelSessionSort = sort;
+    this.lastRenderedTreeSignature = "";
+    this.rerenderTree();
+    await this.plugin.saveSettings();
   }
 
   /** Renders an empty connected tree when OpenCode has no sessions yet. */
@@ -488,27 +535,26 @@ export class AgentPanelView extends ItemView {
     this.rowParentKey.set(key, parentKey);
     const collapsed = this.collapsed.has(key);
     const creationDirectory = project.worktrees.length === 1 ? project.worktrees[0]?.path : undefined;
-    const item = container.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__project" });
-    const title = item.createDiv({ cls: "tree-item-self nav-folder-title is-clickable" });
-    this.registerRow(key, "project", title, undefined, creationDirectory);
-    this.renderCollapseIcon(title, collapsed);
-    const avatar = title.createDiv({ text: this.initials(project.name), cls: "opencode-agent-panel__project-avatar" });
-    avatar.style.setProperty("--opencode-project-avatar-color", this.projectColor(project.id));
-    title.createDiv({ text: project.name, cls: "tree-item-inner nav-folder-title-content" });
-    if (creationDirectory) this.renderNewSessionAction(title, creationDirectory);
-    title.addEventListener("click", () => this.toggleCollapsed(key));
-    title.addEventListener("contextmenu", (event) => this.showProjectMenu(event, project));
+    const row = this.rowComponents.project.render(container, {
+      project,
+      collapsed,
+      collapseDisplay: normalizeFolderCollapseDisplay(this.plugin.settings.folderCollapseDisplay),
+      showNewSessionAction: creationDirectory !== undefined,
+    });
+    this.registerRow(key, "project", row.rowEl, undefined, creationDirectory);
+    if (creationDirectory && row.newSessionButtonEl) this.bindNewSessionAction(row.newSessionButtonEl, creationDirectory);
+    row.rowEl.addEventListener("click", () => this.toggleCollapsed(key));
+    row.rowEl.addEventListener("contextmenu", (event) => this.showProjectMenu(event, project));
 
-    if (collapsed) return;
-    const children = item.createDiv({ cls: "tree-item-children nav-folder-children" });
+    if (collapsed || !row.childrenEl) return;
     if (project.worktrees.length > 1) {
-      for (const worktree of project.worktrees) this.renderWorktree(children, worktree, key);
+      for (const worktree of project.worktrees) this.renderWorktree(row.childrenEl, worktree, key);
       return;
     }
 
     const worktree = project.worktrees[0];
     if (!worktree) return;
-    for (const session of worktree.sessions) this.renderSession(children, session, key);
+    for (const session of this.sessionsForDisplay(worktree.sessions)) this.renderSession(row.childrenEl, session, key);
   }
 
   /** Renders the optional worktree/directory level when a project has multiple roots. */
@@ -516,46 +562,42 @@ export class AgentPanelView extends ItemView {
     const key = `worktree:${worktree.id}`;
     this.rowParentKey.set(key, parentKey);
     const collapsed = this.collapsed.has(key);
-    const item = container.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__worktree" });
-    const title = item.createDiv({ cls: "tree-item-self nav-folder-title is-clickable" });
-    this.registerRow(key, "worktree", title, undefined, worktree.path);
-    this.renderCollapseIcon(title, collapsed);
-    const icon = title.createDiv({ cls: "opencode-agent-panel__worktree-icon" });
-    setIcon(icon, "git-branch");
-    title.createDiv({ text: worktree.name, cls: "tree-item-inner nav-folder-title-content" });
-    this.renderNewSessionAction(title, worktree.path);
-    title.title = worktree.path;
-    title.addEventListener("click", () => this.toggleCollapsed(key));
+    const row = this.rowComponents.worktree.render(container, {
+      worktree,
+      collapsed,
+      collapseDisplay: normalizeFolderCollapseDisplay(this.plugin.settings.folderCollapseDisplay),
+    });
+    this.registerRow(key, "worktree", row.rowEl, undefined, worktree.path);
+    if (row.newSessionButtonEl) this.bindNewSessionAction(row.newSessionButtonEl, worktree.path);
+    row.rowEl.addEventListener("click", () => this.toggleCollapsed(key));
 
-    if (collapsed) return;
-    const children = item.createDiv({ cls: "tree-item-children nav-folder-children" });
-    for (const session of worktree.sessions) this.renderSession(children, session, key);
+    if (collapsed || !row.childrenEl) return;
+    for (const session of this.sessionsForDisplay(worktree.sessions)) this.renderSession(row.childrenEl, session, key);
+  }
+
+  /** Returns one grouping's sessions in the user-selected display order. */
+  private sessionsForDisplay(sessions: AgentPanelSession[]): AgentPanelSession[] {
+    return sortAgentPanelSessions(sessions, normalizeAgentPanelSessionSort(this.plugin.settings.agentPanelSessionSort));
   }
 
   /** Renders one top-level session row with left status and right notification slots. */
   private renderSession(container: HTMLElement, session: AgentPanelSession, parentKey?: string): void {
     const key = `session:${session.id}`;
     this.rowParentKey.set(key, parentKey);
-    const item = container.createDiv({ cls: "tree-item nav-file opencode-agent-panel__session" });
-
-    const title = item.createDiv({ cls: "tree-item-self nav-file-title is-clickable", attr: { "data-session-id": session.id } });
-    this.registerRow(key, "session", title, session);
-    if (this.activeSessionId === session.id) title.addClass("is-active");
-    title.createDiv({ cls: "tree-item-icon collapse-icon" });
-    this.renderStatusIndicator(title, session.status);
-    title.createDiv({ text: session.title, cls: "tree-item-inner nav-file-title-content" });
-    this.renderNotificationIndicator(title, session.muted);
-    title.addEventListener("click", () => this.selectSession(session));
-    title.addEventListener("contextmenu", (event) => this.showSessionMenu(event, session, title));
+    const row = this.rowComponents.session.render(container, {
+      session,
+      active: this.activeSessionId === session.id,
+      workingAnimation: normalizeWorkingAnimation(this.plugin.settings.workingAnimation),
+    });
+    row.rowEl.dataset.sessionId = session.id;
+    this.sessionRowHandles.set(session.id, row);
+    this.registerRow(key, "session", row.rowEl, session);
+    row.rowEl.addEventListener("click", () => this.selectSession(session));
+    row.rowEl.addEventListener("contextmenu", (event) => this.showSessionMenu(event, session));
   }
 
-  /** Renders a folder-row plus button that creates a client-only session draft. */
-  private renderNewSessionAction(container: HTMLElement, directory: string): void {
-    const action = container.createEl("button", {
-      cls: "clickable-icon opencode-agent-panel__new-session-action",
-      attr: { type: "button", "aria-label": "New session", title: "New session" },
-    });
-    setIcon(action, "plus");
+  /** Binds a row component's creation action to the panel-owned draft workflow. */
+  private bindNewSessionAction(action: HTMLButtonElement, directory: string): void {
     action.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -563,36 +605,11 @@ export class AgentPanelView extends ItemView {
     });
   }
 
-  /** Renders the native disclosure slot for folders and sessions with children. */
-  private renderCollapseIcon(container: HTMLElement, collapsed: boolean, hidden = false): void {
-    const icon = container.createDiv({ cls: "tree-item-icon collapse-icon" });
-    if (hidden) return;
-    setIcon(icon, collapsed ? "chevron-right" : "chevron-down");
-  }
-
-  /** Renders the left session status indicator according to the plugin spec. */
-  private renderStatusIndicator(container: HTMLElement, status: SessionVisualStatus): void {
-    const slot = container.createDiv({ cls: `opencode-agent-panel__status opencode-agent-panel__status--${status}` });
-    this.paintStatusIndicator(slot, status);
-  }
-
-  /** Repaints an existing session row status slot from a live event or full tree render. */
-  private paintStatusIndicator(slot: HTMLElement, status: SessionVisualStatus): void {
-    slot.empty();
-    slot.className = `opencode-agent-panel__status opencode-agent-panel__status--${status}`;
-    slot.dataset.workingAnimation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
-    if (status === "attention") setIcon(slot, "megaphone");
-    if (status === "error") setIcon(slot, "alert-circle");
-    if (status === "retry") setIcon(slot, "rotate-cw");
-    if (status === "done") slot.createSpan();
-    if (status === "working") slot.createSpan();
-  }
-
   /** Applies a status event immediately so visible rows do not wait for a full sidebar refresh. */
   private applyLiveSessionEvent(event: OpenCodeEvent): void {
     const properties = event.properties;
     if (!properties) return;
-    if (event.type === "permission.asked" || event.type === "question.asked") {
+    if (event.type === "question.asked") {
       const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
       if (sessionId) this.applyLiveRequestAttention(sessionId);
       return;
@@ -610,6 +627,12 @@ export class AgentPanelView extends ItemView {
     }
   }
 
+  /** Applies one centrally surfaced permission request to its owner and known ancestor rows. */
+  ingestPermissionRequest(request: OpenCodePermissionRequest): void {
+    this.applyLiveRequestAttention(request.sessionID);
+    this.scheduleRefresh();
+  }
+
   /** Paints an asked request's owner and every known ancestor without waiting for GET snapshots. */
   private applyLiveRequestAttention(ownerSessionId: string): void {
     const visited = new Set<string>();
@@ -617,9 +640,7 @@ export class AgentPanelView extends ItemView {
     while (sessionId && !visited.has(sessionId)) {
       visited.add(sessionId);
       this.requestAttentionSessionIds.add(sessionId);
-      const row = this.contentEl.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(sessionId)}"]`);
-      const slot = row?.querySelector<HTMLElement>(".opencode-agent-panel__status");
-      if (slot) this.paintStatusIndicator(slot, "attention");
+      this.sessionRowHandles.get(sessionId)?.updateStatus("attention", normalizeWorkingAnimation(this.plugin.settings.workingAnimation));
       sessionId = this.sessionParentIds.get(sessionId);
     }
   }
@@ -630,16 +651,9 @@ export class AgentPanelView extends ItemView {
     this.markCompletedSessionUnread(sessionId, previous, type);
     if (type === "idle") this.lastKnownSessionStatuses.delete(sessionId);
     else this.lastKnownSessionStatuses.set(sessionId, type);
-    const row = this.contentEl.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(sessionId)}"]`);
-    const slot = row?.querySelector<HTMLElement>(".opencode-agent-panel__status");
-    if (slot) this.paintStatusIndicator(slot, this.visualStatusFor(sessionId, {}));
-  }
-
-  /** Renders the right muted-notification indicator slot. */
-  private renderNotificationIndicator(container: HTMLElement, muted: boolean): void {
-    const slot = container.createDiv({ cls: "opencode-agent-panel__notification" });
-    if (!muted) return;
-    setIcon(slot, "bell-off");
+    this.sessionRowHandles
+      .get(sessionId)
+      ?.updateStatus(this.visualStatusFor(sessionId, {}), normalizeWorkingAnimation(this.plugin.settings.workingAnimation));
   }
 
   /** Selects a session row and opens its read-only Obsidian session tab. */
@@ -717,6 +731,7 @@ export class AgentPanelView extends ItemView {
     this.visibleRows = [];
     this.rowParentKey.clear();
     this.sessionAncestorMap.clear();
+    this.sessionRowHandles.clear();
   }
 
   /** Toggles a tree branch and re-renders locally without a server round-trip. */
@@ -728,11 +743,10 @@ export class AgentPanelView extends ItemView {
 
   /** Refreshes the row state after a local-only active selection changes. */
   private renderActiveOnly(): void {
-    this.contentEl.querySelectorAll(".opencode-agent-panel__session .tree-item-self").forEach((row) => row.removeClass("is-active"));
+    this.sessionRowHandles.forEach((row) => row.updateActive(false));
     this.contentEl.querySelectorAll(".opencode-agent-panel__row-highlighted").forEach((row) => row.removeClass("opencode-agent-panel__row-highlighted"));
     if (!this.activeSessionId) return;
-    const active = this.contentEl.querySelector(`[data-session-id="${CSS.escape(this.activeSessionId)}"]`);
-    active?.addClass("is-active");
+    this.sessionRowHandles.get(this.activeSessionId)?.updateActive(true);
     this.applyHighlight();
   }
 
@@ -754,7 +768,7 @@ export class AgentPanelView extends ItemView {
     if (row?.session && rename) {
       event.preventDefault();
       event.stopPropagation();
-      this.beginInlineRename(row.session, row.element);
+      this.beginInlineRename(row.session);
       return;
     }
     if (row?.session && archive) {
@@ -775,7 +789,7 @@ export class AgentPanelView extends ItemView {
     }
     if (row?.session && unmodified && event.key.toLowerCase() === "p") {
       event.preventDefault();
-      void this.plugin.rememberSessionAutoApprove(row.session.id, this.plugin.settings.sessionAutoApprove[row.session.id] !== true);
+      void this.plugin.toggleSessionAutoApprove(row.session.id, row.session.directory);
       return;
     }
     if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Enter"].includes(event.key)) event.preventDefault();
@@ -902,6 +916,12 @@ export class AgentPanelView extends ItemView {
   /** Extracts a session title with useful fallbacks for incomplete API payloads. */
   private sessionTitle(session: OpenCodeSession): string {
     return this.readString(session, ["title", "name", "summary"]) ?? session.id;
+  }
+
+  /** Reads one finite epoch-millisecond session timestamp from OpenCode metadata. */
+  private sessionTime(session: OpenCodeSession, key: "created" | "updated"): number | undefined {
+    const value = this.readObject(session, "time")?.[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
   }
 
   /** Resolves the sidebar project using OpenCode's git-project/global-project split; referenced by buildProjectTree. */
@@ -1040,7 +1060,7 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Opens the session action menu for a sidebar row. */
-  private showSessionMenu(event: MouseEvent, session: AgentPanelSession, row: HTMLElement): void {
+  private showSessionMenu(event: MouseEvent, session: AgentPanelSession): void {
     event.preventDefault();
     const menu = new Menu();
     menu.addItem((item) =>
@@ -1051,7 +1071,7 @@ export class AgentPanelView extends ItemView {
     );
     menu.addSeparator();
     menu.addItem((item) => item.setTitle("Open session").setIcon("message-square").onClick(() => void this.plugin.openSessionTab(session.id, session.title)));
-    menu.addItem((item) => item.setTitle("Rename session").setIcon("pencil").onClick(() => this.beginInlineRename(session, row)));
+    menu.addItem((item) => item.setTitle("Rename session").setIcon("pencil").onClick(() => this.beginInlineRename(session)));
     menu.addItem((item) => item.setTitle("Fork this session").setIcon("git-fork").onClick(() => void this.forkSession(session)));
     menu.addItem((item) =>
       item
@@ -1066,8 +1086,8 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Replaces a session row title with the file-explorer-style inline rename field. */
-  private beginInlineRename(session: AgentPanelSession, row: HTMLElement): void {
-    const title = row.querySelector<HTMLElement>(".nav-file-title-content");
+  private beginInlineRename(session: AgentPanelSession): void {
+    const title = this.sessionRowHandles.get(session.id)?.titleEl;
     if (!title || title.querySelector("input")) return;
     const input = document.createElement("input");
     input.className = "opencode-agent-panel__rename-input";
@@ -1136,20 +1156,4 @@ export class AgentPanelView extends ItemView {
     new Notice(`Copied session ID: ${sessionId}`);
   }
 
-  /** Generates a short project-avatar label using native sidebar proportions. */
-  private initials(name: string): string {
-    return name
-      .split(/[\s/_-]+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase() ?? "")
-      .join("") || "OC";
-  }
-
-  /** Picks a stable Obsidian theme token for a project fallback avatar. */
-  private projectColor(projectId: string): string {
-    const tokens = ["--color-blue", "--color-green", "--color-yellow", "--color-orange", "--color-purple", "--color-cyan", "--color-pink"];
-    const hash = [...projectId].reduce((total, char) => total + char.charCodeAt(0), 0);
-    return `var(${tokens[hash % tokens.length]})`;
-  }
 }

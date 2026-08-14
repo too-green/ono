@@ -44,6 +44,12 @@ function setup(autoApproveSessions: string[] = []) {
     beginSessionRequestResponse: vi.fn(() => true),
     finishSessionRequestResponse: vi.fn(),
     settleSessionRequest: vi.fn(),
+    shouldSuppressPermissionRequest: vi.fn(() => false),
+    getSessionAutoApproveState: vi.fn((sessionId?: string) => ({
+      enabled: !!sessionId && autoApproveSessions.includes(sessionId),
+      inherited: false,
+      sourceSessionId: autoApproveSessions.includes(sessionId ?? "") ? sessionId : undefined,
+    })),
   } as unknown as OpenCodePlugin;
   const onChanged = vi.fn();
   const requestCanonicalSync = vi.fn();
@@ -110,28 +116,22 @@ describe("RequestDocksController descendant routing", () => {
     expect(container.textContent).toContain("Subagent: Nested worker");
   });
 
-  it("does not apply a parent's auto-approval setting to child permissions", () => {
-    const { controller, service, container } = setup(["parent"]);
+  it("renders only permissions that the central coordinator surfaces", () => {
+    const { controller, plugin, service, container } = setup(["parent"]);
     controller.ingestPermissionAsked({ id: "child", sessionID: "child", permission: "bash", patterns: ["npm test"], metadata: {}, always: [] });
 
     expect(service.replyPermission).not.toHaveBeenCalled();
     expect(container.textContent).toContain("npm test");
+    vi.mocked(plugin.shouldSuppressPermissionRequest).mockReturnValue(true);
+    controller.refresh();
+    expect(container.textContent).not.toContain("npm test");
   });
 
-  it("applies the child owner's auto-approval setting from an open parent view", async () => {
+  it("never submits automatic replies from duplicate parent or child views", () => {
     const { controller, plugin, service } = setup(["child"]);
     controller.ingestPermissionAsked({ id: "child", sessionID: "child", permission: "bash", patterns: ["npm test"], metadata: {}, always: [] });
 
-    await vi.waitFor(() => expect(service.replyPermission).toHaveBeenCalledWith("child", "once", "/child-work"));
-    expect(plugin.settleSessionRequest).toHaveBeenCalledWith("child");
-  });
-
-  it("retains every visible copy when an automatic approval fails", async () => {
-    const { model, controller, plugin, service } = setup(["child"]);
-    service.replyPermission.mockRejectedValueOnce(new Error("failed"));
-    controller.ingestPermissionAsked({ id: "child", sessionID: "child", permission: "bash", patterns: ["npm test"], metadata: {}, always: [] });
-
-    await vi.waitFor(() => expect(plugin.finishSessionRequestResponse).toHaveBeenCalledWith("child"));
-    expect(model.pendingPermissions.map((request) => request.id)).toEqual(["child"]);
+    expect(service.replyPermission).not.toHaveBeenCalled();
+    expect(plugin.beginSessionRequestResponse).not.toHaveBeenCalled();
   });
 });

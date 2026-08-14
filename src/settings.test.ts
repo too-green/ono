@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeAgentPanelSessionSort, normalizeFolderCollapseDisplay, normalizeSessionIslandContextLabel } from "./settings";
+import { normalizeAgentPanelSessionSort, normalizeFolderCollapseDisplay, normalizeNotificationMode, normalizeSessionIslandContextLabel } from "./settings";
 
 describe("normalizeSessionIslandContextLabel", () => {
   it("preserves each supported context label", () => {
@@ -40,5 +40,15 @@ describe("normalizeAgentPanelSessionSort", () => {
   it("falls back to newest-created-first for missing or invalid values", () => {
     expect(normalizeAgentPanelSessionSort("recent")).toBe("created-desc");
     expect(normalizeAgentPanelSessionSort(undefined)).toBe("created-desc");
+  });
+});
+
+describe("normalizeNotificationMode", () => {
+  it("preserves supported modes and disables missing or invalid persisted values", () => {
+    expect(normalizeNotificationMode("system")).toBe("system");
+    expect(normalizeNotificationMode("obsidian-notice")).toBe("obsidian-notice");
+    expect(normalizeNotificationMode("none")).toBe("none");
+    expect(normalizeNotificationMode("push")).toBe("none");
+    expect(normalizeNotificationMode(undefined)).toBe("none");
   });
 });

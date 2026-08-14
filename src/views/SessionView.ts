@@ -143,7 +143,7 @@ export class SessionView extends ItemView {
       onDescendantsChanged: () => this.island.refreshState(),
       onPermissionAsked: (request) => this.plugin.routePermissionRequest(request, this.model.sessionDirectory),
       onPermissionReplied: (requestId) => this.plugin.settleSessionRequest(requestId),
-      onQuestionAsked: (request) => this.plugin.routeQuestionRequest(request),
+      onQuestionAsked: (request) => this.plugin.routeQuestionRequest(request, this.model.sessionDirectory),
       onQuestionSettled: (requestId) => this.plugin.settleSessionRequest(requestId),
       requestTimelineRender: () => this.timeline.renderStreaming(),
       requestComposerProgressRefresh: () => {

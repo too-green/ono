@@ -4,13 +4,16 @@ import {
   OpenCodeSettingTab,
   normalizeAgentPanelSessionSort,
   normalizeFolderCollapseDisplay,
+  normalizeNotificationMode,
   normalizeOpenIde,
   normalizeSessionIslandContextLabel,
   normalizeTodoStatusCharacter,
   type OpenCodePluginSettings,
 } from "./src/settings";
 import { OpenCodeService } from "./src/services/opencode-service";
-import type { OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./src/services/opencode-types";
+import type { OpenCodeEventSubscription } from "./src/services/opencode-events";
+import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./src/services/opencode-types";
+import { SessionNotificationService, isElementVisibleInFocusedWindow, type SessionNotificationTestKind } from "./src/services/session-notifications";
 import { confirmSessionArchive, requestSessionTitle, type SessionArchiveNode } from "./src/session-actions";
 import { AgentPanelView, VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./src/views/AgentPanelView";
 import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView";
@@ -25,11 +28,16 @@ export default class OpenCodePlugin extends Plugin {
   settings: OpenCodePluginSettings = DEFAULT_OPENCODE_SETTINGS;
   opencode?: OpenCodeService;
   private archivingSessionIds = new Set<string>();
+  private notificationService?: SessionNotificationService;
+  private notificationEventSubscriptions = new Map<string, OpenCodeEventSubscription>();
   private permissionCoordinator = new PermissionCoordinator({
     getSettings: () => this.settings.sessionAutoApprove,
     getService: () => this.requireOpenCodeService(),
-    onSurface: (request) => this.surfacePermissionRequest(request),
-    onSettled: (requestId) => this.removeSettledRequestFromViews(requestId),
+    onSurface: (request, directory) => this.surfacePermissionRequest(request, directory),
+    onSettled: (requestId) => {
+      this.notificationService?.settleRequest(requestId);
+      this.removeSettledRequestFromViews(requestId);
+    },
     onRespondingChanged: () => this.refreshSessionRequestDocks(),
     onError: (error) => new Notice(error instanceof Error ? error.message : "Unable to auto-approve permission request."),
   });
@@ -38,6 +46,19 @@ export default class OpenCodePlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.opencode = new OpenCodeService(this.settings.server);
+    this.notificationService = new SessionNotificationService({
+      getPreferences: () => ({
+        mode: this.settings.notificationMode,
+        attention: this.settings.notifyOnAttention,
+        errors: this.settings.notifyOnSessionError,
+        turnComplete: this.settings.notifyOnTurnComplete,
+      }),
+      isSessionMuted: (sessionId) => this.settings.sessionMute[sessionId] === true,
+      isSessionVisible: (sessionId) => this.isSessionVisibleInFocusedWindow(sessionId),
+      getSession: (sessionId, directory) => this.requireOpenCodeService().getSession(sessionId, directory),
+      openSession: (sessionId, title) => this.openSessionTab(sessionId, title),
+    });
+    this.syncNotificationEventSubscriptions();
 
     this.registerView(VIEW_TYPE_OPENCODE_AGENT_PANEL, (leaf) => new AgentPanelView(leaf, this));
     this.registerView(VIEW_TYPE_OPENCODE_SESSION, (leaf) => new SessionView(leaf, this));
@@ -113,6 +134,8 @@ export default class OpenCodePlugin extends Plugin {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_SESSION);
     this.app.workspace.detachLeavesOfType(LEGACY_DIFF_PANEL_VIEW_TYPE);
+    this.closeNotificationEventSubscriptions();
+    this.notificationService?.dispose();
     this.opencode?.dispose();
   }
 
@@ -120,6 +143,54 @@ export default class OpenCodePlugin extends Plugin {
   requireOpenCodeService(): OpenCodeService {
     if (!this.opencode) throw new Error("OpenCode service has not been initialized.");
     return this.opencode;
+  }
+
+  /** Keeps one plugin-level event subscriber per opened directory for background notifications. */
+  private syncNotificationEventSubscriptions(): void {
+    const directories = new Set(this.settings.openedDirectories);
+    for (const [directory, subscription] of this.notificationEventSubscriptions) {
+      if (directories.has(directory)) continue;
+      subscription.close();
+      this.notificationEventSubscriptions.delete(directory);
+    }
+    for (const directory of directories) {
+      if (this.notificationEventSubscriptions.has(directory)) continue;
+      const subscription = this.requireOpenCodeService().subscribeToEvents({
+        onEvent: (event) => this.handleNotificationEvent(event, directory),
+      }, directory);
+      this.notificationEventSubscriptions.set(directory, subscription);
+    }
+  }
+
+  /** Closes every plugin-level event subscriber during unload or service replacement. */
+  private closeNotificationEventSubscriptions(): void {
+    for (const subscription of this.notificationEventSubscriptions.values()) subscription.close();
+    this.notificationEventSubscriptions.clear();
+  }
+
+  /** Centrally routes request and lifecycle events needed even when no plugin view is mounted. */
+  private handleNotificationEvent(event: OpenCodeEvent, directory: string): void {
+    const properties = event.properties;
+    if (event.type === "permission.asked" && properties) {
+      this.routePermissionRequest(properties as OpenCodePermissionRequest, directory);
+    } else if (event.type === "question.asked" && properties) {
+      this.routeQuestionRequest(properties as OpenCodeQuestionRequest, directory);
+    } else if (
+      (event.type === "permission.replied" || event.type === "question.replied" || event.type === "question.rejected") &&
+      properties
+    ) {
+      this.settleSessionRequest(this.readEventString(properties, ["requestID", "requestId", "id"]));
+    }
+    this.notificationService?.handleSessionEvent(event, directory);
+  }
+
+  /** Reads one non-empty string from a loosely typed event payload. */
+  private readEventString(properties: JsonObject, keys: string[]): string | undefined {
+    for (const key of keys) {
+      const value = properties[key];
+      if (typeof value === "string" && value.trim()) return value;
+    }
+    return undefined;
   }
 
   /** Returns user-opened absolute directories; referenced by the agents panel refresh loop. */
@@ -136,10 +207,7 @@ export default class OpenCodePlugin extends Plugin {
 
   /** Opens an OpenCode session in a main Obsidian tab; referenced by AgentPanelView. */
   async openSessionTab(sessionId: string, sessionTitle?: string): Promise<void> {
-    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION).find((leaf) => {
-      const view = leaf.view;
-      return view instanceof SessionView && view.getState().sessionId === sessionId;
-    });
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION).find((leaf) => this.sessionIdFromLeaf(leaf) === sessionId);
     const leaf = existing ?? this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: VIEW_TYPE_OPENCODE_SESSION, state: { sessionId, sessionTitle }, active: true });
     this.app.workspace.revealLeaf(leaf);
@@ -242,12 +310,19 @@ export default class OpenCodePlugin extends Plugin {
     return typeof sessionId === "string" ? sessionId : undefined;
   }
 
+  /** Returns whether any leaf for a session is visibly rendered in the focused Obsidian window. */
+  private isSessionVisibleInFocusedWindow(sessionId: string): boolean {
+    return this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION).some((leaf) =>
+      this.sessionIdFromLeaf(leaf) === sessionId && isElementVisibleInFocusedWindow(leaf.view.containerEl));
+  }
+
   /** Persists a directory exactly like OpenCode's UI-local opened-project list. */
   async addOpenedDirectory(directory: string): Promise<void> {
     const normalized = this.normalizeDirectory(directory);
     const existing = this.settings.openedDirectories.filter((item) => this.pathKey(item) !== this.pathKey(normalized));
     this.settings.openedDirectories = [normalized, ...existing];
     await this.saveSettings();
+    this.syncNotificationEventSubscriptions();
     new Notice(`Opened ${normalized} in OpenCode agents panel.`);
     await this.refreshAgentPanels();
   }
@@ -257,6 +332,7 @@ export default class OpenCodePlugin extends Plugin {
     const key = this.pathKey(directory);
     this.settings.openedDirectories = this.settings.openedDirectories.filter((item) => this.pathKey(item) !== key);
     await this.saveSettings();
+    this.syncNotificationEventSubscriptions();
     await this.refreshAgentPanels();
   }
 
@@ -285,6 +361,10 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.sessionAttachedFiles =
       this.settings.sessionAttachedFiles && typeof this.settings.sessionAttachedFiles === "object" ? this.settings.sessionAttachedFiles : {};
     this.settings.sessionUnread = this.settings.sessionUnread && typeof this.settings.sessionUnread === "object" ? this.settings.sessionUnread : {};
+    this.settings.notificationMode = normalizeNotificationMode(this.settings.notificationMode);
+    this.settings.notifyOnAttention = this.settings.notifyOnAttention !== false;
+    this.settings.notifyOnSessionError = this.settings.notifyOnSessionError !== false;
+    this.settings.notifyOnTurnComplete = this.settings.notifyOnTurnComplete !== false;
     this.settings.workingAnimation = normalizeWorkingAnimation(this.settings.workingAnimation);
     this.settings.folderCollapseDisplay = normalizeFolderCollapseDisplay(this.settings.folderCollapseDisplay);
     this.settings.agentPanelSessionSort = normalizeAgentPanelSessionSort(this.settings.agentPanelSessionSort);
@@ -304,6 +384,16 @@ export default class OpenCodePlugin extends Plugin {
   /** Writes plugin settings to Obsidian's plugin data file; referenced by opened-directory mutations. */
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  /** Requests renderer notification permission from an explicit settings interaction. */
+  async requestSystemNotificationPermission(): Promise<boolean> {
+    return await this.notificationService?.requestSystemPermission() ?? false;
+  }
+
+  /** Sends one event-specific dummy notification through the selected delivery mode. */
+  async sendTestNotification(kind: SessionNotificationTestKind): Promise<void> {
+    await this.notificationService?.sendTestNotification(kind);
   }
 
   /** Refreshes every open session after display settings change. */
@@ -517,8 +607,9 @@ export default class OpenCodePlugin extends Plugin {
   }
 
   /** Routes one non-auto-approved permission to every visible ancestor/owner surface. */
-  private surfacePermissionRequest(request: OpenCodePermissionRequest): void {
-    // TODO(notification-routing): emit at most one notification per permission request ID. Decide whether clicking it opens the surfaced parent or the owning child session.
+  private surfacePermissionRequest(request: OpenCodePermissionRequest, directory?: string): void {
+    // One owner-session notification is emitted per request ID; parent-vs-child click routing remains a product decision.
+    this.notificationService?.notifyPermission(request, directory);
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
       if (leaf.view instanceof SessionView) leaf.view.ingestPermissionRequest(request);
     }
@@ -528,7 +619,8 @@ export default class OpenCodePlugin extends Plugin {
   }
 
   /** Routes one question request to every open session view that contains its owning session. */
-  routeQuestionRequest(request: OpenCodeQuestionRequest): void {
+  routeQuestionRequest(request: OpenCodeQuestionRequest, directory?: string): void {
+    this.notificationService?.notifyQuestion(request, directory);
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
       if (leaf.view instanceof SessionView) leaf.view.ingestQuestionRequest(request);
     }

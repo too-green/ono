@@ -1,5 +1,6 @@
 import { AbstractInputSuggest, PluginSettingTab, Setting, getIconIds, setIcon, type App } from "obsidian";
 import type OpenCodePlugin from "../main";
+import type { SessionNotificationTestKind } from "./services/session-notifications";
 import type { OpenCodeServerConfig } from "./services/opencode-service";
 import {
   DEFAULT_WORKING_ANIMATION,
@@ -47,6 +48,15 @@ export type AgentPanelSessionSort = keyof typeof AGENT_PANEL_SESSION_SORT_LABELS
 
 export const DEFAULT_AGENT_PANEL_SESSION_SORT: AgentPanelSessionSort = "created-desc";
 
+export const NOTIFICATION_MODE_LABELS = {
+  system: "System notifications",
+  "obsidian-notice": "Obsidian notices",
+  none: "None",
+} as const;
+
+export type NotificationMode = keyof typeof NOTIFICATION_MODE_LABELS;
+export const DEFAULT_NOTIFICATION_MODE: NotificationMode = "none";
+
 export interface OpenCodePluginSettings {
   server: OpenCodeServerConfig;
   openedDirectories: string[];
@@ -66,6 +76,10 @@ export interface OpenCodePluginSettings {
   sessionMute: Record<string, boolean>;
   sessionAttachedFiles: Record<string, string[]>;
   sessionUnread: Record<string, boolean>;
+  notificationMode: NotificationMode;
+  notifyOnAttention: boolean;
+  notifyOnSessionError: boolean;
+  notifyOnTurnComplete: boolean;
   workingAnimation: WorkingAnimation;
   folderCollapseDisplay: FolderCollapseDisplay;
   agentPanelSessionSort: AgentPanelSessionSort;
@@ -102,6 +116,10 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   sessionMute: {},
   sessionAttachedFiles: {},
   sessionUnread: {},
+  notificationMode: DEFAULT_NOTIFICATION_MODE,
+  notifyOnAttention: true,
+  notifyOnSessionError: true,
+  notifyOnTurnComplete: true,
   workingAnimation: DEFAULT_WORKING_ANIMATION,
   folderCollapseDisplay: DEFAULT_FOLDER_COLLAPSE_DISPLAY,
   agentPanelSessionSort: DEFAULT_AGENT_PANEL_SESSION_SORT,
@@ -126,6 +144,11 @@ export function normalizeFolderCollapseDisplay(value: unknown): FolderCollapseDi
 export function normalizeAgentPanelSessionSort(value: unknown): AgentPanelSessionSort {
   if (typeof value === "string" && value in AGENT_PANEL_SESSION_SORT_LABELS) return value as AgentPanelSessionSort;
   return DEFAULT_AGENT_PANEL_SESSION_SORT;
+}
+
+/** Returns a supported notification delivery mode for persisted settings. */
+export function normalizeNotificationMode(value: unknown): NotificationMode {
+  return typeof value === "string" && value in NOTIFICATION_MODE_LABELS ? value as NotificationMode : DEFAULT_NOTIFICATION_MODE;
 }
 
 /** Normalizes the optional theme-defined in-progress task marker; empty means highlighted unchecked. */
@@ -189,6 +212,67 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           this.plugin.settings.archiveConfirmation = value;
           await this.plugin.saveSettings();
         }),
+      );
+
+    new Setting(this.containerEl)
+      .setName("Notifications")
+      .setDesc("Choose how OpenCode reports sessions that need attention, fail, or finish a turn.")
+      .addDropdown((dropdown) => {
+        for (const [value, label] of Object.entries(NOTIFICATION_MODE_LABELS)) dropdown.addOption(value, label);
+        dropdown.setValue(normalizeNotificationMode(this.plugin.settings.notificationMode)).onChange(async (value) => {
+          this.plugin.settings.notificationMode = normalizeNotificationMode(value);
+          if (this.plugin.settings.notificationMode === "system") await this.plugin.requestSystemNotificationPermission();
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(this.containerEl)
+      .setName("Notify when attention is needed")
+      .setDesc("Notify for permission and question requests that require a response.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.notifyOnAttention).onChange(async (value) => {
+          this.plugin.settings.notifyOnAttention = value;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(this.containerEl)
+      .setName("Notify when a session errors")
+      .setDesc("Notify when an active agent turn stops because of an error.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.notifyOnSessionError).onChange(async (value) => {
+          this.plugin.settings.notifyOnSessionError = value;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(this.containerEl)
+      .setName("Notify when a turn finishes")
+      .setDesc("Notify when an active agent session completes its turn.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.notifyOnTurnComplete).onChange(async (value) => {
+          this.plugin.settings.notifyOnTurnComplete = value;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    let notificationTestKind: SessionNotificationTestKind = "permission";
+    new Setting(this.containerEl)
+      .setName("Test notifications")
+      .setDesc("Send a dummy notification using the selected event type and delivery mode.")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("permission", "Permission request")
+          .addOption("question", "Question request")
+          .addOption("turn-complete", "Turn finished")
+          .addOption("error", "Session error")
+          .setValue(notificationTestKind)
+          .onChange((value) => {
+            notificationTestKind = value as SessionNotificationTestKind;
+          }),
+      )
+      .addButton((button) =>
+        button.setButtonText("Send test").onClick(() => void this.plugin.sendTestNotification(notificationTestKind)),
       );
 
     new Setting(this.containerEl)

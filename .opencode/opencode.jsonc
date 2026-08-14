@@ -11,10 +11,15 @@
       "branch": "main",
       "description": "a popular 3rd party opensource opencode GUI client app"
     },
-    "paseo": {
-      "repository": "getpaseo/paseo",
+    "tasknotes": {
+      "repository": "callumalpass/tasknotes",
       "branch": "main",
-      "description": "a popular multi-harness client for working with opencode, codex, claude code etc"
+      "description": "a popular task management obsidian plugin"
+    },
+    "obsidian-pi": {
+      "repository": "ChristianLempa/obsidian-pi",
+      "branch": "main",
+      "description": "an obsidian plugin that allows chatting with pi agent inside obsidian app"
     },
     "product-spec": {
       "path": "../docs/product-spec",

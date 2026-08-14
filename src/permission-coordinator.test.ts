@@ -43,6 +43,7 @@ describe("PermissionCoordinator", () => {
     coordinator.route({ id: "permission-2", sessionID: "child", permission: "edit", patterns: [], metadata: {}, always: [] }, "/workspace");
 
     await vi.waitFor(() => expect(onSurface).toHaveBeenCalledOnce());
+    expect(onSurface).toHaveBeenCalledWith(expect.objectContaining({ id: "permission-2" }), "/workspace");
     expect(replyPermission).not.toHaveBeenCalled();
     expect(coordinator.shouldSuppress("permission-2")).toBe(false);
   });

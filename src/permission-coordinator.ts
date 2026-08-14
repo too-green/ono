@@ -14,7 +14,7 @@ interface PendingPermission {
 export interface PermissionCoordinatorDeps {
   getSettings: () => Readonly<Record<string, boolean>>;
   getService: () => PermissionService;
-  onSurface: (request: OpenCodePermissionRequest) => void;
+  onSurface: (request: OpenCodePermissionRequest, directory?: string) => void;
   onSettled: (requestId: string) => void;
   onRespondingChanged: () => void;
   onError: (error: unknown) => void;
@@ -155,7 +155,7 @@ export class PermissionCoordinator {
     if (!current || this.settledRequestIds.has(requestId)) return;
     if (!policy.enabled) {
       current.state = "surfaced";
-      this.deps.onSurface(current.request);
+      this.deps.onSurface(current.request, this.directoryBySessionId.get(current.request.sessionID) ?? current.directory);
       return;
     }
     if (!this.beginResponse(requestId)) {
@@ -169,7 +169,7 @@ export class PermissionCoordinator {
     } catch (error) {
       current.state = "surfaced";
       this.finishResponse(requestId);
-      this.deps.onSurface(current.request);
+      this.deps.onSurface(current.request, this.directoryBySessionId.get(current.request.sessionID) ?? current.directory);
       this.deps.onError(error);
     }
   }

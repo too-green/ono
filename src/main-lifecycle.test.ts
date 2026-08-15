@@ -31,3 +31,36 @@ describe("OpenCodePlugin unload lifecycle", () => {
     ]);
   });
 });
+
+describe("OpenCodePlugin fork workflow", () => {
+  it("renames a duplicate parallel fork to the next sibling ordinal", async () => {
+    const service = {
+      listSessions: vi.fn(async () => [{ id: "fork-1", title: "Research (fork #1)" }]),
+      forkSession: vi.fn(async () => ({ id: "fork-2", title: "Research (fork #1)" })),
+      updateSession: vi.fn(async (_id: string, input: { title?: string }) => ({ id: "fork-2", title: input.title })),
+    };
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, { opencode: service });
+
+    const forked = await plugin.forkSession("root", "/workspace", "next-message");
+
+    expect(service.listSessions).toHaveBeenCalledWith({ directory: "/workspace", limit: 1_000 });
+    expect(service.forkSession).toHaveBeenCalledWith("root", "/workspace", "next-message");
+    expect(service.updateSession).toHaveBeenCalledWith("fork-2", { title: "Research (fork #2)" }, "/workspace");
+    expect(forked.title).toBe("Research (fork #2)");
+  });
+
+  it("keeps an already-unique server-generated fork title", async () => {
+    const forked = { id: "fork-2", title: "Research (fork #2)" };
+    const service = {
+      listSessions: vi.fn(async () => [{ id: "fork-1", title: "Research (fork #1)" }]),
+      forkSession: vi.fn(async () => forked),
+      updateSession: vi.fn(),
+    };
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, { opencode: service });
+
+    await expect(plugin.forkSession("root", "/workspace")).resolves.toBe(forked);
+    expect(service.updateSession).not.toHaveBeenCalled();
+  });
+});

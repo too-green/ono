@@ -54,14 +54,14 @@ describe("isCompactAssistantPart", () => {
 });
 
 describe("visibleTimelineMessages", () => {
-  it("sorts messages, removes empty bundles, and applies the rewind boundary", () => {
+  it("sorts messages, removes empty bundles, and applies a lexically rolled-over rewind boundary", () => {
     const messages = [
-      bundle("m3", "assistant", 3, [{ type: "text", text: "third" }]),
-      bundle("m1", "user", 1, [{ type: "text", text: "first" }]),
-      bundle("m2", "user", 2),
+      bundle("msg_002", "assistant", 3, [{ type: "text", text: "third" }]),
+      bundle("msg_ff1", "user", 1, [{ type: "text", text: "first" }]),
+      bundle("msg_ff2", "user", 2),
     ];
-    expect(visibleTimelineMessages(messages, "m3", true).map((message) => message.info.id)).toEqual(["m1"]);
-    expect(messages.map((message) => message.info.id)).toEqual(["m3", "m1", "m2"]);
+    expect(visibleTimelineMessages(messages, "msg_002", true).map((message) => message.info.id)).toEqual(["msg_ff1"]);
+    expect(messages.map((message) => message.info.id)).toEqual(["msg_002", "msg_ff1", "msg_ff2"]);
   });
 
   it("folds a v1 compaction assistant summary into its parent marker", () => {

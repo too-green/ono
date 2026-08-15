@@ -113,6 +113,12 @@ export interface OpenCodeCommandInput {
   parts?: OpenCodePromptPartInput[];
 }
 
+export interface OpenCodeSummarizeInput {
+  providerID: string;
+  modelID: string;
+  auto?: boolean;
+}
+
 export type OpenCodePermissionReply = "once" | "always" | "reject";
 
 export interface OpenCodePermissionRequest extends JsonObject {

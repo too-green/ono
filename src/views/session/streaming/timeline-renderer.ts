@@ -1,6 +1,7 @@
 import { MarkdownRenderer, Modal, type App, type Component } from "obsidian";
 
 import type { JsonObject, OpenCodeMessageBundle } from "../../../services/opencode-types";
+import { orderedBoundary } from "../../../message-order";
 import { renderContextToolGroup } from "../blocks/context-tool-group";
 import { renderMessageMeta, renderRewindBoundary, type AssistantMetaOptions, type MessageMetaCallbacks, type RewindBoundaryProps } from "../blocks/message-meta";
 import { bindStreamingTextTarget, renderReasoningBlock } from "../blocks/reasoning-block";
@@ -81,10 +82,11 @@ export function visibleTimelineMessages(
   boundary: string | undefined,
   showReasoningBlocks: boolean,
 ): OpenCodeMessageBundle[] {
-  const sorted = [...messages].sort((left, right) => messageHelpers.messageTime(left) - messageHelpers.messageTime(right));
-  return mergeCompactionSummaries(sorted)
-    .filter((message) => messageRenderKind(message, showReasoningBlocks) !== "none")
-    .filter((message) => !boundary || messageHelpers.messageId(message) < boundary);
+  const merged = mergeCompactionSummaries(messages);
+  const location = orderedBoundary(merged, boundary, messageHelpers.messageId, messageHelpers.messageTime);
+  return location.ordered
+    .slice(0, location.index)
+    .filter((message) => messageRenderKind(message, showReasoningBlocks) !== "none");
 }
 
 /** Folds each v1 compaction assistant into its parent marker so the summary has one timeline disclosure. */

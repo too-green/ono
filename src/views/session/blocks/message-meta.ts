@@ -10,7 +10,7 @@ export type MessageRole = "assistant" | "user";
 export interface MessageMetaCallbacks {
   /** Returns true when a message id is currently queued for send. */
   isQueued: (messageId: string) => boolean;
-  /** Fork the session after the given assistant message id. */
+  /** Fork the session after the given included assistant message id. */
   onFork: (messageId: string) => void;
   /** Request a rewind to the given user message bundle. */
   onRewind: (bundle: OpenCodeMessageBundle) => void;
@@ -32,7 +32,7 @@ export interface AssistantMetaOptions {
   startedAt?: number;
   /** End of the complete assistant turn, normally the final assistant message completion time. */
   completedAt?: number;
-  /** Last assistant message id used as the fork boundary; absent before the first assistant message exists. */
+  /** Last included assistant message id; `SessionView` translates it to OpenCode's exclusive boundary. */
   forkMessageId?: string;
 }
 

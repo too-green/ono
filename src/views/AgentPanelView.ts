@@ -1142,7 +1142,7 @@ export class AgentPanelView extends ItemView {
   /** Forks a sidebar session from its latest turn and opens the new session tab. */
   private async forkSession(session: AgentPanelSession): Promise<void> {
     try {
-      const forked = await this.plugin.requireOpenCodeService().forkSession(session.id, session.directory);
+      const forked = await this.plugin.forkSession(session.id, session.directory);
       await this.plugin.refreshAgentPanels({ showLoading: false });
       await this.plugin.openSessionTab(forked.id, forked.title);
     } catch (error) {

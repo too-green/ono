@@ -21,6 +21,8 @@ import { normalizeWorkingAnimation } from "./src/session-state";
 import { PermissionCoordinator } from "./src/permission-coordinator";
 import type { SessionAutoApproveState } from "./src/session-auto-approve";
 import { getIdeOrDefault, launchIde } from "./src/utils/ide-launcher";
+import { nextAvailableForkTitle } from "./src/session-fork";
+import { logServiceError } from "./src/services/opencode-http";
 
 export const LEGACY_DIFF_PANEL_VIEW_TYPE = "opencode-diff-panel";
 
@@ -219,6 +221,17 @@ export default class OpenCodePlugin extends Plugin {
     const draftId = crypto.randomUUID();
     await leaf.setViewState({ type: VIEW_TYPE_OPENCODE_SESSION, state: { draftId, draftDirectory: directory }, active: true });
     this.app.workspace.revealLeaf(leaf);
+  }
+
+  /** Forks through v1 and repairs duplicate sibling ordinals without overriding unique server-generated titles. */
+  async forkSession(sessionId: string, directory?: string, messageId?: string): Promise<OpenCodeSession> {
+    const service = this.requireOpenCodeService();
+    const existingPromise = service.listSessions({ directory, limit: 1_000 }).catch(logServiceError([], "listSessionsForForkTitle", sessionId));
+    const [forked, existing] = await Promise.all([service.forkSession(sessionId, directory, messageId), existingPromise]);
+    if (!forked.title) return forked;
+    const title = nextAvailableForkTitle(forked.title, existing);
+    if (title === forked.title) return forked;
+    return service.updateSession(forked.id, { title }, directory).catch(logServiceError(forked, "normalizeForkTitle", forked.id));
   }
 
   /** Launches the configured IDE for a project directory; surfaces failures via Notice. */

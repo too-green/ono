@@ -2,7 +2,9 @@ import { ItemView, Menu, Notice, WorkspaceLeaf, type ViewStateResult } from "obs
 import type OpenCodePlugin from "../../main";
 import { DELETE_CURRENT_FILE_COMMANDS, RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
 import { diffFilesFromUnifiedPatch, type DiffFileSummary } from "../diff-utils";
+import { orderedBoundary } from "../message-order";
 import { confirmSessionRewind } from "../session-actions";
+import { forkBoundaryAfterMessage } from "../session-fork";
 import { logServiceError } from "../services/opencode-http";
 import type {
   JsonObject,
@@ -762,12 +764,14 @@ export class SessionView extends ItemView {
     const pages = [firstPage];
     let page = firstPage;
     const seenCursors = new Set<string>();
-    while (
-      boundary &&
-      !pages.some((candidate) => candidate.messages.some((message) => messageHelpers.messageId(message) < boundary)) &&
-      page.olderCursor &&
-      !seenCursors.has(page.olderCursor)
-    ) {
+    while (boundary && page.olderCursor && !seenCursors.has(page.olderCursor)) {
+      const location = orderedBoundary(
+        pages.flatMap((candidate) => candidate.messages),
+        boundary,
+        messageHelpers.messageId,
+        messageHelpers.messageTime,
+      );
+      if (location.found && location.index > 0) break;
       const cursor = page.olderCursor;
       seenCursors.add(cursor);
       page = await service.listMessagePage(sessionId, { limit: OLDER_MESSAGE_LIMIT, cursor });
@@ -852,11 +856,17 @@ export class SessionView extends ItemView {
     this.island.refreshChrome();
   }
 
-  /** Forks the current session and opens the resulting session tab. */
-  private async forkCurrentSession(messageId?: string): Promise<void> {
+  /** Forks after an optional clicked assistant message and opens the resulting session tab. */
+  private async forkCurrentSession(includedMessageId?: string): Promise<void> {
     if (!this.model.sessionId || this.model.sessionBusy) return;
     try {
-      const forked = await this.plugin.requireOpenCodeService().forkSession(this.model.sessionId, this.model.sessionDirectory, messageId);
+      let boundaryMessageId: string | undefined;
+      if (includedMessageId) {
+        const boundary = forkBoundaryAfterMessage(this.model.loadedMessages, includedMessageId);
+        if (!boundary.found) throw new Error("The selected assistant turn is no longer available. Refresh the session and try again.");
+        boundaryMessageId = boundary.messageID;
+      }
+      const forked = await this.plugin.forkSession(this.model.sessionId, this.model.sessionDirectory, boundaryMessageId);
       await this.plugin.refreshAgentPanels({ showLoading: false });
       await this.plugin.openSessionTab(forked.id, forked.title);
     } catch (error) {
@@ -983,11 +993,10 @@ export class SessionView extends ItemView {
   /** Finds the latest user message before the current boundary for the `/undo` command. */
   private previousUserMessageId(): string | undefined {
     const boundary = this.revertMessageId();
-    const messages = [...this.model.loadedMessages].sort((left, right) => messageHelpers.messageTime(left) - messageHelpers.messageTime(right));
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      const messageId = messageHelpers.messageId(message);
-      if (messageHelpers.messageRole(message) === "user" && (!boundary || messageId < boundary)) return messageId;
+    const location = orderedBoundary(this.model.loadedMessages, boundary, messageHelpers.messageId, messageHelpers.messageTime);
+    for (let index = location.index - 1; index >= 0; index -= 1) {
+      const message = location.ordered[index];
+      if (messageHelpers.messageRole(message) === "user") return messageHelpers.messageId(message);
     }
     return undefined;
   }
@@ -996,10 +1005,11 @@ export class SessionView extends ItemView {
   private nextRewoundUserMessageId(): string | undefined {
     const boundary = this.revertMessageId();
     if (!boundary) return undefined;
-    const messages = [...this.model.loadedMessages].sort((left, right) => messageHelpers.messageTime(left) - messageHelpers.messageTime(right));
-    for (const message of messages) {
-      const messageId = messageHelpers.messageId(message);
-      if (messageHelpers.messageRole(message) === "user" && messageId > boundary) return messageId;
+    const location = orderedBoundary(this.model.loadedMessages, boundary, messageHelpers.messageId, messageHelpers.messageTime);
+    if (!location.found) return undefined;
+    for (let index = location.index + 1; index < location.ordered.length; index += 1) {
+      const message = location.ordered[index];
+      if (messageHelpers.messageRole(message) === "user") return messageHelpers.messageId(message);
     }
     return undefined;
   }
@@ -1026,9 +1036,15 @@ export class SessionView extends ItemView {
   private async executeBuiltinCommand(command: string, sessionId: string, directory?: string): Promise<void> {
     const service = this.plugin.requireOpenCodeService();
     switch (command) {
-      case "compact":
-        await service.summarizeSession(sessionId, directory);
+      case "compact": {
+        const model = this.model.selectedModel;
+        if (!model) {
+          new Notice("No model selected; cannot compact the session.");
+          break;
+        }
+        await service.summarizeSession(sessionId, { providerID: model.providerID, modelID: model.modelID }, directory);
         break;
+      }
       case "undo": {
         const messageId = this.previousUserMessageId();
         if (!messageId) {
@@ -1058,7 +1074,7 @@ export class SessionView extends ItemView {
         await service.unshareSession(sessionId, directory);
         break;
       case "fork": {
-        const forked = await service.forkSession(sessionId, directory);
+        const forked = await this.plugin.forkSession(sessionId, directory);
         new Notice(`Forked session: ${forked.title ?? forked.id}`);
         break;
       }

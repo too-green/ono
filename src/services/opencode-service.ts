@@ -20,6 +20,7 @@ import type {
   OpenCodeQuestionRequest,
   OpenCodeRevertSessionInput,
   OpenCodeSession,
+  OpenCodeSummarizeInput,
   OpenCodeTodo,
   OpenCodeUpdateSessionInput,
 } from "./opencode-types";
@@ -139,9 +140,9 @@ export class OpenCodeService {
     return this.http.post<OpenCodeMessageBundle>(`/session/${encodeURIComponent(sessionId)}/command`, input, { directory });
   }
 
-  /** Compacts session context via `POST /session/:id/summarize`; referenced by the `/compact` built-in command. */
-  summarizeSession(sessionId: string, directory?: string): Promise<JsonObject> {
-    return this.http.post<JsonObject>(`/session/${encodeURIComponent(sessionId)}/summarize`, {}, { directory });
+  /** Compacts session context via `POST /session/:id/summarize` (v1 requires providerID + modelID); referenced by the `/compact` built-in command. */
+  summarizeSession(sessionId: string, input: OpenCodeSummarizeInput, directory?: string): Promise<JsonObject> {
+    return this.http.post<JsonObject>(`/session/${encodeURIComponent(sessionId)}/summarize`, input, { directory });
   }
 
   /** Stages a v1 rewind at one message and applies its file rollback; referenced by message rewind and `/undo`. */

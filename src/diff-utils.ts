@@ -1,4 +1,5 @@
 import type { JsonObject, OpenCodeMessageBundle } from "./services/opencode-types";
+import { orderedBoundary } from "./message-order";
 
 export interface DiffFileSummary {
   file: string;
@@ -213,20 +214,20 @@ export function aggregateDiffFiles(diffs: DiffFileSummary[]): DiffFileSummary[] 
 
 /** Normalizes chronologically ordered user-message summaries before session and latest-turn aggregation. */
 function summarizedUserTurns(messages: OpenCodeMessageBundle[], boundary?: string): SummarizedTurnDiffs[] {
-  return [...messages]
+  const location = orderedBoundary(messages, boundary, messageId, messageCreated);
+  return location.ordered
+    .slice(0, location.index)
     .filter((message) => messageRole(message) === "user")
-    .filter((message) => !boundary || (messageId(message) ?? "") < boundary)
     .filter(hasMessageDiffSummary)
     .map((message) => ({
       messageId: messageId(message) ?? "",
       created: messageCreated(message),
       diffs: diffFilesFromMessage(message),
     }))
-    .filter((turn) => !!turn.messageId)
-    .sort((left, right) => left.created - right.created || left.messageId.localeCompare(right.messageId));
+    .filter((turn) => !!turn.messageId);
 }
 
-/** Reads the creation timestamp used to order summarized turns with an id fallback. */
+/** Reads the creation timestamp used to order summarized turns while equal times retain server order. */
 function messageCreated(bundle: OpenCodeMessageBundle): number {
   const time = readObject(bundle.info, "time");
   return readNumber(time, ["created"]) ?? 0;

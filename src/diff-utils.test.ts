@@ -45,13 +45,13 @@ describe("session diff aggregation", () => {
     expect(diffTotals(files)).toEqual({ additions: 3, deletions: 1 });
   });
 
-  it("excludes summaries at and after the active rewind boundary", () => {
+  it("excludes summaries at and after a lexically rolled-over rewind boundary", () => {
     const messages = [
-      userMessage("u1", 1, [{ file: "kept.ts", additions: 1, deletions: 0 }]),
-      userMessage("u2", 2, [{ file: "rewound.ts", additions: 3, deletions: 0 }]),
+      userMessage("msg_ff1", 1, [{ file: "kept.ts", additions: 1, deletions: 0 }]),
+      userMessage("msg_002", 2, [{ file: "rewound.ts", additions: 3, deletions: 0 }]),
     ];
 
-    expect(sessionDiffFiles(messages, "u2").map((file) => file.file)).toEqual(["kept.ts"]);
-    expect(latestSummarizedTurnDiffs(messages, "u2")?.messageId).toBe("u1");
+    expect(sessionDiffFiles(messages, "msg_002").map((file) => file.file)).toEqual(["kept.ts"]);
+    expect(latestSummarizedTurnDiffs(messages, "msg_002")?.messageId).toBe("msg_ff1");
   });
 });

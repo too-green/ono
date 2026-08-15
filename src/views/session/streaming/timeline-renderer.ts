@@ -6,7 +6,7 @@ import { renderContextToolGroup } from "../blocks/context-tool-group";
 import { renderMessageMeta, renderRewindBoundary, type AssistantMetaOptions, type MessageMetaCallbacks, type RewindBoundaryProps } from "../blocks/message-meta";
 import { bindStreamingTextTarget, renderReasoningBlock } from "../blocks/reasoning-block";
 import { normalizedToolName, renderToolCall } from "../blocks/tool-renderer";
-import { bindDisclosureState, blockPartId, disclosureKey, renderLazyDetailsBody, type BlockRenderCtx } from "../blocks/tool-primitives";
+import { blockPartId, type BlockRenderCtx } from "../blocks/tool-primitives";
 import * as jsonHelpers from "../json-helpers";
 import * as messageHelpers from "../message-helpers";
 import type { ImageAttachment } from "../message-helpers";
@@ -82,38 +82,10 @@ export function visibleTimelineMessages(
   boundary: string | undefined,
   showReasoningBlocks: boolean,
 ): OpenCodeMessageBundle[] {
-  const merged = mergeCompactionSummaries(messages);
-  const location = orderedBoundary(merged, boundary, messageHelpers.messageId, messageHelpers.messageTime);
+  const location = orderedBoundary(messages, boundary, messageHelpers.messageId, messageHelpers.messageTime);
   return location.ordered
     .slice(0, location.index)
     .filter((message) => messageRenderKind(message, showReasoningBlocks) !== "none");
-}
-
-/** Folds each v1 compaction assistant into its parent marker so the summary has one timeline disclosure. */
-export function mergeCompactionSummaries(messages: OpenCodeMessageBundle[]): OpenCodeMessageBundle[] {
-  const markerIds = new Set(messages.filter(messageHelpers.isCompactionMessage).map(messageHelpers.messageId));
-  const summaryByParent = new Map<string, OpenCodeMessageBundle>();
-  for (const message of messages) {
-    if (!messageHelpers.isCompactionSummaryMessage(message)) continue;
-    const parentId = jsonHelpers.readString(message.info, ["parentID", "parentId"]);
-    if (parentId && markerIds.has(parentId)) summaryByParent.set(parentId, message);
-  }
-
-  const mergedSummaryIds = new Set([...summaryByParent.values()].map(messageHelpers.messageId));
-  return messages.flatMap((message) => {
-    if (mergedSummaryIds.has(messageHelpers.messageId(message))) return [];
-    if (!messageHelpers.isCompactionMessage(message)) return [message];
-    const paired = summaryByParent.get(messageHelpers.messageId(message));
-    if (!paired) return [message];
-    return [{
-      info: {
-        ...message.info,
-        summary: messageHelpers.textFromParts(paired.parts),
-        compactionSummaryMessageID: messageHelpers.messageId(paired),
-      },
-      parts: message.parts,
-    }];
-  });
 }
 
 /** Finds the highest canonical index represented by the mounted message ids. */
@@ -474,20 +446,13 @@ export class TimelineRenderer {
     modal.open();
   }
 
-  /** Renders one compaction disclosure whose divider is the collapsed state and summary is the lazy body. */
+  /** Renders one static compaction boundary divider; its summary assistant renders as a normal turn. */
   private renderCompactionDivider(container: HTMLElement, bundle: OpenCodeMessageBundle): void {
-    const details = container.createEl("details", { cls: "opencode-session-view__compaction" });
-    const ctx = this.blockCtx(messageHelpers.messageId(bundle));
-    bindDisclosureState(details, disclosureKey(ctx, "compaction", bundle.parts.slice(0, 1)), this.openDisclosures);
-    this.annotateBlock(details, "compaction", bundle);
-    const summary = details.createEl("summary", { cls: "opencode-session-view__compaction-summary" });
-    summary.createSpan({ cls: "opencode-session-view__compaction-line" });
-    summary.createSpan({ text: "Session compacted", cls: "opencode-session-view__compaction-label" });
-    summary.createSpan({ cls: "opencode-session-view__compaction-line" });
-    const text = messageHelpers.compactionText(bundle);
-    renderLazyDetailsBody(details, "opencode-session-view__compaction-body opencode-session-view__markdown markdown-rendered", async (body) => {
-      await MarkdownRenderer.renderMarkdown(text || "Earlier context was compacted. No summary was provided by OpenCode.", body, this.markdownSourcePath(), this.deps.component);
-    });
+    const divider = container.createDiv({ cls: "opencode-session-view__compaction" });
+    this.annotateBlock(divider, "compaction", bundle);
+    divider.createSpan({ cls: "opencode-session-view__compaction-line" });
+    divider.createSpan({ text: "Session compacted", cls: "opencode-session-view__compaction-label" });
+    divider.createSpan({ cls: "opencode-session-view__compaction-line" });
   }
 
   /** Renders assistant parts in server order, preserving step gaps and grouped context tools. */

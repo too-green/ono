@@ -1914,20 +1914,11 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
 }
 
 .opencode-session-view__compaction {
-  margin: var(--size-4-8) 0;
-}
-
-.opencode-session-view__compaction-summary {
   align-items: center;
   color: var(--interactive-accent);
-  cursor: pointer;
   display: flex;
   gap: var(--size-4-3);
-  list-style: none;
-}
-
-.opencode-session-view__compaction-summary::-webkit-details-marker {
-  display: none;
+  margin: var(--size-4-8) 0;
 }
 
 .opencode-session-view__compaction-line {
@@ -1944,15 +1935,6 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
   font-family: var(--font-interface);
   font-size: var(--font-ui-smaller);
   padding: var(--size-2-1) var(--size-4-3);
-}
-
-.opencode-session-view__compaction-body {
-  background: var(--background-secondary);
-  border: var(--border-width) solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
-  margin: var(--size-4-3) auto 0;
-  max-width: 760px;
-  padding: var(--size-4-3) var(--size-4-4);
 }
 
 .opencode-session-view__markdown {

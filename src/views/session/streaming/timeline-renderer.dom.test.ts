@@ -105,7 +105,7 @@ describe("TimelineRenderer DOM", () => {
     expect(timeline.querySelectorAll(".opencode-session-view__message-meta--assistant")).toHaveLength(1);
   });
 
-  it("reveals a paired compaction summary only inside its divider disclosure", async () => {
+  it("renders a static compaction divider followed by the summary assistant turn", async () => {
     const { contentEl, renderer } = setup();
     const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
     const messages = [
@@ -118,19 +118,14 @@ describe("TimelineRenderer DOM", () => {
     ];
 
     const visibleCount = await renderer.renderInto(timeline, messages);
-    const details = timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__compaction")!;
+    const divider = timeline.querySelector<HTMLElement>(".opencode-session-view__compaction")!;
 
-    expect(visibleCount).toBe(1);
-    expect(timeline.querySelectorAll("[data-message-id]")).toHaveLength(1);
-    expect(details.open).toBe(false);
-    expect(details.querySelector(".opencode-session-view__compaction-summary")?.textContent).toBe("Session compacted");
-    expect(details.querySelector(".opencode-session-view__compaction-body")).toBeNull();
-    expect(timeline.querySelector(".opencode-session-view__assistant-markdown")).toBeNull();
-
-    details.open = true;
-    details.dispatchEvent(new Event("toggle"));
-    await vi.waitFor(() => expect(details.querySelector(".opencode-session-view__compaction-body")?.textContent).toBe("Retained session context"));
-    expect(details.textContent).not.toContain("Manual compaction");
+    expect(visibleCount).toBe(2);
+    expect(divider.tagName).toBe("DIV");
+    expect(divider.querySelector(".opencode-session-view__compaction-label")?.textContent).toBe("Session compacted");
+    expect(divider.querySelector(".opencode-session-view__compaction-body")).toBeNull();
+    expect(timeline.querySelector('[data-message-id="a1"] .opencode-session-view__assistant-markdown')?.textContent).toBe("Retained session context");
+    expect(timeline.querySelector('[data-message-id="a1"] .opencode-session-view__message-meta--assistant')).not.toBeNull();
   });
 
   it("renders live assistant metadata immediately before the first assistant message", async () => {

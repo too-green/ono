@@ -84,29 +84,10 @@ export function isCompactionMessage(bundle: OpenCodeMessageBundle): boolean {
   return readString(bundle.info, ["type"]) === "compaction" || bundle.parts.some((part) => readString(part, ["type"]) === "compaction");
 }
 
-/** Returns true for the v1 assistant message whose prose summarizes a preceding compaction marker. */
-export function isCompactionSummaryMessage(bundle: OpenCodeMessageBundle): boolean {
-  if (messageRole(bundle) !== "assistant") return false;
-  return readString(bundle.info, ["mode"]) === "compaction" || bundle.info.summary === true;
-}
-
 /** Capitalizes short metadata labels without changing undefined values. */
 export function capitalized(value: string | undefined): string | undefined {
   if (!value) return undefined;
   return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-/** Extracts readable summary metadata or a fallback description from a compaction marker. */
-export function compactionText(bundle: OpenCodeMessageBundle): string {
-  const summary = readString(bundle.info, ["summary"]);
-  const recent = readString(bundle.info, ["recent"]);
-  const reason = readString(bundle.info, ["reason"]);
-  if (summary || recent) return [reason ? `_${capitalized(reason)} compaction_` : undefined, summary, recent ? `## Recent context\n\n${recent}` : undefined].filter(Boolean).join("\n\n");
-  const part = bundle.parts.find((item) => readString(item, ["type"]) === "compaction");
-  if (!part) return "";
-  const auto = part.auto === true ? "Automatic" : "Manual";
-  const overflow = part.overflow === true ? " due to context overflow" : "";
-  return `${auto} compaction${overflow}.`;
 }
 
 /** Produces a human-readable model label from loose OpenCode message info. */

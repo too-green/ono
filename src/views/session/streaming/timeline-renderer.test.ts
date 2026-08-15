@@ -64,7 +64,7 @@ describe("visibleTimelineMessages", () => {
     expect(messages.map((message) => message.info.id)).toEqual(["msg_002", "msg_ff1", "msg_ff2"]);
   });
 
-  it("folds a v1 compaction assistant summary into its parent marker", () => {
+  it("keeps the v1 compaction summary assistant visible as its own message after the marker", () => {
     const messages = [
       bundle("c1", "user", 1, [{ type: "compaction", auto: false }]),
       bundle("a1", "assistant", 2, [{ type: "text", text: "Retained session context" }], {
@@ -76,21 +76,9 @@ describe("visibleTimelineMessages", () => {
 
     const visible = visibleTimelineMessages(messages, undefined, true);
 
-    expect(visible).toHaveLength(1);
-    expect(visible[0].info.id).toBe("c1");
-    expect(visible[0].info.summary).toBe("Retained session context");
-    expect(visible[0].info.compactionSummaryMessageID).toBe("a1");
-    expect(messages[0].info.summary).toBeUndefined();
-  });
-
-  it("keeps an unpaired compaction assistant visible when its parent is not loaded", () => {
-    const summary = bundle("a1", "assistant", 2, [{ type: "text", text: "Retained session context" }], {
-      parentID: "missing",
-      mode: "compaction",
-      summary: true,
-    });
-
-    expect(visibleTimelineMessages([summary], undefined, true).map((message) => message.info.id)).toEqual(["a1"]);
+    expect(visible.map((message) => message.info.id)).toEqual(["c1", "a1"]);
+    expect(visible[0].info).not.toHaveProperty("summary");
+    expect(visible[0].info).not.toHaveProperty("compactionSummaryMessageID");
   });
 });
 

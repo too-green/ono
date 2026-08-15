@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { JsonObject, OpenCodeMessageBundle } from "../../services/opencode-types";
-import { attachmentUrl, capitalized, compactionText, elapsedDurationLabel, imageAttachments, isCompactionMessage, isCompactionSummaryMessage, isImageAttachment, messageCompletedTime, messageId, messageRole, messageTime, modelLabel, reasoningComplete, reasoningText, reasoningTokenCount, textFromParts, userMessageText } from "./message-helpers";
+import { attachmentUrl, capitalized, elapsedDurationLabel, imageAttachments, isCompactionMessage, isImageAttachment, messageCompletedTime, messageId, messageRole, messageTime, modelLabel, reasoningComplete, reasoningText, reasoningTokenCount, textFromParts, userMessageText } from "./message-helpers";
 
 function bundle(info: JsonObject, parts: JsonObject[] = []): OpenCodeMessageBundle {
   return { info, parts };
@@ -162,15 +162,6 @@ describe("isCompactionMessage", () => {
   });
 });
 
-describe("isCompactionSummaryMessage", () => {
-  it("detects v1 compaction assistants without matching ordinary summaries", () => {
-    expect(isCompactionSummaryMessage(bundle({ role: "assistant", mode: "compaction", summary: true }))).toBe(true);
-    expect(isCompactionSummaryMessage(bundle({ role: "assistant", summary: true }))).toBe(true);
-    expect(isCompactionSummaryMessage(bundle({ role: "assistant" }))).toBe(false);
-    expect(isCompactionSummaryMessage(bundle({ role: "user", mode: "compaction" }))).toBe(false);
-  });
-});
-
 describe("capitalized", () => {
   it("capitalizes the first character", () => {
     expect(capitalized("auto")).toBe("Auto");
@@ -180,29 +171,6 @@ describe("capitalized", () => {
   it("returns undefined for empty/undefined input", () => {
     expect(capitalized(undefined)).toBeUndefined();
     expect(capitalized("")).toBeUndefined();
-  });
-});
-
-describe("compactionText", () => {
-  it("formats v2 summary with capitalized reason prefix", () => {
-    expect(compactionText(bundle({ reason: "auto", summary: "Sum" }))).toBe("_Auto compaction_\n\nSum");
-  });
-
-  it("formats v2 recent section when only recent present", () => {
-    expect(compactionText(bundle({ recent: "R" }))).toBe("## Recent context\n\nR");
-  });
-
-  it("combines reason + summary + recent", () => {
-    expect(compactionText(bundle({ reason: "manual", summary: "S", recent: "R" }))).toBe("_Manual compaction_\n\nS\n\n## Recent context\n\nR");
-  });
-
-  it("uses legacy compaction part when no v2 fields present", () => {
-    expect(compactionText(bundle({}, [{ type: "compaction", auto: true, overflow: true }]))).toBe("Automatic compaction due to context overflow.");
-    expect(compactionText(bundle({}, [{ type: "compaction" }]))).toBe("Manual compaction.");
-  });
-
-  it("returns empty string when no compaction data", () => {
-    expect(compactionText(bundle({}))).toBe("");
   });
 });
 

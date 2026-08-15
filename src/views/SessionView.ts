@@ -1,6 +1,6 @@
 import { ItemView, Menu, Notice, WorkspaceLeaf, type ViewStateResult } from "obsidian";
 import type OpenCodePlugin from "../../main";
-import { DELETE_CURRENT_FILE_COMMANDS, RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
+import { RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
 import { diffFilesFromUnifiedPatch, type DiffFileSummary } from "../diff-utils";
 import { orderedBoundary } from "../message-order";
 import { confirmSessionRewind } from "../session-actions";
@@ -1014,7 +1014,7 @@ export class SessionView extends ItemView {
     return undefined;
   }
 
-  /** Applies the user's current native rename/delete-file hotkeys to the active session view. */
+  /** Applies the user's current native rename-file hotkey to the active session view. */
   private handleNativeSessionHotkeys = (event: KeyboardEvent): void => {
     if (!this.model.sessionId || this.app.workspace.activeLeaf !== this.leaf || event.repeat) return;
     const target = event.target instanceof Element ? event.target : undefined;
@@ -1023,12 +1023,6 @@ export class SessionView extends ItemView {
       event.preventDefault();
       event.stopPropagation();
       void this.plugin.requestSessionRename(this.model.sessionId, this.getDisplayText(), this.model.sessionDirectory);
-      return;
-    }
-    if (matchesObsidianCommandHotkey(this.app, DELETE_CURRENT_FILE_COMMANDS, event)) {
-      event.preventDefault();
-      event.stopPropagation();
-      void this.plugin.requestSessionArchive(this.model.sessionId, this.model.sessionDirectory);
     }
   };
 

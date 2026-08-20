@@ -5,6 +5,7 @@ import type { OpenCodeEventSubscription } from "../services/opencode-events";
 import { logServiceError } from "../services/opencode-http";
 import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "../services/opencode-types";
 import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
+import { hashRenderState } from "./session/render-signature";
 import {
   AGENT_PANEL_SESSION_SORT_LABELS,
   normalizeAgentPanelSessionSort,
@@ -41,6 +42,13 @@ interface AgentPanelVisibleRow {
   element: HTMLElement;
   session?: AgentPanelSession;
   directory?: string;
+}
+
+interface AgentPanelTreeReconcileContext {
+  nextRows: Map<string, AgentPanelVisibleRow>;
+  previousSessionHandles: Map<string, AgentPanelSessionRowHandle>;
+  preservedRowElements: Map<string, HTMLElement>;
+  preservedSessionIds: Set<string>;
 }
 
 export class AgentPanelView extends ItemView {
@@ -132,6 +140,7 @@ export class AgentPanelView extends ItemView {
     this.eventSubscriptions = directories.map((directory) =>
       this.plugin.requireOpenCodeService().subscribeToEvents(
         {
+          onOpen: () => this.scheduleRefresh(0),
           onEvent: (event) => {
             if (event.type === "permission.asked" && event.properties) {
               this.plugin.routePermissionRequest(event.properties as OpenCodePermissionRequest, directory);
@@ -161,9 +170,6 @@ export class AgentPanelView extends ItemView {
       type === "session.created" ||
       type === "session.updated" ||
       type === "session.deleted" ||
-      type === "session.status" ||
-      type === "session.idle" ||
-      type === "session.error" ||
       type === "permission.asked" ||
       type === "permission.replied" ||
       type === "question.asked" ||
@@ -426,6 +432,7 @@ export class AgentPanelView extends ItemView {
   /** Renders a centered loading state that matches Obsidian empty-state styling. */
   private renderLoading(): void {
     this.clearTreeState();
+    this.cancelInlineRename(this.contentEl);
     this.contentEl.empty();
     this.renderHeader();
     const state = this.contentEl.createDiv({ cls: "opencode-agent-panel__state" });
@@ -436,6 +443,7 @@ export class AgentPanelView extends ItemView {
   /** Renders the disconnected state specified for missing or stopped OpenCode servers. */
   private renderDisconnected(error: unknown): void {
     this.clearTreeState();
+    this.cancelInlineRename(this.contentEl);
     this.contentEl.empty();
     this.renderHeader();
     const state = this.contentEl.createDiv({ cls: "opencode-agent-panel__state" });
@@ -450,36 +458,178 @@ export class AgentPanelView extends ItemView {
   private renderTree(projects: AgentPanelProject[]): void {
     this.lastTree = projects;
     this.sessionAncestorMap = this.buildSessionAncestorMap(projects);
-    this.contentEl.empty();
+    const currentNav = this.contentEl.querySelector<HTMLElement>(":scope > .opencode-agent-panel__tree");
+    const previousScrollTop = currentNav?.scrollTop ?? 0;
+    const previousHighlightedKey = this.highlightedKey;
+    const previousHighlightIndex = this.visibleRows.findIndex((row) => row.key === previousHighlightedKey);
+    const previousSessionHandles = new Map(this.sessionRowHandles);
     this.visibleRows = [];
     this.rowParentKey.clear();
     this.sessionRowHandles.clear();
-    this.renderHeader();
+    const staging = document.createElement("div");
+    this.renderHeader(staging);
 
-    const nav = this.contentEl.createDiv({ cls: "nav-files-container node-insert-event opencode-sidebar-panel__content opencode-agent-panel__tree" });
+    const nav = staging.createDiv({ cls: "nav-files-container node-insert-event opencode-sidebar-panel__content opencode-agent-panel__tree" });
     const root = nav.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__root" });
 
     if (projects.length === 0) {
       this.renderEmptyTree(nav);
-      return;
+      root.remove();
+    } else {
+      for (const project of projects) this.renderProject(root, project);
     }
 
-    for (const project of projects) this.renderProject(root, project);
-    if (!this.visibleRows.some((row) => row.key === this.highlightedKey)) {
-      this.highlightedKey = this.visibleRows[0]?.key;
+    const nextRows = new Map(this.visibleRows.map((row) => [row.key, row]));
+    const nextSessionHandles = new Map(this.sessionRowHandles);
+    const context: AgentPanelTreeReconcileContext = {
+      nextRows,
+      previousSessionHandles,
+      preservedRowElements: new Map(),
+      preservedSessionIds: new Set(),
+    };
+    const nextHeader = staging.querySelector<HTMLElement>(":scope > .opencode-agent-panel__header")!;
+    const currentHeader = this.contentEl.querySelector<HTMLElement>(":scope > .opencode-agent-panel__header");
+    let committedHeader = nextHeader;
+    if (currentHeader && currentHeader.dataset.renderSignature === nextHeader.dataset.renderSignature) committedHeader = currentHeader;
+    else if (currentHeader) currentHeader.replaceWith(nextHeader);
+    else this.contentEl.prepend(nextHeader);
+
+    let committedNav: HTMLElement = nav;
+    if (currentNav) {
+      const currentRoot = currentNav.querySelector<HTMLElement>(":scope > .opencode-agent-panel__root");
+      const nextRoot = nav.querySelector<HTMLElement>(":scope > .opencode-agent-panel__root");
+      if (currentRoot && nextRoot) {
+        this.reconcileTreeContainer(currentRoot, nextRoot, context);
+        currentRoot.className = nextRoot.className;
+        for (const child of Array.from(currentNav.children)) {
+          if (child !== currentRoot) child.remove();
+        }
+      } else {
+        this.cancelInlineRename(currentNav);
+        currentNav.replaceChildren(...Array.from(nav.childNodes));
+      }
+      currentNav.className = nav.className;
+      committedNav = currentNav;
+    } else {
+      this.contentEl.appendChild(nav);
+    }
+    for (const child of Array.from(this.contentEl.children)) {
+      if (child !== committedHeader && child !== committedNav) child.remove();
+    }
+
+    this.visibleRows = this.visibleRows.map((row) => ({
+      ...row,
+      element: context.preservedRowElements.get(row.key) ?? row.element,
+    }));
+    this.sessionRowHandles.clear();
+    for (const row of this.visibleRows) {
+      const sessionId = row.session?.id;
+      if (!sessionId) continue;
+      const handle = context.preservedSessionIds.has(sessionId)
+        ? previousSessionHandles.get(sessionId)
+        : nextSessionHandles.get(sessionId);
+      if (handle) this.sessionRowHandles.set(sessionId, handle);
+    }
+
+    committedNav.scrollTop = previousScrollTop;
+    if (!this.visibleRows.some((row) => row.key === previousHighlightedKey)) {
+      const fallbackIndex = previousHighlightIndex < 0 ? 0 : Math.min(previousHighlightIndex, this.visibleRows.length - 1);
+      this.highlightedKey = this.visibleRows[fallbackIndex]?.key;
       this.applyHighlight();
+      return;
+    }
+    this.highlightedKey = previousHighlightedKey;
+  }
+
+  /** Reconciles keyed project, worktree, and session items without replacing the scroll owner. */
+  private reconcileTreeContainer(current: HTMLElement, next: HTMLElement, context: AgentPanelTreeReconcileContext): void {
+    const currentItems = new Map(
+      Array.from(current.children)
+        .filter((child): child is HTMLElement => child instanceof HTMLElement && !!child.dataset.opencodeTreeKey)
+        .map((item) => [item.dataset.opencodeTreeKey!, item]),
+    );
+    const desired = Array.from(next.children, (nextItem) => {
+      if (!(nextItem instanceof HTMLElement)) return nextItem;
+      const key = nextItem.dataset.opencodeTreeKey;
+      const currentItem = key ? currentItems.get(key) : undefined;
+      if (!key || !currentItem) return nextItem;
+      if (currentItem.dataset.opencodeTreeKind !== nextItem.dataset.opencodeTreeKind) {
+        this.cancelInlineRename(currentItem);
+        return nextItem;
+      }
+      const kind = nextItem.dataset.opencodeTreeKind;
+      if (kind === "session") {
+        const nextRow = context.nextRows.get(key);
+        const sessionId = nextRow?.session?.id;
+        const handle = sessionId ? context.previousSessionHandles.get(sessionId) : undefined;
+        const sameSignature = currentItem.dataset.opencodeTreeSignature === nextItem.dataset.opencodeTreeSignature;
+        if (!sameSignature && nextRow?.session && handle?.updatePresentation) {
+          handle.updatePresentation(nextRow.session, this.activeSessionId === nextRow.session.id, normalizeWorkingAnimation(this.plugin.settings.workingAnimation));
+          currentItem.dataset.opencodeTreeSignature = nextItem.dataset.opencodeTreeSignature;
+        } else if (!sameSignature) {
+          this.cancelInlineRename(currentItem);
+          return nextItem;
+        }
+        this.recordPreservedTreeItem(key, currentItem, context, sessionId);
+        return currentItem;
+      }
+      if (currentItem.dataset.opencodeTreeSignature !== nextItem.dataset.opencodeTreeSignature) {
+        this.cancelInlineRename(currentItem);
+        return nextItem;
+      }
+      const childrenSelector = `[data-opencode-children-key="${CSS.escape(key)}"]`;
+      const currentChildren = currentItem.querySelector<HTMLElement>(childrenSelector);
+      const nextChildren = nextItem.querySelector<HTMLElement>(childrenSelector);
+      if (currentChildren && nextChildren) this.reconcileTreeContainer(currentChildren, nextChildren, context);
+      else if (currentChildren) currentChildren.remove();
+      else if (nextChildren) currentItem.appendChild(nextChildren);
+      this.recordPreservedTreeItem(key, currentItem, context);
+      return currentItem;
+    });
+    const retained = new Set(desired.filter((item) => item.parentElement === current));
+    for (const item of Array.from(current.children)) {
+      if (retained.has(item)) continue;
+      this.cancelInlineRename(item as HTMLElement);
+      item.remove();
+    }
+    let cursor = current.firstChild;
+    for (const item of desired) {
+      if (item === cursor) {
+        cursor = cursor.nextSibling;
+        continue;
+      }
+      current.insertBefore(item, cursor);
     }
   }
 
+  /** Cancels an inline session rename before an unavoidable keyed branch replacement. */
+  private cancelInlineRename(container: HTMLElement): void {
+    const input = container.querySelector<HTMLInputElement>(".opencode-agent-panel__rename-input");
+    if (input) input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  }
+
+  /** Records the mounted row element and handle retained for one keyed tree item. */
+  private recordPreservedTreeItem(
+    key: string,
+    item: HTMLElement,
+    context: AgentPanelTreeReconcileContext,
+    sessionId?: string,
+  ): void {
+    const row = item.querySelector<HTMLElement>(`[data-opencode-row-key="${CSS.escape(key)}"]`);
+    if (row) context.preservedRowElements.set(key, row);
+    if (sessionId) context.preservedSessionIds.add(sessionId);
+  }
+
   /** Renders the panel header with native clickable-icon affordances. */
-  private renderHeader(): void {
-    const header = this.contentEl.createDiv({ cls: "opencode-sidebar-panel__header opencode-agent-panel__header" });
+  private renderHeader(container = this.contentEl): void {
+    const sortValue = normalizeAgentPanelSessionSort(this.plugin.settings.agentPanelSessionSort);
+    const header = container.createDiv({ cls: "opencode-sidebar-panel__header opencode-agent-panel__header" });
+    header.dataset.renderSignature = hashRenderState(JSON.stringify(sortValue));
     header.createDiv({ text: "OpenCode", cls: "opencode-agent-panel__title" });
     const actions = header.createDiv({ cls: "opencode-agent-panel__actions" });
     const openDirectory = actions.createEl("button", { attr: { "aria-label": "Open directory in OpenCode" }, cls: "clickable-icon" });
     setIcon(openDirectory, "folder-plus");
     openDirectory.addEventListener("click", () => void this.plugin.openDirectoryWithPicker());
-    const sortValue = normalizeAgentPanelSessionSort(this.plugin.settings.agentPanelSessionSort);
     const sort = actions.createEl("button", {
       attr: {
         "aria-label": `Sort sessions: ${AGENT_PANEL_SESSION_SORT_LABELS[sortValue]}`,
@@ -541,6 +691,8 @@ export class AgentPanelView extends ItemView {
       collapseDisplay: normalizeFolderCollapseDisplay(this.plugin.settings.folderCollapseDisplay),
       showNewSessionAction: creationDirectory !== undefined,
     });
+    this.annotateTreeItem(row.itemEl, key, "project", [project.id, project.name, project.openedDirectories, collapsed, this.plugin.settings.folderCollapseDisplay, creationDirectory]);
+    this.annotateTreeChildren(row.childrenEl, key);
     this.registerRow(key, "project", row.rowEl, undefined, creationDirectory);
     if (creationDirectory && row.newSessionButtonEl) this.bindNewSessionAction(row.newSessionButtonEl, creationDirectory);
     row.rowEl.addEventListener("click", () => this.toggleCollapsed(key));
@@ -567,6 +719,8 @@ export class AgentPanelView extends ItemView {
       collapsed,
       collapseDisplay: normalizeFolderCollapseDisplay(this.plugin.settings.folderCollapseDisplay),
     });
+    this.annotateTreeItem(row.itemEl, key, "worktree", [worktree.id, worktree.name, worktree.path, collapsed, this.plugin.settings.folderCollapseDisplay]);
+    this.annotateTreeChildren(row.childrenEl, key);
     this.registerRow(key, "worktree", row.rowEl, undefined, worktree.path);
     if (row.newSessionButtonEl) this.bindNewSessionAction(row.newSessionButtonEl, worktree.path);
     row.rowEl.addEventListener("click", () => this.toggleCollapsed(key));
@@ -589,11 +743,30 @@ export class AgentPanelView extends ItemView {
       active: this.activeSessionId === session.id,
       workingAnimation: normalizeWorkingAnimation(this.plugin.settings.workingAnimation),
     });
+    this.annotateTreeItem(row.itemEl, key, "session", [session, this.activeSessionId === session.id, this.plugin.settings.workingAnimation]);
     row.rowEl.dataset.sessionId = session.id;
     this.sessionRowHandles.set(session.id, row);
     this.registerRow(key, "session", row.rowEl, session);
-    row.rowEl.addEventListener("click", () => this.selectSession(session));
-    row.rowEl.addEventListener("contextmenu", (event) => this.showSessionMenu(event, session));
+    row.rowEl.addEventListener("click", () => {
+      const current = this.visibleRows.find((candidate) => candidate.session?.id === session.id)?.session;
+      if (current) this.selectSession(current);
+    });
+    row.rowEl.addEventListener("contextmenu", (event) => {
+      const current = this.visibleRows.find((candidate) => candidate.session?.id === session.id)?.session;
+      if (current) this.showSessionMenu(event, current);
+    });
+  }
+
+  /** Annotates one item shell for keyed reconciliation independently of descendant state. */
+  private annotateTreeItem(item: HTMLElement, key: string, kind: AgentPanelVisibleRow["kind"], state: unknown): void {
+    item.dataset.opencodeTreeKey = key;
+    item.dataset.opencodeTreeKind = kind;
+    item.dataset.opencodeTreeSignature = hashRenderState(JSON.stringify(state));
+  }
+
+  /** Marks a custom or default folder child container for nested keyed reconciliation. */
+  private annotateTreeChildren(children: HTMLElement | undefined, key: string): void {
+    if (children) children.dataset.opencodeChildrenKey = key;
   }
 
   /** Binds a row component's creation action to the panel-owned draft workflow. */
@@ -651,9 +824,14 @@ export class AgentPanelView extends ItemView {
     this.markCompletedSessionUnread(sessionId, previous, type);
     if (type === "idle") this.lastKnownSessionStatuses.delete(sessionId);
     else this.lastKnownSessionStatuses.set(sessionId, type);
-    this.sessionRowHandles
-      .get(sessionId)
-      ?.updateStatus(this.visualStatusFor(sessionId, {}), normalizeWorkingAnimation(this.plugin.settings.workingAnimation));
+    const visualStatus = this.visualStatusFor(sessionId, {});
+    for (const project of this.lastTree) {
+      for (const worktree of project.worktrees) {
+        const session = worktree.sessions.find((candidate) => candidate.id === sessionId);
+        if (session) session.status = visualStatus;
+      }
+    }
+    this.sessionRowHandles.get(sessionId)?.updateStatus(visualStatus, normalizeWorkingAnimation(this.plugin.settings.workingAnimation));
   }
 
   /** Selects a session row and opens its read-only Obsidian session tab. */
@@ -737,7 +915,17 @@ export class AgentPanelView extends ItemView {
   /** Toggles a tree branch and re-renders locally without a server round-trip. */
   private toggleCollapsed(key: string, rerender = true): void {
     if (this.collapsed.has(key)) this.collapsed.delete(key);
-    else this.collapsed.add(key);
+    else {
+      let ancestor = this.highlightedKey ? this.rowParentKey.get(this.highlightedKey) : undefined;
+      while (ancestor) {
+        if (ancestor === key) {
+          this.highlightedKey = key;
+          break;
+        }
+        ancestor = this.rowParentKey.get(ancestor);
+      }
+      this.collapsed.add(key);
+    }
     if (rerender) this.rerenderTree();
   }
 
@@ -1129,7 +1317,7 @@ export class AgentPanelView extends ItemView {
         void finish(false);
       }
     });
-    input.addEventListener("blur", () => void finish(true));
+    input.addEventListener("blur", () => void finish(input.isConnected));
   }
 
   /** Toggles local notification muting for a root row; subagent sessions are not panel rows. */

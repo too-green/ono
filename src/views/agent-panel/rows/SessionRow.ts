@@ -13,12 +13,24 @@ export class SessionRow implements AgentPanelSessionRowComponent {
     const statusEl = rowEl.createDiv({ cls: "tree-item-icon" });
     this.paintStatus(statusEl, props.session.status, props.workingAnimation);
     const titleEl = rowEl.createDiv({ text: props.session.title, cls: "tree-item-inner nav-file-title-content" });
-
-    if (props.session.muted) {
-      const notification = rowEl.createDiv({ cls: "opencode-agent-panel__notification" });
-      setIcon(notification, "bell-off");
-    }
-    this.renderModifiedTime(rowEl, props.session.updatedAt ?? props.session.createdAt);
+    let notificationEl: HTMLElement | undefined;
+    let modifiedTimeEl: HTMLTimeElement | undefined;
+    const updateMuted = (muted: boolean): void => {
+      if (!muted) {
+        notificationEl?.remove();
+        notificationEl = undefined;
+        return;
+      }
+      if (notificationEl) return;
+      notificationEl = rowEl.createDiv({ cls: "opencode-agent-panel__notification" });
+      setIcon(notificationEl, "bell-off");
+      if (modifiedTimeEl) rowEl.insertBefore(notificationEl, modifiedTimeEl);
+    };
+    const updateModifiedTime = (timestamp: number | undefined): void => {
+      modifiedTimeEl = this.renderModifiedTime(rowEl, timestamp, modifiedTimeEl);
+    };
+    updateMuted(props.session.muted);
+    updateModifiedTime(props.session.updatedAt ?? props.session.createdAt);
 
     return {
       itemEl,
@@ -26,13 +38,23 @@ export class SessionRow implements AgentPanelSessionRowComponent {
       titleEl,
       updateActive: (active) => rowEl.classList.toggle("is-active", active),
       updateStatus: (status, workingAnimation) => this.paintStatus(statusEl, status, workingAnimation),
+      updatePresentation: (session, active, workingAnimation) => {
+        rowEl.classList.toggle("is-active", active);
+        if (!titleEl.querySelector("input") && titleEl.textContent !== session.title) titleEl.setText(session.title);
+        this.paintStatus(statusEl, session.status, workingAnimation);
+        updateMuted(session.muted);
+        updateModifiedTime(session.updatedAt ?? session.createdAt);
+      },
     };
   }
 
   /** Paints the status slot owned by this session-row layout. */
   private paintStatus(slot: HTMLElement, status: SessionVisualStatus, workingAnimation: WorkingAnimation): void {
+    const signature = `${status}:${workingAnimation}`;
+    if (slot.dataset.statusSignature === signature) return;
     slot.empty();
     slot.className = `tree-item-icon opencode-agent-panel__status opencode-agent-panel__status--${status}`;
+    slot.dataset.statusSignature = signature;
     slot.dataset.workingAnimation = workingAnimation;
     if (status === "attention") setIcon(slot, "megaphone");
     if (status === "error") setIcon(slot, "alert-circle");
@@ -41,18 +63,21 @@ export class SessionRow implements AgentPanelSessionRowComponent {
   }
 
   /** Adds a compact relative modified timestamp at the row's trailing edge. */
-  private renderModifiedTime(container: HTMLElement, timestamp: number | undefined): void {
-    if (timestamp === undefined || !Number.isFinite(timestamp)) return;
+  private renderModifiedTime(container: HTMLElement, timestamp: number | undefined, current?: HTMLTimeElement): HTMLTimeElement | undefined {
+    if (timestamp === undefined || !Number.isFinite(timestamp)) {
+      current?.remove();
+      return undefined;
+    }
     const date = new Date(timestamp);
-    if (!Number.isFinite(date.getTime())) return;
-    container.createEl("time", {
-      text: relativeModifiedTime(timestamp),
-      cls: "opencode-agent-panel__session-modified",
-      attr: {
-        datetime: date.toISOString(),
-        title: `Modified ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)}`,
-      },
-    });
+    if (!Number.isFinite(date.getTime())) {
+      current?.remove();
+      return undefined;
+    }
+    const element = current ?? container.createEl("time", { cls: "opencode-agent-panel__session-modified" });
+    element.setText(relativeModifiedTime(timestamp));
+    element.setAttribute("datetime", date.toISOString());
+    element.title = `Modified ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)}`;
+    return element;
   }
 }
 

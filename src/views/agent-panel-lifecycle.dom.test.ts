@@ -37,6 +37,7 @@ describe("AgentPanelView lifecycle", () => {
     document.body.replaceChildren();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it("does not resubscribe when a pending agents refresh resolves after close", async () => {
@@ -121,5 +122,95 @@ describe("AgentPanelView lifecycle", () => {
     view.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     view.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     expect(openSessionTab).toHaveBeenCalledWith("parent", "Parent session");
+  });
+
+  it("retains tree scroll, session rows, and rename input across streamed refreshes", async () => {
+    vi.useFakeTimers();
+    let onEvent: ((event: { type: string; properties?: Record<string, unknown> }) => void) | undefined;
+    let onOpen: (() => void) | undefined;
+    let updatedAt = 1_000;
+    const listSessions = vi.fn(async () => [{
+      id: "session-1",
+      title: "Streaming session",
+      directory: "/workspace",
+      projectID: "project",
+      time: { created: 500, updated: updatedAt },
+    }]);
+    const service = {
+      health: vi.fn(async () => undefined),
+      subscribeToEvents: vi.fn((handlers: { onEvent: typeof onEvent; onOpen?: () => void }) => {
+        onEvent = handlers.onEvent;
+        onOpen = handlers.onOpen;
+        return { close: vi.fn() };
+      }),
+      listProjects: vi.fn(async () => [{ id: "project", name: "Workspace", worktree: "/workspace", sandboxes: [] }]),
+      getCurrentProject: vi.fn(async () => ({ id: "project", name: "Workspace", worktree: "/workspace" })),
+      listSessions,
+      getSessionStatus: vi.fn(async () => ({ "session-1": { type: "busy" } })),
+      listPermissionRequests: vi.fn(async () => []),
+      listQuestionRequests: vi.fn(async () => []),
+    };
+    const plugin = {
+      settings: {
+        agentPanelSessionSort: "created-desc",
+        sessionMute: {},
+        sessionUnread: {},
+        sessionAutoApprove: {},
+        workingAnimation: "pulse",
+        folderCollapseDisplay: "inset",
+      },
+      getOpenedDirectories: () => ["/workspace"],
+      getActiveSessionId: () => undefined,
+      requireOpenCodeService: () => service,
+      cacheSessionHierarchy: vi.fn(),
+      routePermissionRequest: vi.fn(),
+      settleSessionRequest: vi.fn(),
+      shouldSuppressPermissionRequest: vi.fn(() => false),
+      openDirectoryWithPicker: vi.fn(),
+      openNewSessionTab: vi.fn(async () => undefined),
+      rememberSessionUnread: vi.fn(async () => undefined),
+      renameSession: vi.fn(async () => undefined),
+    } as unknown as OpenCodePlugin;
+    const view = new AgentPanelView({ app: {} } as never, plugin);
+    await view.onOpen();
+    const tree = view.contentEl.querySelector<HTMLElement>(".opencode-agent-panel__tree")!;
+    const row = view.contentEl.querySelector<HTMLElement>('[data-session-id="session-1"]')!;
+    const item = row.parentElement!;
+    tree.scrollTop = 140;
+    view.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    view.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    const input = row.querySelector<HTMLInputElement>(".opencode-agent-panel__rename-input")!;
+    input.value = "Draft rename";
+
+    updatedAt = 2_000;
+    await view.refresh({ showLoading: false });
+
+    expect(view.contentEl.querySelector(".opencode-agent-panel__tree")).toBe(tree);
+    expect(view.contentEl.querySelector('[data-session-id="session-1"]')).toBe(row);
+    expect(row.parentElement).toBe(item);
+    expect(row.querySelector(".opencode-agent-panel__rename-input")).toBe(input);
+    expect(input.value).toBe("Draft rename");
+    expect(tree.scrollTop).toBe(140);
+
+    const refreshCount = listSessions.mock.calls.length;
+    const indicator = row.querySelector(".opencode-agent-panel__status--working span");
+    onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "busy" } } });
+    vi.advanceTimersByTime(300);
+
+    expect(row.querySelector(".opencode-agent-panel__status--working span")).toBe(indicator);
+    expect(listSessions).toHaveBeenCalledTimes(refreshCount);
+
+    onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "idle" } } });
+    vi.advanceTimersByTime(300);
+
+    expect(view.contentEl.querySelector(".opencode-agent-panel__tree")).toBe(tree);
+    expect(tree.scrollTop).toBe(140);
+    expect(row.querySelector(".opencode-agent-panel__status--working")).toBeNull();
+    expect(listSessions).toHaveBeenCalledTimes(refreshCount);
+
+    onOpen?.();
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    expect(listSessions.mock.calls.length).toBeGreaterThan(refreshCount);
   });
 });

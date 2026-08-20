@@ -103,6 +103,11 @@ describe("agents-panel row components", () => {
     expect(handle.rowEl.querySelector(".opencode-agent-panel__session-modified")?.textContent).toBe("1m");
     expect(handle.rowEl.lastElementChild?.classList.contains("opencode-agent-panel__session-modified")).toBe(true);
     expect(handle.rowEl.querySelector(".opencode-agent-panel__status--working")?.getAttribute("data-working-animation")).toBe("pulse");
+    const workingIndicator = handle.rowEl.querySelector(".opencode-agent-panel__status--working span");
+
+    handle.updatePresentation?.({ ...session, updatedAt: Date.now() }, true, "pulse");
+
+    expect(handle.rowEl.querySelector(".opencode-agent-panel__status--working span")).toBe(workingIndicator);
 
     handle.updateActive(false);
     handle.updateStatus("done", "orbit");
@@ -172,7 +177,8 @@ describe("agents-panel row components", () => {
     const customSession = {
       render: (container: HTMLElement, props: { session: AgentPanelSession }) => {
         const itemEl = container.createDiv({ cls: "custom-session" });
-        const rowEl = itemEl.createDiv({ text: props.session.title, cls: "custom-session__row" });
+        const wrapper = itemEl.createDiv({ cls: "custom-session__wrapper" });
+        const rowEl = wrapper.createDiv({ text: props.session.title, cls: "custom-session__row" });
         const titleEl = rowEl.createSpan({ text: props.session.title });
         return {
           itemEl,
@@ -183,12 +189,23 @@ describe("agents-panel row components", () => {
         };
       },
     };
-    const view = new AgentPanelView({ app: {} } as never, plugin, { session: customSession });
+    const customProject = {
+      render: (container: HTMLElement, props: { project: AgentPanelProject; collapsed: boolean }) => {
+        const itemEl = container.createDiv({ cls: "custom-project" });
+        const rowEl = itemEl.createDiv({ text: props.project.name, cls: "custom-project__row" });
+        const childrenEl = props.collapsed ? undefined : itemEl.createDiv({ cls: "custom-project__children" });
+        return { itemEl, rowEl, childrenEl };
+      },
+    };
+    const view = new AgentPanelView({ app: {} } as never, plugin, { project: customProject, session: customSession });
 
     await view.onOpen();
+    const row = view.contentEl.querySelector<HTMLElement>(".custom-session__row")!;
+    await view.refresh({ showLoading: false });
     view.contentEl.querySelector<HTMLElement>(".custom-session__row")?.click();
 
     expect(view.contentEl.querySelector(".opencode-agent-panel__session")).toBeNull();
+    expect(view.contentEl.querySelector(".custom-session__row")).toBe(row);
     expect(openSessionTab).toHaveBeenCalledWith("session-1", "Extract panel rows");
   });
 });

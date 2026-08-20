@@ -44,6 +44,8 @@ export interface AgentPanelFolderRowHandle extends AgentPanelRowHandle {
 /** Stable elements and updates exposed by a session-row layout. */
 export interface AgentPanelSessionRowHandle extends AgentPanelRowHandle {
   titleEl: HTMLElement;
+  /** Updates all mutable row presentation while retaining the mounted row shell. */
+  updatePresentation?(session: AgentPanelSession, active: boolean, workingAnimation: WorkingAnimation): void;
   /** Updates active selection without exposing the component's styling structure. */
   updateActive(active: boolean): void;
   /** Repaints status without requiring the panel to know the component's DOM structure. */

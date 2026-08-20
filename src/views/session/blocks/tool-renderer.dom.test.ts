@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { JsonObject } from "../../../services/opencode-types";
 import { renderToolCall } from "./tool-renderer";
+import { adoptLazyDetailsBody, renderLazyDetailsBody } from "./tool-primitives";
 
 type DomOptions = { text?: string; cls?: string; attr?: Record<string, string> };
 
@@ -242,6 +243,25 @@ describe("shared tool container", () => {
     expect(raw.textContent).toContain('"output": "deployed"');
     expect(raw.querySelectorAll(".opencode-session-view__markdown")).toHaveLength(1);
     expect(raw.querySelector(".opencode-session-view__tool-section-title")).toBeNull();
+  });
+
+  it("allows in-flight lazy hydration to finish across a status-only shell update", async () => {
+    const current = document.createElement("details");
+    const next = document.createElement("details");
+    document.body.append(current, next);
+    let releaseRender: (() => void) | undefined;
+    renderLazyDetailsBody(current, "tool-body", async (body) => {
+      await new Promise<void>((resolve) => { releaseRender = resolve; });
+      body.setText("hydrated");
+    });
+    renderLazyDetailsBody(next, "tool-body", async (body) => body.setText("latest"));
+    current.open = true;
+    current.dispatchEvent(new Event("toggle"));
+    await vi.waitFor(() => expect(releaseRender).toBeTypeOf("function"));
+
+    expect(adoptLazyDetailsBody(current, next, false)).toBe(true);
+    releaseRender?.();
+    await vi.waitFor(() => expect(current.querySelector(".tool-body")?.textContent).toBe("hydrated"));
   });
 
   it("applies a custom icon/argument mapping without changing the shared container", async () => {

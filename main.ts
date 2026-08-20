@@ -20,6 +20,8 @@ import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView
 import { normalizeWorkingAnimation } from "./src/session-state";
 import { PermissionCoordinator } from "./src/permission-coordinator";
 import type { SessionAutoApproveState } from "./src/session-auto-approve";
+import { SessionHierarchy } from "./src/session-hierarchy";
+import { muteOverrideForState, resolveSessionNotificationState } from "./src/session-notification-state";
 import { getIdeOrDefault, launchIde } from "./src/utils/ide-launcher";
 import { nextAvailableForkTitle } from "./src/session-fork";
 import { logServiceError } from "./src/services/opencode-http";
@@ -32,9 +34,13 @@ export default class OpenCodePlugin extends Plugin {
   private archivingSessionIds = new Set<string>();
   private notificationService?: SessionNotificationService;
   private notificationEventSubscriptions = new Map<string, OpenCodeEventSubscription>();
+  private readonly sessionHierarchy = new SessionHierarchy({
+    getSession: (sessionId, directory) => this.requireOpenCodeService().getSession(sessionId, directory),
+  });
   private permissionCoordinator = new PermissionCoordinator({
     getSettings: () => this.settings.sessionAutoApprove,
     getService: () => this.requireOpenCodeService(),
+    hierarchy: this.sessionHierarchy,
     onSurface: (request, directory) => this.surfacePermissionRequest(request, directory),
     onSettled: (requestId) => {
       this.notificationService?.settleRequest(requestId);
@@ -55,9 +61,10 @@ export default class OpenCodePlugin extends Plugin {
         errors: this.settings.notifyOnSessionError,
         turnComplete: this.settings.notifyOnTurnComplete,
       }),
-      isSessionMuted: (sessionId) => this.settings.sessionMute[sessionId] === true,
+      isSessionMuted: (session) => this.getSessionNotificationState(session).muted,
       isSessionVisible: (sessionId) => this.isSessionVisibleInFocusedWindow(sessionId),
-      getSession: (sessionId, directory) => this.requireOpenCodeService().getSession(sessionId, directory),
+      getSession: (sessionId, directory) => this.sessionHierarchy.getSession(sessionId, directory),
+      getSessionLineage: (sessionId, directory) => this.sessionHierarchy.lineage(sessionId, directory),
       openSession: (sessionId, title) => this.openSessionTab(sessionId, title),
     });
     this.syncNotificationEventSubscriptions();
@@ -510,16 +517,22 @@ export default class OpenCodePlugin extends Plugin {
     return this.permissionCoordinator.hydrateState(sessionId, directory);
   }
 
-  /** Caches canonical session ancestry and directories for inherited permission policy resolution. */
+  /** Caches canonical session ancestry for inherited permission and notification policies. */
   cacheSessionHierarchy(sessions: OpenCodeSession[], authoritative = false): void {
     this.permissionCoordinator.cacheSessionHierarchy(sessions, authoritative);
   }
 
-  /** Persists the local muted-notification state for a session composer. */
-  async rememberSessionMute(sessionId: string, muted: boolean): Promise<void> {
-    if (muted) this.settings.sessionMute[sessionId] = true;
-    else delete this.settings.sessionMute[sessionId];
+  /** Persists one sparse per-session notification override from a session surface. */
+  async rememberSessionMute(sessionId: string, muted: boolean, isSubagent: boolean): Promise<void> {
+    const override = muteOverrideForState(muted, isSubagent);
+    if (override === undefined) delete this.settings.sessionMute[sessionId];
+    else this.settings.sessionMute[sessionId] = override;
     await this.saveSettings();
+  }
+
+  /** Returns the effective root-enabled/subagent-muted state for canonical session metadata. */
+  getSessionNotificationState(session: OpenCodeSession): ReturnType<typeof resolveSessionNotificationState> {
+    return resolveSessionNotificationState(this.settings.sessionMute, session);
   }
 
   /** Persists whether a session has completed activity the user has not read yet. */
@@ -553,13 +566,14 @@ export default class OpenCodePlugin extends Plugin {
     const model = this.settings.sessionModelChoices[draftKey];
     const autoApprove = this.settings.sessionAutoApprove[draftKey];
     const muted = this.settings.sessionMute[draftKey];
+    const hasMuteOverride = Object.prototype.hasOwnProperty.call(this.settings.sessionMute, draftKey);
     const files = this.settings.sessionAttachedFiles[draftKey];
     if (draft) this.settings.sessionDrafts[sessionId] = draft;
     if (history) this.settings.sessionPromptHistory[sessionId] = history;
     if (agent) this.settings.sessionAgentChoices[sessionId] = agent;
     if (model) this.settings.sessionModelChoices[sessionId] = model;
     if (autoApprove !== undefined) this.settings.sessionAutoApprove[sessionId] = autoApprove;
-    if (muted) this.settings.sessionMute[sessionId] = muted;
+    if (hasMuteOverride) this.settings.sessionMute[sessionId] = muted!;
     if (files) this.settings.sessionAttachedFiles[sessionId] = files;
     delete this.settings.sessionDrafts[draftKey];
     delete this.settings.sessionPromptHistory[draftKey];

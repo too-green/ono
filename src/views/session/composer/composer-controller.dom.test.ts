@@ -64,6 +64,7 @@ function setup(options: { busy?: boolean } = {}) {
     disableFollowLatest: vi.fn(),
     scrollToBottom: vi.fn(),
     isSessionMuted: vi.fn(() => false),
+    getMuteToggleTitle: vi.fn(() => "Mute notifications for this session"),
     onToggleMute: vi.fn(),
     onToggleAutoApprove: vi.fn(),
     requestDraftPromotion: vi.fn(),

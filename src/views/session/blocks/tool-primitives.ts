@@ -20,6 +20,17 @@ export interface BlockRenderCtx {
   openSession?: (sessionId: string, title: string) => void | Promise<void>;
 }
 
+interface LazyDetailsState {
+  bodyClass: string;
+  render: (body: HTMLElement) => Promise<void>;
+  body?: HTMLElement;
+  hydrated: boolean;
+  version: number;
+}
+
+const lazyDetailsStates = new WeakMap<HTMLDetailsElement, LazyDetailsState>();
+const lazyRenderOwners = new WeakMap<HTMLElement, HTMLDetailsElement>();
+
 /** Builds the synthetic source path MarkdownRenderer uses for internal-link resolution. */
 export function markdownSourcePath(ctx: BlockRenderCtx): string {
   return `opencode-session/${ctx.sessionId ?? "session"}.md`;
@@ -50,19 +61,52 @@ export function bindDisclosureState(details: HTMLDetailsElement, key: string, st
 
 /** Defers expensive details body DOM/Markdown work until a tool disclosure is opened. */
 export function renderLazyDetailsBody(details: HTMLDetailsElement, bodyClass: string, render: (body: HTMLElement) => Promise<void>): void {
-  let hydrated = false;
-  const hydrate = (): void => {
-    if (!details.open || hydrated) return;
-    hydrated = true;
-    const body = details.createDiv({ cls: bodyClass });
-    body.createDiv({ text: "Loading details…", cls: "opencode-session-view__tool-empty" });
-    void Promise.resolve().then(() => {
-      body.empty();
-      return render(body);
-    });
-  };
-  details.addEventListener("toggle", hydrate);
-  hydrate();
+  const existing = lazyDetailsStates.get(details);
+  if (existing) {
+    existing.bodyClass = bodyClass;
+    existing.render = render;
+    return;
+  }
+  lazyDetailsStates.set(details, { bodyClass, render, hydrated: false, version: 0 });
+  details.addEventListener("toggle", () => hydrateLazyDetailsBody(details));
+  hydrateLazyDetailsBody(details);
+}
+
+/** Transfers the latest lazy renderer to a retained details shell and optionally refreshes its body. */
+export function adoptLazyDetailsBody(current: HTMLDetailsElement, next: HTMLDetailsElement, resetBody: boolean): boolean {
+  const currentState = lazyDetailsStates.get(current);
+  const nextState = lazyDetailsStates.get(next);
+  if (!currentState || !nextState) return false;
+  currentState.bodyClass = nextState.bodyClass;
+  currentState.render = nextState.render;
+  if (resetBody) {
+    currentState.version += 1;
+    currentState.body?.remove();
+    currentState.body = undefined;
+    currentState.hydrated = false;
+  }
+  hydrateLazyDetailsBody(current);
+  return true;
+}
+
+/** Hydrates one open details body from its latest registered renderer. */
+function hydrateLazyDetailsBody(details: HTMLDetailsElement): void {
+  const state = lazyDetailsStates.get(details);
+  if (!state || !details.open || state.hydrated) return;
+  state.hydrated = true;
+  const version = ++state.version;
+  const body = details.createDiv({ cls: state.bodyClass });
+  state.body = body;
+  body.createDiv({ text: "Loading details…", cls: "opencode-session-view__tool-empty" });
+  const scratch = document.createElement("div");
+  lazyRenderOwners.set(scratch, details);
+  void Promise.resolve()
+    .then(() => state.render(scratch))
+    .then(() => {
+      if (lazyDetailsStates.get(details) !== state || state.version !== version || state.body !== body || body.parentElement !== details) return;
+      body.replaceChildren(...Array.from(scratch.childNodes));
+    })
+    .catch((error) => console.warn("[opencode-plugin:tool-details] render failed", error));
 }
 
 /** Renders a per-block raw-context control and switches between specialized output and the complete source part. */
@@ -81,10 +125,17 @@ export async function renderToolDetails(
   });
   const icon = toggle.createSpan({ cls: "opencode-session-view__raw-toggle-icon" });
   setIcon(icon, "braces");
-  toggle.createSpan({ text: "Show raw", cls: "opencode-session-view__raw-toggle-label" });
+  const label = toggle.createSpan({ cls: "opencode-session-view__raw-toggle-label" });
   const content = container.createDiv({ cls: "opencode-session-view__tool-body-content" });
-  let raw = false;
+  const details = lazyRenderOwners.get(container) ?? container.closest<HTMLDetailsElement>("details");
+  let raw = details?.dataset.toolRaw === "true";
   let renderVersion = 0;
+
+  const refreshToggle = (): void => {
+    toggle.setAttr("aria-pressed", String(raw));
+    toggle.setAttr("aria-label", raw ? "Show formatted tool context" : "Show raw tool context");
+    label.setText(raw ? "Show formatted" : "Show raw");
+  };
 
   const renderCurrent = async (): Promise<void> => {
     const version = ++renderVersion;
@@ -100,10 +151,11 @@ export async function renderToolDetails(
 
   toggle.addEventListener("click", () => {
     raw = !raw;
-    toggle.setAttr("aria-pressed", String(raw));
-    toggle.setAttr("aria-label", raw ? "Show formatted tool context" : "Show raw tool context");
+    if (details) details.dataset.toolRaw = String(raw);
+    refreshToggle();
     void renderCurrent();
   });
+  refreshToggle();
   await renderCurrent();
 }
 

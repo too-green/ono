@@ -1132,10 +1132,10 @@ export class AgentPanelView extends ItemView {
     input.addEventListener("blur", () => void finish(true));
   }
 
-  /** Toggles local notification muting from the row context menu. */
+  /** Toggles local notification muting for a root row; subagent sessions are not panel rows. */
   private async toggleSessionMute(session: AgentPanelSession): Promise<void> {
     session.muted = !session.muted;
-    await this.plugin.rememberSessionMute(session.id, session.muted);
+    await this.plugin.rememberSessionMute(session.id, session.muted, false);
     await this.refresh({ showLoading: false });
   }
 

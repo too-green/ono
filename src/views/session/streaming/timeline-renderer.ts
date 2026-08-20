@@ -6,10 +6,11 @@ import { renderContextToolGroup } from "../blocks/context-tool-group";
 import { renderMessageMeta, renderRewindBoundary, type AssistantMetaOptions, type MessageMetaCallbacks, type RewindBoundaryProps } from "../blocks/message-meta";
 import { bindStreamingTextTarget, renderReasoningBlock } from "../blocks/reasoning-block";
 import { normalizedToolName, renderToolCall } from "../blocks/tool-renderer";
-import { blockPartId, type BlockRenderCtx } from "../blocks/tool-primitives";
+import { adoptLazyDetailsBody, blockPartId, type BlockRenderCtx } from "../blocks/tool-primitives";
 import * as jsonHelpers from "../json-helpers";
 import * as messageHelpers from "../message-helpers";
 import type { ImageAttachment } from "../message-helpers";
+import { hashRenderState } from "../render-signature";
 import type { SessionViewModel } from "../session-view-model";
 import type { FollowLatestAnchor } from "../scroll-controller";
 import type { ToolDisplaySetting } from "../../../settings";
@@ -41,6 +42,7 @@ export interface TimelineDeps {
   isCurrentBinding: (sessionId: string, bindingVersion: number) => boolean;
   getRevertMessageId: () => string | undefined;
   requestShellRender: () => Promise<void>;
+  cancelStreamingMarkdownPatch: (key: string) => void;
   captureFollowLatest: () => FollowLatestAnchor | undefined;
   restoreFollowLatest: (anchor: FollowLatestAnchor | undefined) => boolean;
   updateJumpButton: () => void;
@@ -324,36 +326,149 @@ export class TimelineRenderer {
         .filter((child): child is HTMLElement => child instanceof HTMLElement && !!child.dataset.blockKey)
         .map((block) => [block.dataset.blockKey!, block]),
     );
-    for (const nextBlock of Array.from(next.children)) {
-      if (!(nextBlock instanceof HTMLElement) || !nextBlock.dataset.blockKey) continue;
-      const currentBlock = currentBlocks.get(nextBlock.dataset.blockKey);
-      if (!currentBlock) continue;
+    const retainedChildren = new Set<ChildNode>();
+    const desiredChildren = Array.from(next.childNodes, (nextChild) => {
+      if (!(nextChild instanceof HTMLElement)) return nextChild;
+      const nextBlock = nextChild;
+      const nextBlockKey = nextBlock.dataset.blockKey;
+      if (!nextBlockKey) return nextBlock;
+      const currentBlock = currentBlocks.get(nextBlockKey);
+      if (!currentBlock) return nextBlock;
+      currentBlocks.delete(nextBlockKey);
       if (currentBlock.dataset.blockSignature === nextBlock.dataset.blockSignature) {
-        nextBlock.replaceWith(currentBlock);
-        continue;
+        retainedChildren.add(currentBlock);
+        return currentBlock;
       }
       if (
         currentBlock.classList.contains("opencode-session-view__message-meta--working")
         && nextBlock.classList.contains("opencode-session-view__message-meta--working")
       ) {
         this.reconcileWorkingMeta(currentBlock, nextBlock);
-        nextBlock.replaceWith(currentBlock);
+        retainedChildren.add(currentBlock);
+        return currentBlock;
       }
+      if (this.reconcileReasoningBlock(currentBlock, nextBlock, current.dataset.messageId)) {
+        retainedChildren.add(currentBlock);
+        return currentBlock;
+      }
+      if (this.reconcileToolBlock(currentBlock, nextBlock)) {
+        retainedChildren.add(currentBlock);
+        return currentBlock;
+      }
+      return nextBlock;
+    });
+    const nextDisclosureKeys = new Set(
+      Array.from(next.querySelectorAll<HTMLElement>("[data-disclosure-key]"))
+        .map((element) => element.dataset.disclosureKey)
+        .filter((key): key is string => !!key),
+    );
+    for (const child of Array.from(current.children)) {
+      if (!retainedChildren.has(child)) this.forgetDisclosureState(child as HTMLElement, nextDisclosureKeys);
     }
-    current.className = next.className;
-    current.dataset.messageSignature = next.dataset.messageSignature;
-    current.replaceChildren(...Array.from(next.childNodes));
+    this.syncAttributes(current, next);
+    this.commitChildrenInPlace(current, desiredChildren, retainedChildren);
   }
 
   /** Updates live metadata while preserving the mounted CSS-animation indicator element. */
   private reconcileWorkingMeta(current: HTMLElement, next: HTMLElement): void {
     const currentIndicator = current.querySelector<HTMLElement>(".opencode-session-view__message-working-indicator");
     const nextIndicator = next.querySelector<HTMLElement>(".opencode-session-view__message-working-indicator");
-    if (currentIndicator && nextIndicator) nextIndicator.replaceWith(currentIndicator);
-    current.className = next.className;
-    for (const attribute of Array.from(current.attributes)) current.removeAttribute(attribute.name);
-    for (const attribute of Array.from(next.attributes)) current.setAttribute(attribute.name, attribute.value);
-    current.replaceChildren(...Array.from(next.childNodes));
+    const retainedChildren = new Set<ChildNode>();
+    const desiredChildren = Array.from(next.childNodes, (nextChild) => {
+      if (nextChild !== nextIndicator || !currentIndicator) return nextChild;
+      retainedChildren.add(currentIndicator);
+      return currentIndicator;
+    });
+    this.syncAttributes(current, next);
+    this.commitChildrenInPlace(current, desiredChildren, retainedChildren);
+  }
+
+  /** Updates a reasoning shell in place so streaming and completion never remount its disclosure or icon. */
+  private reconcileReasoningBlock(current: HTMLElement, next: HTMLElement, messageId: string | undefined): boolean {
+    if (!(current instanceof HTMLDetailsElement) || !(next instanceof HTMLDetailsElement)) return false;
+    if (!current.classList.contains("opencode-session-view__reasoning") || !next.classList.contains("opencode-session-view__reasoning")) return false;
+    if (current.dataset.disclosureKey !== next.dataset.disclosureKey) return false;
+    const currentSummary = current.querySelector<HTMLElement>(":scope > .opencode-session-view__reasoning-summary");
+    const nextSummary = next.querySelector<HTMLElement>(":scope > .opencode-session-view__reasoning-summary");
+    const currentBody = current.querySelector<HTMLElement>(":scope > .opencode-session-view__reasoning-body");
+    const nextBody = next.querySelector<HTMLElement>(":scope > .opencode-session-view__reasoning-body");
+    if (!currentSummary || !nextSummary || !currentBody || !nextBody) return false;
+
+    this.reconcileAnimatedSummary(currentSummary, nextSummary, ".opencode-session-view__reasoning-icon");
+    this.syncAttributes(currentBody, nextBody);
+    if (currentBody.innerHTML !== nextBody.innerHTML) {
+      const firstPartId = (nextBody.dataset.partIds ?? nextBody.dataset.partId)?.split(" ")[0];
+      if (messageId && firstPartId) this.deps.cancelStreamingMarkdownPatch(`${messageId}:${firstPartId}:text`);
+      currentBody.replaceChildren(...Array.from(nextBody.childNodes));
+    }
+    const wasOpen = current.open;
+    this.syncAttributes(current, next);
+    current.open = wasOpen;
+    this.commitChildrenInPlace(current, [currentSummary, currentBody], new Set([currentSummary, currentBody]));
+    return true;
+  }
+
+  /** Updates a lazy tool/group shell while preserving its disclosure, animated icon, and raw-mode state. */
+  private reconcileToolBlock(current: HTMLElement, next: HTMLElement): boolean {
+    if (!(current instanceof HTMLDetailsElement) || !(next instanceof HTMLDetailsElement)) return false;
+    if (!current.classList.contains("opencode-session-view__tool") || !next.classList.contains("opencode-session-view__tool")) return false;
+    if (current.dataset.disclosureKey !== next.dataset.disclosureKey) return false;
+    const currentSummary = current.querySelector<HTMLElement>(":scope > .opencode-session-view__tool-summary");
+    const nextSummary = next.querySelector<HTMLElement>(":scope > .opencode-session-view__tool-summary");
+    if (!currentSummary || !nextSummary) return false;
+    const resetBody = current.dataset.toolDetailSignature && next.dataset.toolDetailSignature
+      ? current.dataset.toolDetailSignature !== next.dataset.toolDetailSignature
+      : current.dataset.blockSignature !== next.dataset.blockSignature;
+    if (!adoptLazyDetailsBody(current, next, resetBody)) return false;
+
+    const wasOpen = current.open;
+    const rawMode = current.dataset.toolRaw;
+    this.syncAttributes(current, next);
+    current.open = wasOpen;
+    if (rawMode !== undefined) current.dataset.toolRaw = rawMode;
+    this.reconcileAnimatedSummary(currentSummary, nextSummary, ".opencode-session-view__tool-icon");
+    return true;
+  }
+
+  /** Replaces summary content while retaining the mounted span that owns its CSS animation. */
+  private reconcileAnimatedSummary(current: HTMLElement, next: HTMLElement, iconSelector: string): void {
+    const currentIcon = current.querySelector<HTMLElement>(`:scope > ${iconSelector}`);
+    const nextIcon = next.querySelector<HTMLElement>(`:scope > ${iconSelector}`);
+    const retainedChildren = new Set<ChildNode>();
+    const desiredChildren = Array.from(next.childNodes, (nextChild) => {
+      if (nextChild !== nextIcon || !currentIcon) return nextChild;
+      retainedChildren.add(currentIcon);
+      this.syncAttributes(currentIcon, nextIcon);
+      if (currentIcon.innerHTML !== nextIcon.innerHTML) currentIcon.replaceChildren(...Array.from(nextIcon.childNodes));
+      return currentIcon;
+    });
+    this.syncAttributes(current, next);
+    this.commitChildrenInPlace(current, desiredChildren, retainedChildren);
+  }
+
+  /** Synchronizes changed attributes without transiently clearing unchanged CSS state. */
+  private syncAttributes(current: HTMLElement, next: HTMLElement): void {
+    for (const attribute of Array.from(current.attributes)) {
+      if (!next.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+    }
+    for (const attribute of Array.from(next.attributes)) {
+      if (current.getAttribute(attribute.name) !== attribute.value) current.setAttribute(attribute.name, attribute.value);
+    }
+  }
+
+  /** Commits desired children while leaving retained mounted nodes connected when order permits. */
+  private commitChildrenInPlace(container: HTMLElement, desiredChildren: ChildNode[], retainedChildren: Set<ChildNode>): void {
+    for (const child of Array.from(container.childNodes)) {
+      if (!retainedChildren.has(child)) child.remove();
+    }
+    let cursor = container.firstChild;
+    for (const child of desiredChildren) {
+      if (child === cursor) {
+        cursor = cursor.nextSibling;
+        continue;
+      }
+      container.insertBefore(child, cursor);
+    }
   }
 
   /** Reconciles the pre-assistant working metadata placeholder without restarting its indicator. */
@@ -573,10 +688,10 @@ export class TimelineRenderer {
   }
 
   /** Removes disclosure state owned by timeline content that is no longer mounted. */
-  private forgetDisclosureState(container: HTMLElement): void {
-    if (container.dataset.disclosureKey) this.openDisclosures.delete(container.dataset.disclosureKey);
+  private forgetDisclosureState(container: HTMLElement, retainedKeys = new Set<string>()): void {
+    if (container.dataset.disclosureKey && !retainedKeys.has(container.dataset.disclosureKey)) this.openDisclosures.delete(container.dataset.disclosureKey);
     for (const details of Array.from(container.querySelectorAll<HTMLElement>("[data-disclosure-key]"))) {
-      if (details.dataset.disclosureKey) this.openDisclosures.delete(details.dataset.disclosureKey);
+      if (details.dataset.disclosureKey && !retainedKeys.has(details.dataset.disclosureKey)) this.openDisclosures.delete(details.dataset.disclosureKey);
     }
   }
 
@@ -720,11 +835,4 @@ export class TimelineRenderer {
   private markdownSourcePath(): string {
     return `opencode-session/${this.deps.model.sessionId ?? "session"}.md`;
   }
-}
-
-/** Hashes JSON render state into a short stable DOM attribute value. */
-function hashRenderState(value: string): string {
-  let hash = 5381;
-  for (let index = 0; index < value.length; index += 1) hash = ((hash << 5) + hash) ^ value.charCodeAt(index);
-  return (hash >>> 0).toString(36);
 }

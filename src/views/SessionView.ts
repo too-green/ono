@@ -105,6 +105,7 @@ export class SessionView extends ItemView {
       requestShellRender: async () => {
         if (this.model.currentSession) await this.renderSession(this.model.currentSession, this.model.loadedMessages, { initialLoad: false });
       },
+      cancelStreamingMarkdownPatch: (key) => this.markdownPatcher.cancel(key),
       captureFollowLatest: () => this.scroll.captureFollowLatest(),
       restoreFollowLatest: (anchor) => this.scroll.restoreFollowLatest(anchor),
       updateJumpButton: () => this.scroll.updateJumpButton(),
@@ -199,6 +200,7 @@ export class SessionView extends ItemView {
       scrollToBottom: (smooth) => this.scroll.scrollToBottom(smooth),
       // Shell orchestration
       isSessionMuted: () => this.isSessionMuted(),
+      getMuteToggleTitle: () => this.muteToggleTitle(),
       onToggleMute: () => void this.toggleMute(),
       onToggleAutoApprove: () => void this.toggleAutoApprove(),
       requestDraftPromotion: (sessionId, sessionTitle) => this.promoteDraftView(sessionId, sessionTitle),
@@ -254,7 +256,7 @@ export class SessionView extends ItemView {
     menu.addItem((item) => item.setTitle("Fork this session").setIcon("git-fork").onClick(() => void this.forkCurrentSession()));
     menu.addItem((item) =>
       item
-        .setTitle(`${this.isSessionMuted() ? "Unmute" : "Mute"}${qualifier}`)
+        .setTitle(this.isSubagentSession() ? this.muteToggleTitle() : `${this.isSessionMuted() ? "Unmute" : "Mute"}${qualifier}`)
         .setIcon(this.isSessionMuted() ? "bell" : "bell-off")
         .onClick(() => void this.toggleMute()),
     );
@@ -747,7 +749,8 @@ export class SessionView extends ItemView {
       const session = await this.plugin.requireOpenCodeService().getSession(sessionId);
       if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
       this.applyCanonicalSession(session);
-      await this.renderSession(session, this.model.loadedMessages, { initialLoad: false });
+      this.docks.refresh();
+      await this.timeline.reconcileAppendOnly(this.model.loadedMessages);
       if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
       await this.scroll.restorePrependAnchor(anchor);
     } catch (error) {
@@ -851,7 +854,7 @@ export class SessionView extends ItemView {
   private async toggleMute(): Promise<void> {
     const key = this.model.composerStorageKey;
     if (!key) return;
-    await this.plugin.rememberSessionMute(key, !this.isSessionMuted());
+    await this.plugin.rememberSessionMute(key, !this.isSessionMuted(), this.isSubagentSession());
     await this.composer.refresh();
     this.island.refreshChrome();
   }
@@ -1078,7 +1081,26 @@ export class SessionView extends ItemView {
   /** Returns true when the current session/draft is locally muted. */
   private isSessionMuted(): boolean {
     const key = this.model.composerStorageKey;
-    return !!key && this.plugin.settings.sessionMute[key] === true;
+    if (!key) return false;
+    if (this.model.currentSession && this.model.sessionId === key) {
+      return this.plugin.getSessionNotificationState(this.model.currentSession as OpenCodeSession).muted;
+    }
+    return this.plugin.settings.sessionMute[key] === true;
+  }
+
+  /** Returns whether the bound server session is a child/subagent session. */
+  private isSubagentSession(): boolean {
+    return !!this.model.currentSession && !!jsonHelpers.readString(this.model.currentSession, ["parentID", "parentId"]);
+  }
+
+  /** Labels the mute action according to the root-enabled/subagent-muted default policy. */
+  private muteToggleTitle(): string {
+    if (this.isSubagentSession()) {
+      return this.isSessionMuted()
+        ? "Enable completion and error notifications for this subagent"
+        : "Disable completion and error notifications for this subagent";
+    }
+    return this.isSessionMuted() ? "Unmute notifications for this session" : "Mute notifications for this session";
   }
 
   /** Promotes this Obsidian draft leaf to a normal server-backed session leaf. */
@@ -1128,11 +1150,17 @@ export class SessionView extends ItemView {
   /** Requests Obsidian to re-read getDisplayText after the async session title loads. */
   private refreshLeafTitle(): void {
     const title = this.getDisplayText();
+    const leafEl = this.containerEl.closest(".workspace-leaf");
+    const currentTitleEl = leafEl?.querySelector<HTMLElement>(".view-header-title");
+    if (currentTitleEl?.querySelector(".view-header-title-input")) {
+      this.decorateSessionHeader();
+      return;
+    }
     const leaf = this.leaf as WorkspaceLeaf & { updateHeader?: () => void };
     const parent = this.leaf.parent as unknown as { updateHeader?: () => void };
     leaf.updateHeader?.();
     parent.updateHeader?.();
-    this.containerEl.closest(".workspace-leaf")?.querySelector(".view-header-title")?.replaceChildren(title);
+    leafEl?.querySelector(".view-header-title")?.replaceChildren(title);
     this.app.workspace.trigger("layout-change");
     this.decorateSessionHeader();
     this.bindNativeTitleRename();
@@ -1193,7 +1221,7 @@ export class SessionView extends ItemView {
         void finish(false);
       }
     });
-    input.addEventListener("blur", () => void finish(true));
+    input.addEventListener("blur", () => void finish(input.isConnected));
   }
 
   /** Applies the current status to native tab and view-header icons. */

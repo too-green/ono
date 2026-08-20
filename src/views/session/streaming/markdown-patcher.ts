@@ -41,6 +41,15 @@ export class MarkdownPatcher {
     });
   }
 
+  /** Cancels queued or in-flight work before canonical reconciliation patches the same target. */
+  cancel(key: string): void {
+    const patch = this.patches.get(key);
+    if (!patch) return;
+    if (patch.frame !== undefined) window.cancelAnimationFrame(patch.frame);
+    patch.pending = false;
+    this.patches.delete(key);
+  }
+
   /** Finds the mounted DOM node that owns a streamed text or reasoning part. */
   findPartTarget(messageId: string, partId: string, type: string): HTMLElement | undefined {
     const row = this.deps.contentEl.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(messageId)}"]`);

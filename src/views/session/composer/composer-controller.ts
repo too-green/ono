@@ -75,6 +75,8 @@ export interface ComposerDeps {
   // ---- Shell orchestration ----
   /** Whether the mute toggle pill should render active. */
   isSessionMuted: () => boolean;
+  /** User-facing action label that distinguishes default-muted subagents. */
+  getMuteToggleTitle: () => string;
   /** Toggle-notification click handler; shell updates settings then calls `refresh()`. */
   onToggleMute: () => void;
   /** Auto-approve toggle click handler; shell updates settings + clears docks then calls `refresh()`. */
@@ -160,7 +162,14 @@ export class ComposerController {
 
     const right = controls.createDiv({ cls: "opencode-session-view__composer-right" });
     this.renderQueuedBadge(right);
-    this.renderTogglePill(right, "", this.deps.isSessionMuted() ? "bell-off" : "bell", this.deps.isSessionMuted(), () => this.deps.onToggleMute(), "Mute notifications for this session");
+    this.renderTogglePill(
+      right,
+      "",
+      this.deps.isSessionMuted() ? "bell-off" : "bell",
+      this.deps.isSessionMuted(),
+      () => this.deps.onToggleMute(),
+      this.deps.getMuteToggleTitle(),
+    );
     const inheritedAutoApprove = this.deps.isAutoApproveInherited();
     const autoApproveTitle = inheritedAutoApprove ? "Auto-allow permission requests once (inherited from an ancestor session)" : "Auto-allow permission requests once";
     const autoApprove = this.renderTogglePill(right, "", "shield-alert", this.deps.shouldAutoApprove(), () => this.deps.onToggleAutoApprove(), autoApproveTitle);

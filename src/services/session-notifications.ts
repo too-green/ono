@@ -20,9 +20,10 @@ type NotificationRendererWindow = Window & { Notification?: typeof Notification 
 
 export interface SessionNotificationServiceDeps {
   getPreferences(): SessionNotificationPreferences;
-  isSessionMuted(sessionId: string): boolean;
+  isSessionMuted(session: OpenCodeSession): boolean;
   isSessionVisible(sessionId: string): boolean;
   getSession(sessionId: string, directory?: string): Promise<OpenCodeSession>;
+  getSessionLineage(sessionId: string, directory?: string): Promise<OpenCodeSession[]>;
   openSession(sessionId: string, title?: string): Promise<void>;
   getNotificationWindow?(): Window | undefined;
   getNotificationApi?(): typeof Notification | undefined;
@@ -212,20 +213,33 @@ export class SessionNotificationService {
     void this.show(content).catch((error) => console.warn("[opencode-plugin:notifications] delivery failed", error));
   }
 
-  /** Resolves the canonical session title, then rechecks visibility before delivering. */
+  /** Resolves the owner or nearest enabled ancestor, then rechecks all delivery gates. */
   private async show(content: NotificationContent): Promise<void> {
-    if (!this.shouldDeliver(content)) return;
-    const session = await this.deps.getSession(content.sessionId, content.directory).catch(() => undefined);
-    if (!session || !this.shouldDeliver(content)) return;
-    const title = session.title?.trim() || content.sessionId;
-    this.deliver(content, title, () => {
-      void this.deps.openSession(content.sessionId, title);
+    if (!this.shouldPrepare(content) || this.deps.isSessionVisible(content.sessionId)) return;
+    const lineage = content.kind === "attention"
+      ? await this.deps.getSessionLineage(content.sessionId, content.directory).catch(() => [])
+      : await this.deps.getSession(content.sessionId, content.directory).then((session) => [session]).catch(() => []);
+    if (lineage.length === 0 || !this.shouldPrepare(content)) return;
+
+    const target = content.kind === "attention"
+      ? lineage.find((session) => !this.deps.isSessionMuted(session))
+      : this.deps.isSessionMuted(lineage[0]!) ? undefined : lineage[0];
+    if (!target) return;
+    const visibleSessions = content.kind === "attention" ? lineage : [target];
+    if (visibleSessions.some((session) => this.deps.isSessionVisible(session.id))) return;
+
+    const owner = lineage[0]!;
+    const ownerTitle = owner.title?.trim() || owner.id;
+    const title = target.title?.trim() || target.id;
+    const deliveryContent = target.id === owner.id ? content : { ...content, body: `${ownerTitle}: ${content.body}` };
+    this.deliver(deliveryContent, title, () => {
+      void this.deps.openSession(target.id, title);
     });
   }
 
-  /** Applies user preferences, per-session muting, request settlement, and current view visibility. */
-  private shouldDeliver(content: NotificationContent): boolean {
-    if (this.disposed || this.deps.isSessionMuted(content.sessionId) || this.deps.isSessionVisible(content.sessionId)) return false;
+  /** Applies global preferences and request settlement before and after asynchronous preparation. */
+  private shouldPrepare(content: NotificationContent): boolean {
+    if (this.disposed) return false;
     if (content.requestId && this.settledRequestIds.has(content.requestId)) return false;
     const preferences = this.deps.getPreferences();
     if (preferences.mode === "none") return false;

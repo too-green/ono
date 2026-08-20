@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { PermissionCoordinator } from "./permission-coordinator";
+import { SessionHierarchy } from "./session-hierarchy";
 
 /** Builds an observable coordinator around a mutable explicit-policy map. */
 function setup(settings: Record<string, boolean> = {}) {
@@ -11,9 +12,11 @@ function setup(settings: Record<string, boolean> = {}) {
   const onSurface = vi.fn();
   const onSettled = vi.fn();
   const onError = vi.fn();
+  const hierarchy = new SessionHierarchy({ getSession });
   const coordinator = new PermissionCoordinator({
     getSettings: () => settings,
-    getService: () => ({ replyPermission, getSession }) as never,
+    getService: () => ({ replyPermission }) as never,
+    hierarchy,
     onSurface,
     onSettled,
     onRespondingChanged: vi.fn(),

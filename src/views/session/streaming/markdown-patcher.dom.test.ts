@@ -147,4 +147,35 @@ describe("MarkdownPatcher", () => {
     await vi.waitFor(() => expect(frames.size).toBe(0));
     expect(target.textContent).toBe("");
   });
+
+  it("cancels a stale part patch before canonical reconciliation commits", async () => {
+    const { patcher, target } = setup();
+    let releaseRender: (() => void) | undefined;
+    vi.spyOn(MarkdownRenderer, "renderMarkdown").mockImplementationOnce(async (_markdown, container) => {
+      await new Promise<void>((resolve) => { releaseRender = resolve; });
+      container.textContent = "stale";
+    });
+    patcher.queue("message:part:text", target, "stale");
+    runNextFrame();
+    await vi.waitFor(() => expect(releaseRender).toBeTypeOf("function"));
+
+    patcher.cancel("message:part:text");
+    target.textContent = "canonical";
+    releaseRender?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(target.textContent).toBe("canonical");
+  });
+
+  it("cancels a queued part patch before its animation frame", () => {
+    const { patcher, target } = setup();
+    patcher.queue("message:part:text", target, "stale");
+
+    patcher.cancel("message:part:text");
+
+    expect(cancelFrame).toHaveBeenCalledWith(1);
+    expect(frames.size).toBe(0);
+    expect(target.textContent).toBe("");
+  });
 });

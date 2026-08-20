@@ -33,6 +33,22 @@ function bundle(id: string, role: string, created: number, parts: JsonObject[], 
   return { info: { id, role, time: { created }, ...extraInfo }, parts };
 }
 
+/** Records nodes transiently removed beneath a container during DOM reconciliation. */
+function recordRemovedNodes(container: Node): { removedNodes: Node[]; finish: () => void } {
+  const removedNodes: Node[] = [];
+  const observer = new MutationObserver((records) => {
+    for (const record of records) removedNodes.push(...Array.from(record.removedNodes));
+  });
+  observer.observe(container, { childList: true, subtree: true });
+  return {
+    removedNodes,
+    finish: () => {
+      for (const record of observer.takeRecords()) removedNodes.push(...Array.from(record.removedNodes));
+      observer.disconnect();
+    },
+  };
+}
+
 describe("TimelineRenderer DOM", () => {
   beforeEach(() => {
     installObsidianDomMethods();
@@ -71,6 +87,7 @@ describe("TimelineRenderer DOM", () => {
       isCurrentBinding: (sessionId: string, version: number) => model.sessionId === sessionId && bindingVersion === version,
       getRevertMessageId: () => revertMessageId,
       requestShellRender: vi.fn(async () => undefined),
+      cancelStreamingMarkdownPatch: vi.fn(),
       captureFollowLatest: vi.fn(() => undefined as { generation: number; scrollTop: number; explicit: boolean } | undefined),
       restoreFollowLatest: vi.fn(() => false),
       updateJumpButton: vi.fn(),
@@ -192,18 +209,24 @@ describe("TimelineRenderer DOM", () => {
     model.activeTurnStartedAt = 1_000;
     await renderer.renderInto(timeline, model.loadedMessages);
     const row = timeline.querySelector<HTMLElement>('[data-message-id="a1"]')!;
+    const meta = row.querySelector<HTMLElement>(".opencode-session-view__message-meta--working")!;
     const indicator = row.querySelector<HTMLElement>(".opencode-session-view__message-working-indicator")!;
+    const removals = recordRemovedNodes(row);
 
     assistant.parts[0].text = "second";
     await renderer.renderStreaming();
+    removals.finish();
 
     expect(timeline.querySelector('[data-message-id="a1"]')).toBe(row);
+    expect(row.querySelector(".opencode-session-view__message-meta--working")).toBe(meta);
     expect(row.querySelector(".opencode-session-view__message-working-indicator")).toBe(indicator);
+    expect(removals.removedNodes).not.toContain(meta);
+    expect(removals.removedNodes).not.toContain(indicator);
     expect(row.querySelector(".opencode-session-view__assistant-markdown")?.textContent).toBe("second");
   });
 
   it("preserves expanded disclosures and unchanged tool blocks across streamed updates", async () => {
-    const { contentEl, model, renderer } = setup();
+    const { contentEl, model, deps, renderer } = setup();
     const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
     const assistant = bundle("a1", "assistant", 2_000, [
       { id: "r1", messageID: "a1", type: "reasoning", text: "thinking", time: {} },
@@ -213,18 +236,86 @@ describe("TimelineRenderer DOM", () => {
     model.sessionBusy = true;
     await renderer.renderInto(timeline, model.loadedMessages);
     const reasoning = timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__reasoning")!;
+    const reasoningSummary = reasoning.querySelector<HTMLElement>(".opencode-session-view__reasoning-summary")!;
+    const reasoningIcon = reasoning.querySelector<HTMLElement>(".opencode-session-view__reasoning-icon")!;
+    const reasoningBody = reasoning.querySelector<HTMLElement>(".opencode-session-view__reasoning-body")!;
     const tool = timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__tool")!;
+    const row = timeline.querySelector<HTMLElement>('[data-message-id="a1"]')!;
     reasoning.open = true;
     reasoning.dispatchEvent(new Event("toggle"));
     tool.open = true;
     tool.dispatchEvent(new Event("toggle"));
+    const removals = recordRemovedNodes(row);
 
     assistant.parts[0].text = "still thinking";
     await renderer.renderStreaming();
+    removals.finish();
 
-    expect(timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__reasoning")?.open).toBe(true);
+    expect(timeline.querySelector(".opencode-session-view__reasoning")).toBe(reasoning);
+    expect(reasoning.querySelector(".opencode-session-view__reasoning-summary")).toBe(reasoningSummary);
+    expect(reasoning.querySelector(".opencode-session-view__reasoning-icon")).toBe(reasoningIcon);
+    expect(reasoning.querySelector(".opencode-session-view__reasoning-body")).toBe(reasoningBody);
+    expect(reasoning.open).toBe(true);
+    expect(removals.removedNodes).not.toContain(reasoning);
+    expect(deps.cancelStreamingMarkdownPatch).toHaveBeenCalledWith("a1:r1:text");
     expect(timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__tool")).toBe(tool);
+    expect(removals.removedNodes).not.toContain(tool);
     expect(tool.open).toBe(true);
+  });
+
+  it("completes reasoning without remounting its disclosure, icon, or body", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const assistant = bundle("a1", "assistant", 2_000, [
+      { id: "r1", messageID: "a1", type: "reasoning", text: "thinking", time: {} },
+    ]);
+    model.loadedMessages = [assistant];
+    model.sessionBusy = true;
+    await renderer.renderInto(timeline, model.loadedMessages);
+    const reasoning = timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__reasoning")!;
+    const summary = reasoning.querySelector<HTMLElement>(".opencode-session-view__reasoning-summary")!;
+    const icon = reasoning.querySelector<HTMLElement>(".opencode-session-view__reasoning-icon")!;
+    const body = reasoning.querySelector<HTMLElement>(".opencode-session-view__reasoning-body")!;
+
+    assistant.parts[0].time = { end: 3_000 };
+    await renderer.renderStreaming();
+
+    expect(timeline.querySelector(".opencode-session-view__reasoning")).toBe(reasoning);
+    expect(reasoning.querySelector(".opencode-session-view__reasoning-summary")).toBe(summary);
+    expect(reasoning.querySelector(".opencode-session-view__reasoning-icon")).toBe(icon);
+    expect(reasoning.querySelector(".opencode-session-view__reasoning-body")).toBe(body);
+    expect(reasoning.classList).toContain("opencode-session-view__reasoning--complete");
+    expect(summary.textContent).toContain("Thought");
+  });
+
+  it("completes a tool without remounting its disclosure or animated icon", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const assistant = bundle("a1", "assistant", 2_000, [
+      { id: "t1", messageID: "a1", type: "tool", tool: "bash", state: { status: "running", input: { command: "pwd" } } },
+    ]);
+    model.loadedMessages = [assistant];
+    model.sessionBusy = true;
+    await renderer.renderInto(timeline, model.loadedMessages);
+    const tool = timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__tool")!;
+    const summary = tool.querySelector<HTMLElement>(".opencode-session-view__tool-summary")!;
+    const icon = tool.querySelector<HTMLElement>(".opencode-session-view__tool-icon")!;
+    tool.open = true;
+    tool.dispatchEvent(new Event("toggle"));
+    await vi.waitFor(() => expect(tool.querySelector(".opencode-session-view__raw-toggle")).not.toBeNull());
+    tool.querySelector<HTMLButtonElement>(".opencode-session-view__raw-toggle")!.click();
+    await vi.waitFor(() => expect(tool.dataset.toolRaw).toBe("true"));
+
+    assistant.parts[0].state = { status: "completed", input: { command: "pwd" }, output: "/workspace" };
+    await renderer.renderStreaming();
+
+    expect(timeline.querySelector(".opencode-session-view__tool")).toBe(tool);
+    expect(tool.querySelector(".opencode-session-view__tool-summary")).toBe(summary);
+    expect(tool.querySelector(".opencode-session-view__tool-icon")).toBe(icon);
+    expect(tool.classList).toContain("opencode-session-view__tool--completed");
+    expect(tool.open).toBe(true);
+    await vi.waitFor(() => expect(tool.querySelector(".opencode-session-view__raw-toggle")?.textContent).toBe("Show formatted"));
+    expect(tool.querySelector(".opencode-session-view__tool-body-content")?.textContent).toContain("/workspace");
   });
 
   it("reconciles a streaming timeline in place and preserves follow-latest behavior", async () => {

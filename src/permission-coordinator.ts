@@ -1,8 +1,9 @@
 import type { OpenCodeService } from "./services/opencode-service";
 import type { OpenCodePermissionRequest, OpenCodeSession } from "./services/opencode-types";
 import { resolveSessionAutoApprove, type SessionAutoApproveState } from "./session-auto-approve";
+import type { SessionHierarchy } from "./session-hierarchy";
 
-type PermissionService = Pick<OpenCodeService, "getSession" | "replyPermission">;
+type PermissionService = Pick<OpenCodeService, "replyPermission">;
 type PendingPermissionState = "evaluating" | "surfaced" | "responding";
 
 interface PendingPermission {
@@ -14,6 +15,7 @@ interface PendingPermission {
 export interface PermissionCoordinatorDeps {
   getSettings: () => Readonly<Record<string, boolean>>;
   getService: () => PermissionService;
+  hierarchy: SessionHierarchy;
   onSurface: (request: OpenCodePermissionRequest, directory?: string) => void;
   onSettled: (requestId: string) => void;
   onRespondingChanged: () => void;
@@ -24,8 +26,6 @@ const SETTLED_REQUEST_LIMIT = 1_000;
 
 /** Owns inherited auto-approve resolution and single-shot permission replies across duplicate streams. */
 export class PermissionCoordinator {
-  private readonly parentBySessionId = new Map<string, string | undefined>();
-  private readonly directoryBySessionId = new Map<string, string | undefined>();
   private readonly pendingByRequestId = new Map<string, PendingPermission>();
   private readonly respondingRequestIds = new Set<string>();
   private readonly settledRequestIds = new Set<string>();
@@ -34,27 +34,13 @@ export class PermissionCoordinator {
 
   /** Caches session parent and directory metadata; authoritative snapshots can remove stale parents. */
   cacheSessionHierarchy(sessions: OpenCodeSession[], authoritative = false): void {
-    for (const session of sessions) {
-      if (!session?.id) continue;
-      const parentId = typeof session.parentID === "string"
-        ? session.parentID
-        : typeof session.parentId === "string"
-          ? session.parentId
-          : undefined;
-      const directory = typeof session.directory === "string"
-        ? session.directory
-        : typeof session.cwd === "string"
-          ? session.cwd
-          : undefined;
-      if (authoritative || parentId !== undefined || !this.parentBySessionId.has(session.id)) this.parentBySessionId.set(session.id, parentId);
-      if (directory !== undefined || !this.directoryBySessionId.has(session.id)) this.directoryBySessionId.set(session.id, directory);
-    }
+    this.deps.hierarchy.cache(sessions, authoritative);
   }
 
   /** Returns the effective policy from currently cached ancestry. */
   getState(sessionId: string | undefined): SessionAutoApproveState {
     if (!sessionId) return { enabled: false, inherited: false };
-    return resolveSessionAutoApprove(this.deps.getSettings(), sessionId, this.parentBySessionId);
+    return resolveSessionAutoApprove(this.deps.getSettings(), sessionId, this.deps.hierarchy.parents);
   }
 
   /** Fetches missing ancestors before returning the effective policy, failing closed. */
@@ -65,15 +51,14 @@ export class PermissionCoordinator {
     while (current && !visited.has(current)) {
       visited.add(current);
       if (Object.prototype.hasOwnProperty.call(this.deps.getSettings(), current)) break;
-      if (!this.parentBySessionId.has(current)) {
+      if (!this.deps.hierarchy.hasParent(current)) {
         try {
-          const session = await this.deps.getService().getSession(current, this.directoryBySessionId.get(current) ?? directory);
-          this.cacheSessionHierarchy([session], true);
+          await this.deps.hierarchy.getSession(current, this.deps.hierarchy.directory(current) ?? directory);
         } catch {
           return { enabled: false, inherited: false };
         }
       }
-      current = this.parentBySessionId.get(current);
+      current = this.deps.hierarchy.parentId(current);
     }
     return this.getState(sessionId);
   }
@@ -81,7 +66,7 @@ export class PermissionCoordinator {
   /** Computes the explicit value needed to invert a session's effective policy. */
   async overrideForToggle(sessionId: string, directory?: string): Promise<boolean | undefined> {
     const current = await this.hydrateState(sessionId, directory);
-    const parentId = this.parentBySessionId.get(sessionId);
+    const parentId = this.deps.hierarchy.parentId(sessionId);
     const inherited = parentId ? await this.hydrateState(parentId, directory) : { enabled: false };
     const enabled = !current.enabled;
     return enabled === inherited.enabled ? undefined : enabled;
@@ -149,13 +134,13 @@ export class PermissionCoordinator {
     const pending = this.pendingByRequestId.get(requestId);
     if (!pending || pending.state === "responding") return;
     pending.state = "evaluating";
-    const directory = this.directoryBySessionId.get(pending.request.sessionID) ?? pending.directory;
+    const directory = this.deps.hierarchy.directory(pending.request.sessionID) ?? pending.directory;
     const policy = await this.hydrateState(pending.request.sessionID, directory);
     const current = this.pendingByRequestId.get(requestId);
     if (!current || this.settledRequestIds.has(requestId)) return;
     if (!policy.enabled) {
       current.state = "surfaced";
-      this.deps.onSurface(current.request, this.directoryBySessionId.get(current.request.sessionID) ?? current.directory);
+      this.deps.onSurface(current.request, this.deps.hierarchy.directory(current.request.sessionID) ?? current.directory);
       return;
     }
     if (!this.beginResponse(requestId)) {
@@ -164,12 +149,12 @@ export class PermissionCoordinator {
     }
     current.state = "responding";
     try {
-      await this.deps.getService().replyPermission(requestId, "once", this.directoryBySessionId.get(current.request.sessionID) ?? current.directory);
+      await this.deps.getService().replyPermission(requestId, "once", this.deps.hierarchy.directory(current.request.sessionID) ?? current.directory);
       this.settle(requestId);
     } catch (error) {
       current.state = "surfaced";
       this.finishResponse(requestId);
-      this.deps.onSurface(current.request, this.directoryBySessionId.get(current.request.sessionID) ?? current.directory);
+      this.deps.onSurface(current.request, this.deps.hierarchy.directory(current.request.sessionID) ?? current.directory);
       this.deps.onError(error);
     }
   }

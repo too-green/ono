@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { SessionNotificationService, type SessionNotificationPreferences } from "./session-notifications";
+import type { OpenCodeSession } from "./opencode-types";
 
 interface FakeNotificationRecord {
   title: string;
@@ -11,7 +12,14 @@ interface FakeNotificationRecord {
 }
 
 /** Builds an observable notification service around mutable settings and visibility. */
-function setup(options: { permission?: NotificationPermission; visible?: boolean; muted?: boolean } = {}) {
+function setup(options: {
+  permission?: NotificationPermission;
+  visible?: boolean;
+  muted?: boolean;
+  lineage?: OpenCodeSession[];
+  isMuted?: (sessionId: string) => boolean;
+  isVisible?: (sessionId: string) => boolean;
+} = {}) {
   const notifications: FakeNotificationRecord[] = [];
   const focus = vi.fn();
   const requestPermission = vi.fn(async () => "granted" as NotificationPermission);
@@ -41,14 +49,17 @@ function setup(options: { permission?: NotificationPermission; visible?: boolean
   let visible = options.visible ?? false;
   let muted = options.muted ?? false;
   const openSession = vi.fn(async () => undefined);
-  const getSession = vi.fn(async (sessionId: string) => ({ id: sessionId, title: "Refactor parser" }));
+  const getSession = vi.fn(async (sessionId: string) => options.lineage?.find((session) => session.id === sessionId)
+    ?? { id: sessionId, title: "Refactor parser" });
+  const getSessionLineage = vi.fn(async (sessionId: string) => options.lineage ?? [await getSession(sessionId)]);
   const noticeClose = vi.fn();
   const notices: Array<{ message: string; onClick: () => void }> = [];
   const service = new SessionNotificationService({
     getPreferences: () => preferences,
-    isSessionMuted: () => muted,
-    isSessionVisible: () => visible,
+    isSessionMuted: (session) => options.isMuted?.(session.id) ?? muted,
+    isSessionVisible: (sessionId) => options.isVisible?.(sessionId) ?? visible,
     getSession,
+    getSessionLineage,
     openSession,
     getNotificationWindow: () => notificationWindow,
     getNotificationApi: () => FakeNotification as unknown as typeof Notification,
@@ -63,6 +74,7 @@ function setup(options: { permission?: NotificationPermission; visible?: boolean
     notices,
     preferences,
     getSession,
+    getSessionLineage,
     openSession,
     focus,
     requestPermission,
@@ -134,6 +146,123 @@ describe("SessionNotificationService", () => {
     service.notifyQuestion({ id: "question-1", sessionID: "session-1", questions: [] }, "/repo");
     await Promise.resolve();
     expect(notifications).toHaveLength(1);
+  });
+
+  it("routes child attention to the nearest enabled ancestor and opens that session", async () => {
+    const lineage = [
+      { id: "child", title: "Research JWT", parentID: "parent" },
+      { id: "parent", title: "Implement authentication", parentID: "root" },
+      { id: "root", title: "Application work" },
+    ];
+    const { service, notifications, openSession } = setup({
+      lineage,
+      isMuted: (sessionId) => sessionId === "child",
+    });
+
+    service.notifyPermission({ id: "permission-1", sessionID: "child", permission: "bash", patterns: [], metadata: {}, always: [] });
+
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    expect(notifications[0]?.title).toBe("Implement authentication");
+    expect(notifications[0]?.options?.body).toBe("Research JWT: Permission required.");
+    notifications[0]?.onclick?.();
+    expect(openSession).toHaveBeenCalledWith("parent", "Implement authentication");
+  });
+
+  it("walks past muted intermediate subagents to the first enabled ancestor", async () => {
+    const lineage = [
+      { id: "child", title: "Research JWT", parentID: "parent" },
+      { id: "parent", title: "Implement authentication", parentID: "root" },
+      { id: "root", title: "Application work" },
+    ];
+    const { service, notifications, openSession } = setup({
+      lineage,
+      isMuted: (sessionId) => sessionId !== "root",
+    });
+
+    service.notifyQuestion({ id: "question-1", sessionID: "child", questions: [] });
+
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    expect(notifications[0]?.title).toBe("Application work");
+    notifications[0]?.onclick?.();
+    expect(openSession).toHaveBeenCalledWith("root", "Application work");
+  });
+
+  it("lets an explicitly enabled child own its attention notification", async () => {
+    const lineage = [
+      { id: "child", title: "Research JWT", parentID: "root" },
+      { id: "root", title: "Application work" },
+    ];
+    const { service, notifications, openSession } = setup({ lineage, isMuted: (sessionId) => sessionId !== "child" });
+
+    service.notifyQuestion({ id: "question-1", sessionID: "child", questions: [] });
+
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    expect(notifications[0]?.title).toBe("Research JWT");
+    notifications[0]?.onclick?.();
+    expect(openSession).toHaveBeenCalledWith("child", "Research JWT");
+  });
+
+  it("delivers completion events for an explicitly enabled child", async () => {
+    const lineage = [
+      { id: "child", title: "Research JWT", parentID: "root" },
+      { id: "root", title: "Application work" },
+    ];
+    const { service, notifications } = setup({
+      lineage,
+      isMuted: (sessionId) => sessionId !== "child",
+    });
+
+    service.handleSessionEvent({ type: "session.idle", properties: { sessionID: "child" } });
+
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    expect(notifications[0]?.title).toBe("Research JWT");
+    expect(notifications[0]?.options?.body).toBe("Agent turn finished.");
+  });
+
+  it("does not bubble child completion events to an enabled ancestor", async () => {
+    const lineage = [
+      { id: "child", title: "Research JWT", parentID: "root" },
+      { id: "root", title: "Application work" },
+    ];
+    const { service, notifications, getSession } = setup({
+      lineage,
+      isMuted: (sessionId) => sessionId === "child",
+    });
+
+    service.handleSessionEvent({ type: "session.idle", properties: { sessionID: "child" } });
+    await vi.waitFor(() => expect(getSession).toHaveBeenCalledWith("child", undefined));
+
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("suppresses routed attention when any owner or ancestor session is visible", async () => {
+    const lineage = [
+      { id: "child", title: "Research JWT", parentID: "root" },
+      { id: "root", title: "Application work" },
+    ];
+    const { service, notifications, getSessionLineage } = setup({
+      lineage,
+      isMuted: (sessionId) => sessionId === "child",
+      isVisible: (sessionId) => sessionId === "root",
+    });
+
+    service.notifyQuestion({ id: "question-1", sessionID: "child", questions: [] });
+    await vi.waitFor(() => expect(getSessionLineage).toHaveBeenCalledWith("child", undefined));
+
+    expect(notifications).toHaveLength(0);
+  });
+
+  it("suppresses routed attention when every session in the lineage is muted", async () => {
+    const lineage = [
+      { id: "child", title: "Research JWT", parentID: "root" },
+      { id: "root", title: "Application work" },
+    ];
+    const { service, notifications, getSessionLineage } = setup({ lineage, isMuted: () => true });
+
+    service.notifyPermission({ id: "permission-1", sessionID: "child", permission: "bash", patterns: [], metadata: {}, always: [] });
+    await vi.waitFor(() => expect(getSessionLineage).toHaveBeenCalledWith("child", undefined));
+
+    expect(notifications).toHaveLength(0);
   });
 
   it("cancels a pending request notification when the request settles during lookup", async () => {

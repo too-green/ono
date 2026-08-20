@@ -134,4 +134,32 @@ describe("RequestDocksController descendant routing", () => {
     expect(service.replyPermission).not.toHaveBeenCalled();
     expect(plugin.beginSessionRequestResponse).not.toHaveBeenCalled();
   });
+
+  it("preserves question input state and focus across canonical refreshes", () => {
+    const { controller, container } = setup();
+    controller.ingestQuestionAsked({
+      id: "question-parent",
+      sessionID: "parent",
+      questions: [{
+        header: "Choice",
+        question: "How should this continue?",
+        multiple: true,
+        custom: true,
+        options: [{ label: "Carefully", description: "Keep state" }],
+      }],
+    });
+    const dock = container.querySelector<HTMLElement>('[data-request-key="question:question-parent"]')!;
+    const option = dock.querySelector<HTMLInputElement>(".opencode-session-view__question-option input")!;
+    const custom = dock.querySelector<HTMLInputElement>(".opencode-session-view__question-custom")!;
+    option.checked = true;
+    custom.value = "Preserve this draft";
+    custom.focus();
+
+    controller.refresh();
+
+    expect(container.querySelector('[data-request-key="question:question-parent"]')).toBe(dock);
+    expect(option.checked).toBe(true);
+    expect(custom.value).toBe("Preserve this draft");
+    expect(document.activeElement).toBe(custom);
+  });
 });

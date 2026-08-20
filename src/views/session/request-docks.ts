@@ -1,5 +1,6 @@
 import { Notice, setIcon } from "obsidian";
 import type OpenCodePlugin from "../../../main";
+import { hashRenderState } from "./render-signature";
 import type { SessionViewModel } from "./session-view-model";
 import type { OpenCodePermissionReply, OpenCodePermissionRequest, OpenCodeQuestionAnswer, OpenCodeQuestionRequest } from "../../services/opencode-types";
 
@@ -119,8 +120,9 @@ export class RequestDocksController {
   /** Re-renders the dock DOM and emits `onChanged` so the shell refreshes composer + indicator + scroll. */
   refresh(): void {
     if (this.requestDockEl?.isConnected) {
-      this.requestDockEl.empty();
-      this.renderRequestDocks(this.requestDockEl);
+      const next = document.createElement("div");
+      this.renderRequestDocks(next);
+      this.reconcileRequestDocks(this.requestDockEl, next);
     }
     this.deps.onChanged();
   }
@@ -201,6 +203,58 @@ export class RequestDocksController {
     for (const request of this.requestsInDisplayOrder(model.pendingQuestions)) this.renderQuestionDock(container, request);
   }
 
+  /** Reconciles request roots by id while retaining unchanged form controls and their browser state. */
+  private reconcileRequestDocks(current: HTMLElement, next: HTMLElement): void {
+    current.toggleClass("is-empty", next.classList.contains("is-empty"));
+    const currentDocks = new Map(
+      Array.from(current.children)
+        .filter((child): child is HTMLElement => child instanceof HTMLElement && !!child.dataset.requestKey)
+        .map((dock) => [dock.dataset.requestKey!, dock]),
+    );
+    const desired = Array.from(next.children, (nextDock) => {
+      if (!(nextDock instanceof HTMLElement) || !nextDock.dataset.requestKey) return nextDock;
+      const currentDock = currentDocks.get(nextDock.dataset.requestKey);
+      if (!currentDock || currentDock.dataset.requestSignature !== nextDock.dataset.requestSignature) return nextDock;
+      currentDocks.delete(nextDock.dataset.requestKey);
+      this.syncRequestButtonState(currentDock, nextDock);
+      return currentDock;
+    });
+    const retained = new Set(desired.filter((dock) => dock.parentElement === current));
+    for (const dock of Array.from(current.children)) {
+      if (!retained.has(dock)) dock.remove();
+    }
+    let cursor = current.firstElementChild;
+    for (const dock of desired) {
+      if (dock === cursor) {
+        cursor = cursor.nextElementSibling;
+        continue;
+      }
+      current.insertBefore(dock, cursor);
+    }
+  }
+
+  /** Updates responding button state without replacing a retained request form. */
+  private syncRequestButtonState(current: HTMLElement, next: HTMLElement): void {
+    const currentButtons = current.querySelectorAll<HTMLButtonElement>(".opencode-session-view__request-actions > button");
+    const nextButtons = next.querySelectorAll<HTMLButtonElement>(".opencode-session-view__request-actions > button");
+    for (let index = 0; index < currentButtons.length; index += 1) {
+      const nextButton = nextButtons.item(index);
+      if (nextButton) currentButtons.item(index).disabled = nextButton.disabled;
+    }
+  }
+
+  /** Assigns stable request identity and a render signature excluding transient form state. */
+  private annotateRequestDock(dock: HTMLElement, kind: "permission" | "question", request: OpenCodePermissionRequest | OpenCodeQuestionRequest): void {
+    dock.dataset.requestKey = `${kind}:${request.id}`;
+    const ownerTitle = request.sessionID === this.deps.model.sessionId
+      ? undefined
+      : this.deps.model.descendantSessions.get(request.sessionID)?.title;
+    const visibleState = kind === "permission"
+      ? [(request as OpenCodePermissionRequest).permission, (request as OpenCodePermissionRequest).patterns]
+      : (request as OpenCodeQuestionRequest).questions;
+    dock.dataset.requestSignature = hashRenderState(JSON.stringify([kind, request.sessionID, visibleState, ownerTitle]));
+  }
+
   /** Excludes centrally evaluating, auto-responding, and stale settled permission snapshots. */
   private visiblePermissions(): OpenCodePermissionRequest[] {
     return this.deps.model.pendingPermissions.filter((request) => !this.deps.plugin.shouldSuppressPermissionRequest(request.id));
@@ -215,6 +269,7 @@ export class RequestDocksController {
   /** Renders one permission decision prompt with deny, always, and once actions. */
   private renderPermissionDock(container: HTMLElement, request: OpenCodePermissionRequest): void {
     const dock = container.createDiv({ cls: "opencode-session-view__request-dock opencode-session-view__request-dock--permission" });
+    this.annotateRequestDock(dock, "permission", request);
     const header = dock.createDiv({ cls: "opencode-session-view__request-header" });
     const title = header.createDiv({ cls: "opencode-session-view__request-title" });
     title.createSpan({ text: "Permission required" });
@@ -235,6 +290,7 @@ export class RequestDocksController {
   /** Renders one question request, supporting single-select, multi-select, and custom answers. */
   private renderQuestionDock(container: HTMLElement, request: OpenCodeQuestionRequest): void {
     const dock = container.createDiv({ cls: "opencode-session-view__request-dock opencode-session-view__request-dock--question" });
+    this.annotateRequestDock(dock, "question", request);
     const header = dock.createDiv({ cls: "opencode-session-view__request-header" });
     header.createDiv({ text: "Question from OpenCode", cls: "opencode-session-view__request-title" });
     this.renderRequestOwner(header, request.sessionID);

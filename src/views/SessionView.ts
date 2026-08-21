@@ -63,6 +63,7 @@ export class SessionView extends ItemView {
   private canonicalRequestVersion = 0;
   private loadingSessionId?: string;
   private nativeTitleEl?: HTMLElement;
+  private tabGroupParent: WorkspaceLeaf["parent"];
   private descendantChildrenCache = new Map<string, OpenCodeSession[]>();
   private descendantDiscoveryIncomplete = false;
   private descendantDiscoveryRetryDelay = 1_000;
@@ -72,12 +73,16 @@ export class SessionView extends ItemView {
     private readonly plugin: OpenCodePlugin,
   ) {
     super(leaf);
+    this.tabGroupParent = leaf.parent;
     this.scroll = new ScrollController({
       plugin: this.plugin,
       contentEl: this.contentEl,
       model: this.model,
       register: this.makeRegistrar(),
+      relocationRootEl: this.app.workspace.containerEl,
+      relocationContainerEl: this.containerEl,
       isActive: () => this.app.workspace.activeLeaf === this.leaf,
+      consumeTabGroupRelocation: () => this.consumeTabGroupRelocation(),
       onNearTop: () => {
         void this.loadOlderMessages();
       },
@@ -326,9 +331,10 @@ export class SessionView extends ItemView {
   async onOpen(): Promise<void> {
     this.contentEl.addClass("opencode-session-view");
     this.containerEl.addClass("opencode-session-view-container");
+    this.scroll.observeTabGroupRelocations();
     this.syncReadableLineLength();
     this.registerDomEvent(window, "keydown", this.handleNativeSessionHotkeys, { capture: true });
-    this.registerEvent(this.app.workspace.on("layout-change", () => this.syncReadableLineLength()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.handleWorkspaceLayoutChange()));
     this.registerEvent(this.app.workspace.on("css-change", () => this.syncReadableLineLength()));
     // Body-attached popovers (slash menu, model menu) survive tab switches because they live outside `contentEl`.
     // Hide them when this leaf loses focus so they don't float over a different session's view.
@@ -371,6 +377,20 @@ export class SessionView extends ItemView {
     // Obsidian does not expose this editor toggle in its public API, so mirror the same config used by MarkdownView.
     const vault = this.app.vault as typeof this.app.vault & VaultWithConfig;
     this.contentEl.toggleClass("is-readable-line-width", vault.getConfig?.("readableLineLength") === true);
+  }
+
+  /** Detects a cross-tab-group leaf move without treating ordinary workspace resizing as relocation. */
+  private consumeTabGroupRelocation(): boolean {
+    const parent = this.leaf.parent;
+    if (parent === this.tabGroupParent) return false;
+    this.tabGroupParent = parent;
+    return true;
+  }
+
+  /** Refreshes layout styling and schedules relocation recovery when this leaf changed tab groups. */
+  private handleWorkspaceLayoutChange(): void {
+    this.syncReadableLineLength();
+    if (this.consumeTabGroupRelocation()) this.scroll.handleTabGroupRelocation();
   }
 
   /** Reloads session data; initial/manual loads rebuild the shell, while active-session refreshes reconcile incrementally. */
@@ -869,9 +889,7 @@ export class SessionView extends ItemView {
         if (!boundary.found) throw new Error("The selected assistant turn is no longer available. Refresh the session and try again.");
         boundaryMessageId = boundary.messageID;
       }
-      const forked = await this.plugin.forkSession(this.model.sessionId, this.model.sessionDirectory, boundaryMessageId);
-      await this.plugin.refreshAgentPanels({ showLoading: false });
-      await this.plugin.openSessionTab(forked.id, forked.title);
+      await this.plugin.forkSessionAndOpen(this.model.sessionId, this.model.sessionDirectory, boundaryMessageId);
     } catch (error) {
       new Notice(error instanceof Error ? error.message : "Unable to fork OpenCode session.");
     }
@@ -1071,8 +1089,7 @@ export class SessionView extends ItemView {
         await service.unshareSession(sessionId, directory);
         break;
       case "fork": {
-        const forked = await this.plugin.forkSession(sessionId, directory);
-        new Notice(`Forked session: ${forked.title ?? forked.id}`);
+        await this.plugin.forkSessionAndOpen(sessionId, directory);
         break;
       }
     }

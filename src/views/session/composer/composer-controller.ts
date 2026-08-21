@@ -11,11 +11,11 @@ import { compactHomePath } from "../path-utils";
 
 /**
  * Composer cluster controller: textarea, send/abort, attachments, draft
- * persistence, prompt history, slash-command parsing, Esc-then-Esc interrupt
+ * persistence, slash-command parsing, Esc-then-Esc interrupt
  * state, and the inset/progress-bar mounting.
  *
- * Owns: `composerEl`, `composerTextarea`, `historyIndex`, draft + interrupt
- * timers, `pendingInterruptConfirm`, `abortingSession`, the
+ * Owns: `composerEl`, `composerTextarea`, draft + interrupt timers,
+ * `pendingInterruptConfirm`, `abortingSession`, the
  * `ContextProgressBarController`, and the window-level Cmd+Enter listener.
  *
  * Calls into sibling surfaces (slash menu, model/agent variants, docks, scroll)
@@ -100,7 +100,6 @@ export class ComposerController {
   private composing = false;
   private pendingInterruptConfirm = false;
   private interruptConfirmTimer?: number;
-  private historyIndex = -1;
   private draftSaveTimer?: number;
   private readonly progressBar: ContextProgressBarController;
   private readonly deps: ComposerDeps;
@@ -338,7 +337,6 @@ export class ComposerController {
 
   /** Processes native, pasted, accessibility, and composition input without remounting the composer. */
   private handleComposerInput(textarea: HTMLTextAreaElement): void {
-    this.historyIndex = -1;
     this.resizeComposerInput(textarea);
     this.deps.onSlashUpdate(textarea);
     this.updateInsetSoon();
@@ -447,34 +445,9 @@ export class ComposerController {
     }, 400);
   }
 
-  // ---- Prompt history ----
-
-  /** Returns true when ArrowUp should traverse prompt history. */
-  private isComposerAtStart(textarea: HTMLTextAreaElement): boolean {
-    return textarea.selectionStart === 0 && textarea.selectionEnd === 0;
-  }
-
-  /** Returns true when ArrowDown should traverse prompt history. */
-  private isComposerAtEnd(textarea: HTMLTextAreaElement): boolean {
-    return textarea.selectionStart === textarea.value.length && textarea.selectionEnd === textarea.value.length;
-  }
-
-  /** Navigates previously sent prompts in the mounted composer textarea. */
-  private navigatePromptHistory(delta: 1 | -1): boolean {
-    const key = this.deps.model.composerStorageKey;
-    if (!key || !this.composerTextarea) return false;
-    const history = this.deps.plugin.settings.sessionPromptHistory[key] ?? [];
-    if (history.length === 0) return false;
-    this.historyIndex = Math.min(history.length - 1, Math.max(-1, this.historyIndex + delta));
-    this.composerTextarea.value = this.historyIndex === -1 ? (this.deps.plugin.settings.sessionDrafts[key] ?? "") : history[this.historyIndex];
-    this.resizeComposerInput(this.composerTextarea);
-    this.scheduleDraftSave();
-    return true;
-  }
-
   // ---- Keydown handlers ----
 
-  /** Handles keyboard send, interrupt, and prompt-history navigation in the composer textarea. */
+  /** Handles keyboard send and interrupt shortcuts in the composer textarea. */
   private handleComposerKeydown(event: KeyboardEvent): void {
     const textarea = event.currentTarget as HTMLTextAreaElement;
     if (this.composing || event.isComposing) return;
@@ -503,12 +476,6 @@ export class ComposerController {
       event.stopPropagation();
       void this.sendPrompt();
       return;
-    }
-    if (event.key === "ArrowUp" && this.isComposerAtStart(textarea)) {
-      if (this.navigatePromptHistory(1)) event.preventDefault();
-    }
-    if (event.key === "ArrowDown" && this.isComposerAtEnd(textarea)) {
-      if (this.navigatePromptHistory(-1)) event.preventDefault();
     }
   }
 
@@ -621,9 +588,7 @@ export class ComposerController {
       }
       await this.deps.plugin.rememberSessionDraft(targetSessionId, "");
       await this.deps.plugin.rememberSessionAttachedFiles(targetSessionId, []);
-      await this.deps.plugin.rememberPromptHistory(targetSessionId, text);
       if (isSubmissionBound()) {
-        this.historyIndex = -1;
         model.submittingPrompt = false;
         await this.refresh();
         this.deps.scrollToBottom(false);

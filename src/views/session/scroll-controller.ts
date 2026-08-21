@@ -7,6 +7,12 @@ import type { DomEventRegistrar } from "./dom-registrar";
 const LOAD_OLDER_THRESHOLD_PX = 320;
 /** Distance from the bottom of the timeline below which auto-follow engages. */
 const BOTTOM_THRESHOLD_PX = 220;
+/** Maximum frames to wait for a relocated Obsidian leaf to regain measurable geometry. */
+const RELOCATION_LAYOUT_RETRY_FRAMES = 30;
+/** Frames to watch for Obsidian's delayed scroll reset after a measurable tab-group move. */
+const RELOCATION_RESET_GRACE_FRAMES = 4;
+/** Failsafe duration before a detached relocation mask is removed unconditionally. */
+const RELOCATION_MASK_TIMEOUT_MS = 600;
 
 /**
  * Deps injected by `SessionView` when constructing a `ScrollController`.
@@ -22,7 +28,10 @@ export interface ScrollDeps {
   contentEl: HTMLElement;
   model: SessionViewModel;
   register: DomEventRegistrar;
+  relocationRootEl: HTMLElement;
+  relocationContainerEl: HTMLElement;
   isActive: () => boolean;
+  consumeTabGroupRelocation: () => boolean;
   onNearTop: () => void;
   onUnreadChange: (unread: boolean) => void;
 }
@@ -55,6 +64,10 @@ export class ScrollController {
   private touchStart?: { x: number; y: number };
   private programmaticScrollUntil = 0;
   private scrollSaveTimer?: number;
+  private relocationFrame?: number;
+  private relocationPending = false;
+  private relocationObserver?: MutationObserver;
+  private relocationMaskTimer?: number;
 
   constructor(private readonly deps: ScrollDeps) {}
 
@@ -75,6 +88,8 @@ export class ScrollController {
     this.scrollBound = true;
     const { contentEl, register, model } = this.deps;
     register.registerDomEvent(contentEl, "scroll", () => {
+      if (this.deps.consumeTabGroupRelocation()) this.handleTabGroupRelocation();
+      if (this.relocationPending) return;
       const matchedProgrammaticTarget = this.expectedProgrammaticTop !== undefined && Math.abs(contentEl.scrollTop - this.expectedProgrammaticTop) <= 1;
       this.expectedProgrammaticTop = undefined;
       this.updateJumpButton();
@@ -84,15 +99,18 @@ export class ScrollController {
       if (contentEl.scrollTop < LOAD_OLDER_THRESHOLD_PX) this.deps.onNearTop();
     });
     register.registerDomEvent(contentEl, "wheel", (event) => {
+      this.cancelTabGroupRelocation();
       this.followGeneration += 1;
       if (event.deltaY < 0) this.disableFollowLatest();
     });
     register.registerDomEvent(contentEl, "touchstart", (event) => {
+      this.cancelTabGroupRelocation();
       this.followGeneration += 1;
       const touch = event.touches[0];
       this.touchStart = touch ? { x: touch.clientX, y: touch.clientY } : undefined;
     });
     register.registerDomEvent(contentEl, "pointerdown", () => {
+      this.cancelTabGroupRelocation();
       this.followGeneration += 1;
     });
     register.registerDomEvent(contentEl, "touchmove", (event) => {
@@ -105,16 +123,39 @@ export class ScrollController {
     register.registerDomEvent(window, "keydown", (event) => {
       if (!this.deps.isActive()) return;
       if (isEditableTarget(event.target)) return;
-      if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) this.disableFollowLatest();
+      if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) {
+        this.cancelTabGroupRelocation();
+        this.disableFollowLatest();
+      }
     });
+  }
+
+  /** Observes only workspace mutations that add or remove this view container, allowing correction before paint. */
+  observeTabGroupRelocations(): void {
+    if (this.relocationObserver || typeof MutationObserver === "undefined") return;
+    const relocationContainer = this.deps.relocationContainerEl;
+    this.relocationObserver = new MutationObserver((records) => {
+      const includesRelocation = records.some((record) =>
+        [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)]
+          .some((node) => node === relocationContainer || (node instanceof Element && node.contains(relocationContainer))),
+      );
+      if (includesRelocation) this.handleObservedTabGroupRelocation();
+    });
+    this.relocationObserver.observe(this.deps.relocationRootEl, { childList: true, subtree: true });
   }
 
   /** Clears timers, cancels rAF handles, and persists final scroll position; called by `SessionView.onClose`. */
   dispose(): void {
+    this.relocationObserver?.disconnect();
+    this.relocationObserver = undefined;
+    this.clearRelocationMask();
     if (this.followLatestFrame !== undefined) window.cancelAnimationFrame(this.followLatestFrame);
+    if (this.relocationFrame !== undefined) window.cancelAnimationFrame(this.relocationFrame);
     if (this.followLatestReleaseTimer) window.clearTimeout(this.followLatestReleaseTimer);
     if (this.scrollSaveTimer) window.clearTimeout(this.scrollSaveTimer);
     this.followLatestFrame = undefined;
+    this.relocationFrame = undefined;
+    this.relocationPending = false;
     this.followLatestReleaseTimer = undefined;
     this.scrollSaveTimer = undefined;
     this.persistScrollState();
@@ -263,6 +304,85 @@ export class ScrollController {
 
   // ---- imperative scroll
 
+  /** Corrects a connected reparent before paint, or masks a detached view until its matching reattach mutation. */
+  private handleObservedTabGroupRelocation(): void {
+    const { contentEl } = this.deps;
+    if (!contentEl.isConnected || contentEl.clientHeight <= 0) {
+      contentEl.classList.add("is-relocation-masked");
+      if (this.relocationMaskTimer) window.clearTimeout(this.relocationMaskTimer);
+      this.relocationMaskTimer = window.setTimeout(() => {
+        this.relocationMaskTimer = undefined;
+        contentEl.classList.remove("is-relocation-masked");
+        this.cancelTabGroupRelocation();
+      }, RELOCATION_MASK_TIMEOUT_MS);
+      this.handleTabGroupRelocation();
+      return;
+    }
+    this.handleTabGroupRelocation();
+    this.clearRelocationMask();
+  }
+
+  /** Recovers a sole-tab group move that reset the scroll owner, while preserving successful native relocation. */
+  handleTabGroupRelocation(): void {
+    this.relocationPending = true;
+    if (this.relocationFrame !== undefined) window.cancelAnimationFrame(this.relocationFrame);
+    this.relocationFrame = undefined;
+    if (this.finishTabGroupRelocationIfReset()) return;
+    this.restoreAfterTabGroupRelocation(0, RELOCATION_RESET_GRACE_FRAMES);
+  }
+
+  /** Waits for the relocated leaf to become measurable, then replaces only an actual top reset with bottom state. */
+  private restoreAfterTabGroupRelocation(layoutAttempt: number, graceFramesRemaining: number): void {
+    this.relocationFrame = window.requestAnimationFrame(() => {
+      this.relocationFrame = undefined;
+      const { contentEl } = this.deps;
+      if (!contentEl.isConnected || contentEl.clientHeight <= 0) {
+        if (layoutAttempt < RELOCATION_LAYOUT_RETRY_FRAMES) {
+          this.restoreAfterTabGroupRelocation(layoutAttempt + 1, graceFramesRemaining);
+          return;
+        }
+        this.relocationPending = false;
+        this.clearRelocationMask();
+        return;
+      }
+      if (this.finishTabGroupRelocationIfReset()) return;
+      if (graceFramesRemaining > 1) {
+        this.restoreAfterTabGroupRelocation(layoutAttempt + 1, graceFramesRemaining - 1);
+        return;
+      }
+      this.relocationPending = false;
+      this.clearRelocationMask();
+      this.updateJumpButton();
+    });
+  }
+
+  /** Aligns a relocation-induced top reset before paint and completes the relocation transaction. */
+  private finishTabGroupRelocationIfReset(): boolean {
+    const { contentEl } = this.deps;
+    if (!contentEl.isConnected || contentEl.clientHeight <= 0 || contentEl.scrollTop > 1 || contentEl.scrollHeight <= contentEl.clientHeight) return false;
+    this.alignToBottom();
+    this.relocationPending = false;
+    this.clearRelocationMask();
+    this.updateJumpButton();
+    this.scheduleScrollStateSave();
+    return true;
+  }
+
+  /** Stops pending relocation recovery when the user deliberately navigates the timeline. */
+  private cancelTabGroupRelocation(): void {
+    if (!this.relocationPending) return;
+    if (this.relocationFrame !== undefined) window.cancelAnimationFrame(this.relocationFrame);
+    this.relocationFrame = undefined;
+    this.relocationPending = false;
+  }
+
+  /** Removes the transient relocation mask and its failsafe timer. */
+  private clearRelocationMask(): void {
+    if (this.relocationMaskTimer) window.clearTimeout(this.relocationMaskTimer);
+    this.relocationMaskTimer = undefined;
+    this.deps.contentEl.classList.remove("is-relocation-masked");
+  }
+
   /** Marks the next `durationMs` as programmatic so scroll-event handlers ignore them; used by the shell around DOM reflows. */
   markProgrammaticScroll(durationMs: number): void {
     this.programmaticScrollUntil = Math.max(this.programmaticScrollUntil, Date.now() + durationMs);
@@ -309,8 +429,9 @@ export class ScrollController {
 
   /** Persists the current per-session scroll position through the plugin settings store. */
   persistScrollState(): void {
-    if (!this.deps.model.sessionId) return;
-    void this.deps.plugin.rememberSessionScroll(this.deps.model.sessionId, { top: this.deps.contentEl.scrollTop, atBottom: this.isNearBottom() });
+    const { contentEl, model, plugin } = this.deps;
+    if (this.relocationPending || !model.sessionId || !contentEl.isConnected || contentEl.clientHeight <= 0) return;
+    void plugin.rememberSessionScroll(model.sessionId, { top: contentEl.scrollTop, atBottom: this.isNearBottom() });
   }
 
   // ---- helpers

@@ -63,4 +63,20 @@ describe("OpenCodePlugin fork workflow", () => {
     await expect(plugin.forkSession("root", "/workspace")).resolves.toBe(forked);
     expect(service.updateSession).not.toHaveBeenCalled();
   });
+
+  it("opens every successful fork in its session tab", async () => {
+    const forked = { id: "fork-2", title: "Research (fork #2)" };
+    const forkSession = vi.fn(async () => forked);
+    const openSessionTab = vi.fn(async () => undefined);
+    const refreshAgentPanels = vi.fn(async () => undefined);
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, { forkSession, openSessionTab, refreshAgentPanels });
+
+    await expect(plugin.forkSessionAndOpen("root", "/workspace", "next-message")).resolves.toBe(forked);
+
+    expect(forkSession).toHaveBeenCalledWith("root", "/workspace", "next-message");
+    expect(openSessionTab).toHaveBeenCalledWith("fork-2", "Research (fork #2)");
+    expect(refreshAgentPanels).toHaveBeenCalledWith({ showLoading: false });
+    expect(openSessionTab.mock.invocationCallOrder[0]).toBeLessThan(refreshAgentPanels.mock.invocationCallOrder[0]);
+  });
 });

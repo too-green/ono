@@ -351,6 +351,11 @@
   position: relative;
 }
 
+/* Prevents a detached Obsidian leaf from painting its transient reset position before relocation recovery. */
+.opencode-session-view.is-relocation-masked {
+  visibility: hidden;
+}
+
 .view-content.opencode-session-view {
   container-type: size;
   padding: var(--file-margins);

@@ -1330,9 +1330,7 @@ export class AgentPanelView extends ItemView {
   /** Forks a sidebar session from its latest turn and opens the new session tab. */
   private async forkSession(session: AgentPanelSession): Promise<void> {
     try {
-      const forked = await this.plugin.forkSession(session.id, session.directory);
-      await this.plugin.refreshAgentPanels({ showLoading: false });
-      await this.plugin.openSessionTab(forked.id, forked.title);
+      await this.plugin.forkSessionAndOpen(session.id, session.directory);
     } catch (error) {
       new Notice(error instanceof Error ? error.message : "Unable to fork OpenCode session.");
     }

@@ -36,7 +36,6 @@ function setup(options: { busy?: boolean } = {}) {
     showContextBarThresholdLabels: true,
     sessionAttachedFiles: {} as Record<string, string[]>,
     sessionDrafts: {} as Record<string, string>,
-    sessionPromptHistory: {} as Record<string, string[]>,
   };
   const plugin = {
     settings,
@@ -107,6 +106,22 @@ describe("ComposerController input stability", () => {
 
     const actions = [...contentEl.querySelectorAll<HTMLButtonElement>(".opencode-session-view__composer-send")];
     expect(actions.every((button) => !button.disabled)).toBe(true);
+  });
+
+  it("leaves arrow keys to native textarea navigation", () => {
+    const { contentEl } = setup();
+    const textarea = contentEl.querySelector<HTMLTextAreaElement>("textarea")!;
+    textarea.value = "first line\nsecond line";
+    textarea.setSelectionRange(0, 0);
+
+    const arrowUp = new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true });
+    const arrowDown = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+    textarea.dispatchEvent(arrowUp);
+    textarea.dispatchEvent(arrowDown);
+
+    expect(arrowUp.defaultPrevented).toBe(false);
+    expect(arrowDown.defaultPrevented).toBe(false);
+    expect(textarea.value).toBe("first line\nsecond line");
   });
 
   it("toggles context checkpoint labels without removing their markers", () => {

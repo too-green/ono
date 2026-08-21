@@ -241,6 +241,14 @@ export default class OpenCodePlugin extends Plugin {
     return service.updateSession(forked.id, { title }, directory).catch(logServiceError(forked, "normalizeForkTitle", forked.id));
   }
 
+  /** Forks a session and opens the result in a new session tab; shared by every fork trigger. */
+  async forkSessionAndOpen(sessionId: string, directory?: string, messageId?: string): Promise<OpenCodeSession> {
+    const forked = await this.forkSession(sessionId, directory, messageId);
+    await this.openSessionTab(forked.id, forked.title);
+    await this.refreshAgentPanels({ showLoading: false }).catch(logServiceError(undefined, "refreshAgentPanelsAfterFork", forked.id));
+    return forked;
+  }
+
   /** Launches the configured IDE for a project directory; surfaces failures via Notice. */
   async openProjectInIde(directory: string, ideId: string | undefined): Promise<void> {
     const ide = getIdeOrDefault(ideId);
@@ -369,8 +377,6 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.archiveConfirmation = this.settings.archiveConfirmation !== false;
     this.settings.sessionScroll = this.settings.sessionScroll && typeof this.settings.sessionScroll === "object" ? this.settings.sessionScroll : {};
     this.settings.sessionDrafts = this.settings.sessionDrafts && typeof this.settings.sessionDrafts === "object" ? this.settings.sessionDrafts : {};
-    this.settings.sessionPromptHistory =
-      this.settings.sessionPromptHistory && typeof this.settings.sessionPromptHistory === "object" ? this.settings.sessionPromptHistory : {};
     this.settings.sessionAgentChoices =
       this.settings.sessionAgentChoices && typeof this.settings.sessionAgentChoices === "object" ? this.settings.sessionAgentChoices : {};
     this.settings.sessionModelChoices =
@@ -471,14 +477,6 @@ export default class OpenCodePlugin extends Plugin {
     await this.saveSettings();
   }
 
-  /** Records a sent prompt for per-session history navigation; referenced by SessionView sends. */
-  async rememberPromptHistory(sessionId: string, prompt: string): Promise<void> {
-    const existing = this.settings.sessionPromptHistory[sessionId] ?? [];
-    const next = [prompt, ...existing.filter((item) => item !== prompt)].slice(0, 100);
-    this.settings.sessionPromptHistory[sessionId] = next;
-    await this.saveSettings();
-  }
-
   /** Persists the selected composer agent for a session; referenced by SessionView agent menu. */
   async rememberSessionAgentChoice(sessionId: string, agent: string): Promise<void> {
     if (agent) this.settings.sessionAgentChoices[sessionId] = agent;
@@ -561,7 +559,6 @@ export default class OpenCodePlugin extends Plugin {
   /** Moves local composer state from a draft key to its newly created server session. */
   async promoteSessionDraft(draftKey: string, sessionId: string): Promise<void> {
     const draft = this.settings.sessionDrafts[draftKey];
-    const history = this.settings.sessionPromptHistory[draftKey];
     const agent = this.settings.sessionAgentChoices[draftKey];
     const model = this.settings.sessionModelChoices[draftKey];
     const autoApprove = this.settings.sessionAutoApprove[draftKey];
@@ -569,14 +566,12 @@ export default class OpenCodePlugin extends Plugin {
     const hasMuteOverride = Object.prototype.hasOwnProperty.call(this.settings.sessionMute, draftKey);
     const files = this.settings.sessionAttachedFiles[draftKey];
     if (draft) this.settings.sessionDrafts[sessionId] = draft;
-    if (history) this.settings.sessionPromptHistory[sessionId] = history;
     if (agent) this.settings.sessionAgentChoices[sessionId] = agent;
     if (model) this.settings.sessionModelChoices[sessionId] = model;
     if (autoApprove !== undefined) this.settings.sessionAutoApprove[sessionId] = autoApprove;
     if (hasMuteOverride) this.settings.sessionMute[sessionId] = muted!;
     if (files) this.settings.sessionAttachedFiles[sessionId] = files;
     delete this.settings.sessionDrafts[draftKey];
-    delete this.settings.sessionPromptHistory[draftKey];
     delete this.settings.sessionAgentChoices[draftKey];
     delete this.settings.sessionModelChoices[draftKey];
     delete this.settings.sessionAutoApprove[draftKey];

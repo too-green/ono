@@ -30,8 +30,12 @@ describe("ScrollController", () => {
 
   /** Creates a mounted scroll controller with deterministic viewport geometry. */
   function setup() {
+    const relocationRootEl = document.createElement("div");
+    const relocationContainerEl = document.createElement("div");
     const contentEl = document.createElement("div");
-    document.body.appendChild(contentEl);
+    relocationContainerEl.appendChild(contentEl);
+    relocationRootEl.appendChild(relocationContainerEl);
+    document.body.appendChild(relocationRootEl);
     let scrollHeight = 1_000;
     let clientHeight = 200;
     Object.defineProperties(contentEl, {
@@ -45,6 +49,8 @@ describe("ScrollController", () => {
       settings: { sessionScroll: {}, sessionUnread: {} },
       rememberSessionScroll: vi.fn(async () => undefined),
     } as unknown as OpenCodePlugin;
+    let tabGroupRelocated = false;
+    const onNearTop = vi.fn();
     const register = {
       registerDomEvent: (target: Window | Document | HTMLElement, type: string, callback: EventListenerOrEventListenerObject, options?: AddEventListenerOptions) => {
         target.addEventListener(type, callback, options);
@@ -55,15 +61,30 @@ describe("ScrollController", () => {
       contentEl,
       model,
       register,
+      relocationRootEl,
+      relocationContainerEl,
       isActive: () => true,
-      onNearTop: vi.fn(),
+      consumeTabGroupRelocation: () => {
+        const relocated = tabGroupRelocated;
+        tabGroupRelocated = false;
+        return relocated;
+      },
+      onNearTop,
       onUnreadChange: vi.fn(),
     });
     controller.bindScrollListener();
+    controller.observeTabGroupRelocations();
     return {
       contentEl,
       controller,
       model,
+      onNearTop,
+      plugin,
+      relocationContainerEl,
+      relocationRootEl,
+      triggerTabGroupRelocation: () => {
+        tabGroupRelocated = true;
+      },
       setGeometry: (height: number, viewport: number) => {
         scrollHeight = height;
         clientHeight = viewport;
@@ -133,5 +154,157 @@ describe("ScrollController", () => {
     await restoring;
 
     expect(contentEl.scrollTop).toBe(300);
+  });
+
+  it("replaces a relocation-induced top reset with bottom state without loading older messages", () => {
+    const { contentEl, onNearTop, plugin, triggerTabGroupRelocation } = setup();
+    triggerTabGroupRelocation();
+    contentEl.scrollTop = 0;
+
+    contentEl.dispatchEvent(new Event("scroll"));
+
+    expect(onNearTop).not.toHaveBeenCalled();
+    expect(plugin.rememberSessionScroll).not.toHaveBeenCalled();
+    expect(contentEl.scrollTop).toBe(800);
+  });
+
+  it("preserves scroll when Obsidian relocates a tab without resetting it", () => {
+    const { contentEl, controller, plugin, runNextFrame, triggerTabGroupRelocation } = setup();
+    contentEl.scrollTop = 350;
+    triggerTabGroupRelocation();
+
+    contentEl.dispatchEvent(new Event("scroll"));
+    for (let frame = 0; frame < 4; frame += 1) runNextFrame();
+    controller.persistScrollState();
+
+    expect(contentEl.scrollTop).toBe(350);
+    expect(plugin.rememberSessionScroll).toHaveBeenCalledWith("s1", { top: 350, atBottom: false });
+  });
+
+  it("catches a top reset that lands after the first relocation frame", () => {
+    const { contentEl, onNearTop, runNextFrame, triggerTabGroupRelocation } = setup();
+    contentEl.scrollTop = 350;
+    triggerTabGroupRelocation();
+    contentEl.dispatchEvent(new Event("scroll"));
+    runNextFrame();
+
+    contentEl.scrollTop = 0;
+    contentEl.dispatchEvent(new Event("scroll"));
+    expect(onNearTop).not.toHaveBeenCalled();
+    runNextFrame();
+
+    expect(contentEl.scrollTop).toBe(800);
+  });
+
+  it("lets user scroll input cancel relocation recovery", () => {
+    const { contentEl, onNearTop, triggerTabGroupRelocation } = setup();
+    contentEl.scrollTop = 350;
+    triggerTabGroupRelocation();
+    contentEl.dispatchEvent(new Event("scroll"));
+    contentEl.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -20 }));
+
+    contentEl.scrollTop = 0;
+    contentEl.dispatchEvent(new Event("scroll"));
+
+    expect(contentEl.scrollTop).toBe(0);
+    expect(onNearTop).toHaveBeenCalledOnce();
+  });
+
+  it("does not persist transient geometry from a detached tab group", () => {
+    const { contentEl, controller, plugin } = setup();
+    contentEl.remove();
+
+    controller.persistScrollState();
+
+    expect(plugin.rememberSessionScroll).not.toHaveBeenCalled();
+  });
+
+  it("waits for a relocated tab group to regain measurable geometry", () => {
+    const { contentEl, controller, runNextFrame } = setup();
+    contentEl.scrollTop = 0;
+    contentEl.remove();
+
+    controller.handleTabGroupRelocation();
+    runNextFrame();
+    expect(contentEl.scrollTop).toBe(0);
+
+    document.body.appendChild(contentEl);
+    runNextFrame();
+    expect(contentEl.scrollTop).toBe(800);
+  });
+
+  it("ignores ordinary timeline mutations", async () => {
+    const { contentEl } = setup();
+    contentEl.scrollTop = 0;
+
+    contentEl.appendChild(document.createElement("div"));
+    await Promise.resolve();
+
+    expect(contentEl.scrollTop).toBe(0);
+    expect(contentEl.classList.contains("is-relocation-masked")).toBe(false);
+  });
+
+  it("corrects a same-task leaf reparent before the next animation frame", async () => {
+    const { contentEl, relocationContainerEl, relocationRootEl } = setup();
+    const destination = relocationRootEl.appendChild(document.createElement("div"));
+
+    relocationContainerEl.remove();
+    contentEl.scrollTop = 0;
+    destination.appendChild(relocationContainerEl);
+    await Promise.resolve();
+
+    expect(contentEl.scrollTop).toBe(800);
+    expect(contentEl.classList.contains("is-relocation-masked")).toBe(false);
+    expect(frames.size).toBe(0);
+  });
+
+  it("masks a detached leaf until its reattach mutation is corrected", async () => {
+    const { contentEl, relocationContainerEl, relocationRootEl } = setup();
+    relocationContainerEl.remove();
+    await Promise.resolve();
+
+    expect(contentEl.classList.contains("is-relocation-masked")).toBe(true);
+
+    contentEl.scrollTop = 0;
+    relocationRootEl.appendChild(relocationContainerEl);
+    await Promise.resolve();
+
+    expect(contentEl.scrollTop).toBe(800);
+    expect(contentEl.classList.contains("is-relocation-masked")).toBe(false);
+  });
+
+  it("removes a relocation mask after the failsafe timeout", async () => {
+    const { contentEl, relocationContainerEl } = setup();
+    relocationContainerEl.remove();
+    await Promise.resolve();
+
+    expect(contentEl.classList.contains("is-relocation-masked")).toBe(true);
+    vi.advanceTimersByTime(600);
+    expect(contentEl.classList.contains("is-relocation-masked")).toBe(false);
+  });
+
+  it("removes the mask when frame recovery completes outside the observed workspace root", async () => {
+    const { contentEl, relocationContainerEl, runNextFrame } = setup();
+    relocationContainerEl.remove();
+    await Promise.resolve();
+    expect(contentEl.classList.contains("is-relocation-masked")).toBe(true);
+
+    contentEl.scrollTop = 0;
+    document.body.appendChild(relocationContainerEl);
+    runNextFrame();
+
+    expect(contentEl.scrollTop).toBe(800);
+    expect(contentEl.classList.contains("is-relocation-masked")).toBe(false);
+  });
+
+  it("disconnects relocation observation when disposed", async () => {
+    const { contentEl, controller, relocationContainerEl, relocationRootEl } = setup();
+    controller.dispose();
+    relocationContainerEl.remove();
+    contentEl.scrollTop = 0;
+    relocationRootEl.appendChild(relocationContainerEl);
+    await Promise.resolve();
+
+    expect(contentEl.scrollTop).toBe(0);
   });
 });

@@ -69,7 +69,6 @@ export interface OpenCodePluginSettings {
   archiveConfirmation: boolean;
   sessionScroll: Record<string, { top: number; atBottom: boolean }>;
   sessionDrafts: Record<string, string>;
-  sessionPromptHistory: Record<string, string[]>;
   sessionAgentChoices: Record<string, string>;
   sessionModelChoices: Record<string, { providerID: string; modelID: string; variant?: string }>;
   sessionAutoApprove: Record<string, boolean>;
@@ -109,7 +108,6 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   archiveConfirmation: true,
   sessionScroll: {},
   sessionDrafts: {},
-  sessionPromptHistory: {},
   sessionAgentChoices: {},
   sessionModelChoices: {},
   sessionAutoApprove: {},

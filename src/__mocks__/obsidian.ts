@@ -79,13 +79,23 @@ export const Platform = { isMacOS: false, isWin: false, isMobile: false };
 export const requestUrl = async (): Promise<Record<string, unknown>> => ({});
 
 export class Modal {
-  titleEl = typeof document === "undefined" ? {} : document.createElement("div");
-  contentEl = typeof document === "undefined" ? {} : document.createElement("div");
+  titleEl = typeof document === "undefined" ? {} as HTMLElement : document.createElement("div");
+  contentEl = typeof document === "undefined" ? {} as HTMLElement : document.createElement("div");
 
   constructor(_app?: unknown) {}
 
   open() {}
 }
+
+export class SuggestModal<T> extends Modal {
+  inputEl = typeof document === "undefined" ? {} as HTMLInputElement : document.createElement("input");
+  resultContainerEl = typeof document === "undefined" ? {} as HTMLElement : document.createElement("div");
+  emptyStateText = "";
+
+  setPlaceholder(_placeholder: string) {}
+}
+
+export class FuzzySuggestModal<T> extends SuggestModal<T> {}
 
 export const setIcon = (): void => undefined;
 export const getIconIds = (): string[] => [];

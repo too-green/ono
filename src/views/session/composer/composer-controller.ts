@@ -151,7 +151,6 @@ export class ComposerController {
     const controls = composer.createDiv({ cls: "opencode-session-view__composer-controls" });
     const left = controls.createDiv({ cls: "opencode-session-view__composer-left" });
     const attach = left.createSpan({ cls: "opencode-session-view__composer-icon", attr: { role: "button", tabindex: "0", "aria-label": "Attach files" } });
-    attach.title = "Attach files";
     setIcon(attach, "paperclip");
     attach.addEventListener("click", () => void this.pickComposerFiles());
     const labels = left.createDiv({ cls: "opencode-session-view__composer-labels" });
@@ -170,7 +169,7 @@ export class ComposerController {
       this.deps.getMuteToggleTitle(),
     );
     const inheritedAutoApprove = this.deps.isAutoApproveInherited();
-    const autoApproveTitle = inheritedAutoApprove ? "Auto-allow permission requests once (inherited from an ancestor session)" : "Auto-allow permission requests once";
+    const autoApproveTitle = inheritedAutoApprove ? "Toggle auto-accept (inherited from an ancestor session)" : "Toggle auto-accept";
     const autoApprove = this.renderTogglePill(right, "", "shield-alert", this.deps.shouldAutoApprove(), () => this.deps.onToggleAutoApprove(), autoApproveTitle);
     autoApprove.classList.add("opencode-session-view__composer-toggle--auto-accept");
     this.renderSendButton(right, textarea);
@@ -318,12 +317,10 @@ export class ComposerController {
       setIcon(send, this.abortingSession ? "loader-2" : this.pendingInterruptConfirm ? "triangle-alert" : "square");
       const label = this.pendingInterruptConfirm ? "Press Esc again to interrupt" : "Interrupt session";
       send.setAttr("aria-label", label);
-      send.title = label;
       send.disabled = this.abortingSession;
     } else {
       setIcon(send, this.deps.model.submittingPrompt ? "loader-2" : "send");
-      send.setAttr("aria-label", "Send prompt");
-      send.title = `${Platform.isMacOS ? "⌘" : "Ctrl"}+Enter to send · Shift+Enter for newline`;
+      send.setAttr("aria-label", `Send prompt (${Platform.isMacOS ? "⌘" : "Ctrl"}+Enter · Shift+Enter for newline)`);
       send.disabled = this.deps.isComposerBlocked() || this.deps.model.submittingPrompt || !textarea.value.trim();
     }
   }
@@ -357,7 +354,6 @@ export class ComposerController {
     const el = container.createSpan({ cls: "opencode-session-view__composer-toggle", attr: { role: "button", tabindex: "0", "aria-pressed": String(active), "aria-label": title } });
     el.toggleClass("is-active", active);
     el.toggleClass("is-icon-only", label.length === 0);
-    el.title = title;
     setIcon(el, icon);
     if (label) el.createSpan({ text: label });
     el.addEventListener("click", (event) => {

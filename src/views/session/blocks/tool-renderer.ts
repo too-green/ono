@@ -192,12 +192,10 @@ function patchOperationLabel(operation: EditDiff["operation"]): ToolFileOperatio
 /** Appends a responsive full/initial file-operation label after collapsed diff totals. */
 function renderFileOperation(summary: HTMLElement, operation: ToolFileOperation): void {
   const label = operation === "new" ? "New" : operation === "deleted" ? "Deleted" : "Moved";
-  const element = summary.createSpan({
-    cls: `opencode-session-view__file-operation opencode-session-view__file-operation--${operation}`,
-    attr: { "aria-label": label, title: label },
-  });
-  element.createSpan({ text: label, cls: "opencode-session-view__file-operation-full", attr: { "aria-hidden": "true" } });
-  element.createSpan({ text: label[0], cls: "opencode-session-view__file-operation-compact", attr: { "aria-hidden": "true" } });
+  // No hint attrs: the visible text is the accessible name; CSS display-toggling keeps screen readers on the shown span.
+  const element = summary.createSpan({ cls: `opencode-session-view__file-operation opencode-session-view__file-operation--${operation}` });
+  element.createSpan({ text: label, cls: "opencode-session-view__file-operation-full" });
+  element.createSpan({ text: label[0], cls: "opencode-session-view__file-operation-compact" });
 }
 
 /** Renders the specialized expanded body for a tool once its disclosure has been opened. */
@@ -313,12 +311,13 @@ function renderTaskSessionAction(summary: HTMLElement, input: JsonObject, state:
   const sessionId = taskSessionId(input, state);
   const session = sessionId ? ctx.resolveSession?.(sessionId) : undefined;
   if (!sessionId || !session || session.title === sessionId || !ctx.openSession) return;
+  // Hint adds info the link text lacks: the subagent mode. Model/variant isn't exposed by the v1 session/message payloads.
+  const subagentType = readString(input, ["subagent_type", "subagentType", "agent"]);
   const link = summary.createEl("a", {
     cls: "opencode-session-view__task-session",
     attr: {
       href: "#",
-      "aria-label": `Open subagent session ${session.title}`,
-      title: `Open subagent session ${session.title}`,
+      ...(subagentType ? { "aria-label": `@${subagentType} subagent` } : {}),
     },
   });
   link.createSpan({ text: session.title, cls: "opencode-session-view__task-session-title" });

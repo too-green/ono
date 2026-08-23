@@ -13,6 +13,8 @@ import {
   modelRefFromInfo,
   modelShortLabelForRef,
   modelVariants,
+  nextAgentName,
+  nextFavoriteRef,
   sameModel,
   titleCaseAgent,
   visibleAgents,
@@ -299,5 +301,67 @@ describe("composerModelFromState", () => {
 
   it("returns undefined when no models are available", () => {
     expect(composerModelFromState([], agents, {}, undefined)).toBeUndefined();
+  });
+});
+
+describe("nextFavoriteRef", () => {
+  const favorites = [
+    { providerID: "anthropic", modelID: "claude", variant: "high" },
+    { providerID: "openai", modelID: "gpt-4o", variant: "low" },
+    { providerID: "google", modelID: "gemini" },
+  ];
+
+  it("returns the first favorite when nothing is selected", () => {
+    expect(nextFavoriteRef(favorites, undefined)).toBe(favorites[0]);
+  });
+
+  it("advances past an exact model+variant match", () => {
+    expect(nextFavoriteRef(favorites, { providerID: "anthropic", modelID: "claude", variant: "high" })).toBe(favorites[1]);
+  });
+
+  it("wraps back to the first favorite after the last exact match", () => {
+    expect(nextFavoriteRef(favorites, { providerID: "google", modelID: "gemini" })).toBe(favorites[0]);
+  });
+
+  it("advances from a same-model match whose variant differs", () => {
+    expect(nextFavoriteRef(favorites, { providerID: "openai", modelID: "gpt-4o", variant: "high" })).toBe(favorites[2]);
+  });
+
+  it("treats off-style variants as equivalent to each other", () => {
+    const offFavorites = [
+      { providerID: "anthropic", modelID: "claude", variant: "none" },
+      { providerID: "openai", modelID: "gpt-4o" },
+    ];
+    expect(nextFavoriteRef(offFavorites, { providerID: "anthropic", modelID: "claude", variant: "off" })).toBe(offFavorites[1]);
+  });
+
+  it("returns the first favorite when the current selection matches nothing", () => {
+    expect(nextFavoriteRef(favorites, { providerID: "mistral", modelID: "large" })).toBe(favorites[0]);
+  });
+
+  it("returns undefined with no favorites", () => {
+    expect(nextFavoriteRef([], { providerID: "anthropic", modelID: "claude" })).toBeUndefined();
+  });
+});
+
+describe("nextAgentName", () => {
+  it("returns the first agent when nothing is selected", () => {
+    expect(nextAgentName(["build", "plan"], undefined)).toBe("build");
+  });
+
+  it("advances to the next agent in list order", () => {
+    expect(nextAgentName(["build", "plan", "review"], "build")).toBe("plan");
+  });
+
+  it("wraps back to the first agent after the last one", () => {
+    expect(nextAgentName(["build", "plan"], "plan")).toBe("build");
+  });
+
+  it("returns the first agent when the current one is unknown", () => {
+    expect(nextAgentName(["build", "plan"], "gone")).toBe("build");
+  });
+
+  it("returns undefined with no agents", () => {
+    expect(nextAgentName([], "build")).toBeUndefined();
   });
 });

@@ -1,6 +1,6 @@
 import { Menu, Notice, setIcon } from "obsidian";
 import type OpenCodePlugin from "../../../../main";
-import { ModelSelectionMenu, type ModelEntry } from "../../ModelSelectionMenu";
+import { ModelSelectionMenu, type FavoriteModelRef, type ModelEntry } from "../../ModelSelectionMenu";
 import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef } from "../../../services/opencode-types";
 import { setProviderIcon } from "../../../utils/provider-icons";
 import type { SessionViewModel } from "../session-view-model";
@@ -116,6 +116,35 @@ export function buildModelEntries(models: JsonObject[]): ModelEntry[] {
     .filter((e): e is ModelEntry => e !== null);
 }
 
+/** Compares two variant strings, treating every off-style reasoning preset as equivalent. */
+function sameVariant(left: string | undefined, right: string | undefined): boolean {
+  if (left === right) return true;
+  return !!left && !!right && isOffReasoningVariant(left) && isOffReasoningVariant(right);
+}
+
+/**
+ * Picks the next favorite after the current selection: an exact model+variant
+ * match first, then any favorite of the same model, wrapping to the first
+ * favorite; referenced by `cycleFavoriteModel`.
+ */
+export function nextFavoriteRef(favorites: FavoriteModelRef[], current: OpenCodeModelRef | undefined): FavoriteModelRef | undefined {
+  if (favorites.length === 0) return undefined;
+  if (!current) return favorites[0];
+  const exact = favorites.findIndex((fav) => fav.providerID === current.providerID && fav.modelID === current.modelID && sameVariant(fav.variant, current.variant));
+  if (exact >= 0) return favorites[(exact + 1) % favorites.length];
+  const partial = favorites.findIndex((fav) => fav.providerID === current.providerID && fav.modelID === current.modelID);
+  if (partial >= 0) return favorites[(partial + 1) % favorites.length];
+  return favorites[0];
+}
+
+/** Returns the agent after the current one in list order, wrapping; the first agent when the current one is unknown. */
+export function nextAgentName(names: string[], current: string | undefined): string | undefined {
+  if (names.length === 0) return undefined;
+  const index = current ? names.indexOf(current) : -1;
+  if (index < 0) return names[0];
+  return names[(index + 1) % names.length];
+}
+
 /** Determines the composer agent from persisted choice, session state, or the latest user message. */
 export function composerAgentFromState(
   agents: JsonObject[],
@@ -197,9 +226,7 @@ export class ModelVariantsController {
   /** Renders the active-agent selector; the chosen agent is sent with the next prompt. */
   renderAgentLabel(container: HTMLElement, session: JsonObject): void {
     const agent = this.deps.model.selectedAgent ?? readString(session, ["agent"]) ?? "default";
-    const el = container.createSpan({ cls: "opencode-session-view__agent-label", attr: { role: "button", tabindex: "0" } });
-    el.title = "Switch agent";
-    el.setAttr("aria-label", "Switch agent");
+    const el = container.createSpan({ cls: "opencode-session-view__agent-label", attr: { role: "button", tabindex: "0", "aria-label": "Switch agent" } });
     const info = visibleAgents(this.deps.model.availableAgents).find((item) => agentName(item) === agent);
     const color = agentColor(info);
     if (color) el.style.setProperty("--opencode-agent-label-color", color);
@@ -235,8 +262,7 @@ export class ModelVariantsController {
       setProviderIcon(icon, selected.providerID, 14);
     }
     el.createSpan({ text: label });
-    el.title = selected ? `Switch model · ${modelLabelForRef(this.deps.model.availableModels, selected)}` : "Switch model";
-    el.setAttr("aria-label", "Switch model");
+    el.setAttr("aria-label", selected ? `Switch model · ${modelLabelForRef(this.deps.model.availableModels, selected)}` : "Switch model");
     el.addEventListener("click", (event) => {
       event.preventDefault();
       void this.showModelMenu(event as MouseEvent);
@@ -252,8 +278,7 @@ export class ModelVariantsController {
     const icon = el.createSpan({ cls: "opencode-session-view__thinking-pill-icon" });
     setIcon(icon, "brain");
     el.createSpan({ text: label });
-    el.title = variants.length > 0 ? "Cycle reasoning mode" : "This model exposes no reasoning variants";
-    el.setAttr("aria-label", "Cycle reasoning mode");
+    el.setAttr("aria-label", variants.length > 0 ? "Cycle reasoning mode" : "This model exposes no reasoning variants");
     el.toggleClass("is-disabled", !selected);
     el.toggleClass("is-empty", variants.length === 0);
     el.addEventListener("click", () => void this.cycleThinkingVariant());
@@ -308,6 +333,39 @@ export class ModelVariantsController {
     const offVariant = variants.find((variant) => isOffReasoningVariant(variant));
     const next = index < 0 ? firstEnabled : index === variants.length - 1 ? offVariant : variants[index + 1];
     await this.chooseComposerModel({ ...selected, variant: next });
+  }
+
+  /** Cycles to the next starred model-variant pair, skipping favorites missing from the catalog; referenced by the plugin's cycle-favorites command. */
+  async cycleFavoriteModel(): Promise<void> {
+    const favorites = this.deps.plugin.settings.favoriteModels;
+    if (favorites.length === 0) {
+      new Notice("No favorite models yet. Star a model in the model menu to add one.");
+      return;
+    }
+    if (this.deps.model.availableModels.length === 0) await this.loadAvailableModels();
+    const catalog = this.deps.model.availableModels;
+    const usable = catalog.length > 0 ? favorites.filter((fav) => catalog.some((item) => sameModel(modelRefFromInfo(item), fav))) : favorites;
+    if (usable.length === 0) {
+      new Notice("None of your favorite models are currently available.");
+      return;
+    }
+    const next = nextFavoriteRef(usable, this.deps.model.selectedModel);
+    if (!next) return;
+    await this.chooseComposerModel({ providerID: next.providerID, modelID: next.modelID, variant: next.variant });
+  }
+
+  /** Cycles to the next visible agent mode; an agent-configured model overrides a manual choice; referenced by the plugin's cycle-agent-mode command. */
+  async cycleAgentMode(): Promise<void> {
+    const names = visibleAgents(this.deps.model.availableAgents)
+      .map((item) => agentName(item))
+      .filter((name): name is string => !!name);
+    if (names.length === 0) {
+      new Notice("No agent modes are available.");
+      return;
+    }
+    const next = nextAgentName(names, this.deps.model.selectedAgent);
+    if (!next || next === this.deps.model.selectedAgent) return;
+    await this.chooseComposerAgent(next);
   }
 
   /** Drops the model-selection popover so a closed view cannot leak it; called by `SessionView.onClose`. */

@@ -2879,3 +2879,74 @@ input.opencode-model-menu__search:focus {
   height: var(--icon-xs);
   width: var(--icon-xs);
 }
+
+/* -- New-session folder picker -- */
+
+.opencode-folder-modal__row {
+  align-items: center;
+  display: flex;
+  gap: var(--size-2-2);
+  padding: var(--size-2-1) 0;
+}
+
+.opencode-folder-modal__row-icon {
+  align-items: center;
+  color: var(--text-muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.opencode-folder-modal__row-icon svg {
+  height: var(--icon-s);
+  width: var(--icon-s);
+}
+
+.opencode-folder-modal__row-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.opencode-folder-modal__row-primary {
+  align-items: center;
+  display: flex;
+  gap: var(--size-2-2);
+}
+
+.opencode-folder-modal__row-name {
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-folder-modal__row-branch {
+  align-items: center;
+  background: var(--background-modifier-hover);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  gap: var(--size-1-2);
+  padding: var(--size-1-1) var(--size-2-2);
+}
+
+.opencode-folder-modal__row-branch-icon {
+  align-items: center;
+  display: inline-flex;
+}
+
+.opencode-folder-modal__row-branch-icon svg {
+  height: var(--icon-xs);
+  width: var(--icon-xs);
+}
+
+.opencode-folder-modal__row-secondary {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

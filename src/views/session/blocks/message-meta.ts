@@ -76,7 +76,7 @@ export function renderMessageMeta(
     const fork = meta.createEl("button", { attr: { "aria-label": "Fork session after this assistant turn" }, cls: "opencode-session-view__message-action clickable-icon" });
     const forkMessageId = assistantOptions ? assistantOptions.forkMessageId : messageId(bundle);
     fork.disabled = !forkMessageId;
-    if (fork.disabled) fork.title = "Available when the assistant turn finishes";
+    if (fork.disabled) fork.setAttr("aria-label", "Available when the assistant turn finishes");
     setIcon(fork, "git-fork");
     fork.addEventListener("click", (event) => {
       event.stopPropagation();

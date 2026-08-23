@@ -82,7 +82,8 @@ describe("RequestDocksController descendant routing", () => {
     expect(controller.isComposerBlocked()).toBe(true);
     expect(container.textContent).toContain("Subagent: Research API");
     const owner = container.querySelector<HTMLButtonElement>(".opencode-session-view__request-owner");
-    expect(owner?.getAttribute("aria-label")).toBe("Open subagent session Research API");
+    expect(owner?.getAttribute("aria-label")).toBeNull();
+    expect(owner?.getAttribute("title")).toBeNull();
     owner?.click();
     expect(plugin.openSessionTab).toHaveBeenCalledWith("child", "Research API");
   });

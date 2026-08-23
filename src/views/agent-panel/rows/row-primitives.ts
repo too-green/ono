@@ -21,7 +21,7 @@ export function renderFolderCollapseState(
 export function renderNewSessionAction(container: HTMLElement): HTMLButtonElement {
   const action = container.createEl("button", {
     cls: "clickable-icon opencode-agent-panel__new-session-action",
-    attr: { type: "button", "aria-label": "New session", title: "New session" },
+    attr: { type: "button", "aria-label": "New session" },
   });
   setIcon(action, "plus");
   return action;

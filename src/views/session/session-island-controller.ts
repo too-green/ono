@@ -161,7 +161,7 @@ export class SessionIslandController {
     this.detailPanelEl.id = `${this.islandId}-panel-detail`;
     this.detailContentEl = this.detailPanelEl.createDiv({ cls: "opencode-session-view__island-panel-content" });
     const tabContainer = root.createDiv({ cls: "opencode-session-view__island-tabs" });
-    this.tabListEl = tabContainer.createDiv({ cls: "opencode-session-view__island-tabs-inner", attr: { role: "tablist", "aria-label": "Session island" } });
+    this.tabListEl = tabContainer.createDiv({ cls: "opencode-session-view__island-tabs-inner", attr: { role: "tablist" } });
     this.refreshDom();
     return this.promptContentEl;
   }
@@ -411,23 +411,20 @@ export class SessionIslandController {
     }
     if (tab === "todos") {
       const title = todoTabTitle(this.todos);
-      button.title = `${title} todos completed`;
-      button.setAttr("aria-label", `Todos: ${title} completed`);
+      button.setAttr("aria-label", "Todos");
       info.createSpan({ text: title, cls: "opencode-session-view__island-tab-title" });
       return;
     }
     if (tab === "subagents") {
       const working = [...this.deps.model.descendantSessions.values()].filter((item) => isActiveSessionStatus(item.statusType)).length;
       const title = working > 0 ? `${working} working...` : String(this.deps.model.descendantSessions.size);
-      button.title = working > 0 ? `${working} subagents working` : `${this.deps.model.descendantSessions.size} subagents`;
-      button.setAttr("aria-label", button.title);
+      button.setAttr("aria-label", "Subagents");
       info.createSpan({ text: title, cls: "opencode-session-view__island-tab-title" });
       return;
     }
     const diffs = tab === "turn" ? this.turnDiffs() : this.sessionFiles();
     const label = tab === "turn" ? "Last turn" : "Session";
     button.setAttr("aria-label", `${label} diffs`);
-    button.title = `${label} diffs`;
     const totals = diffTotals(diffs);
     const stats = info.createSpan({ cls: "opencode-session-view__island-tab-stats" });
     stats.createSpan({ text: `+${totals.additions}`, cls: "opencode-session-view__diff-stat-add" });
@@ -443,21 +440,16 @@ export class SessionIslandController {
       : mode === "tokens"
         ? formatCompactNumber(usage.used)
         : `${usage.percentage}%`;
-    const states: string[] = [];
     container.createSpan({ text: title, cls: "opencode-session-view__island-tab-title" });
     if (this.deps.shouldAutoApprove()) {
       const indicator = container.createSpan({ cls: "opencode-session-view__island-tab-indicator is-auto-accept", attr: { "aria-hidden": "true" } });
       setIcon(indicator, "shield-alert");
-      states.push(this.deps.isAutoApproveInherited() ? "auto-accept inherited from an ancestor session" : "auto-accept enabled");
     }
     if (this.deps.isSessionMuted()) {
       const indicator = container.createSpan({ cls: "opencode-session-view__island-tab-indicator", attr: { "aria-hidden": "true" } });
       setIcon(indicator, "bell-off");
-      states.push("notifications muted");
     }
-    const accessible = states.length > 0 ? `${title}, ${states.join(", ")}` : title;
-    button.title = accessible;
-    button.setAttr("aria-label", accessible);
+    button.setAttr("aria-label", "Prompt");
   }
 
   /** Selects one available tab, or collapses the island when its active trigger is selected again. */

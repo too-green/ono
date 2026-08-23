@@ -195,7 +195,8 @@ describe("shared tool container", () => {
     expect(details.querySelector(".opencode-session-view__tool-status")).toBeNull();
     expect(action.tagName).toBe("A");
     expect(action.textContent).toBe("Renderer audit (@explorer-terra subagent)");
-    expect(action.getAttribute("aria-label")).toBe("Open subagent session Renderer audit (@explorer-terra subagent)");
+    expect(action.getAttribute("aria-label")).toBe("@explorer-terra subagent");
+    expect(action.getAttribute("title")).toBeNull();
     expect(action.nextElementSibling).toBe(description);
 
     action.click();
@@ -423,7 +424,8 @@ describe("apply_patch tool rendering", () => {
     }, context());
 
     const operations = Array.from(container.querySelectorAll<HTMLElement>(".opencode-session-view__file-operation"));
-    expect(operations.map((operation) => operation.getAttribute("aria-label"))).toEqual(["New", "Deleted", "Moved"]);
+    expect(operations.map((operation) => operation.getAttribute("aria-label"))).toEqual([null, null, null]);
+    expect(operations.map((operation) => operation.querySelector(".opencode-session-view__file-operation-full")?.getAttribute("aria-hidden"))).toEqual([null, null, null]);
     expect(operations.map((operation) => operation.querySelector(".opencode-session-view__file-operation-compact")?.textContent)).toEqual(["N", "D", "M"]);
     expect(operations[0].classList).toContain("opencode-session-view__file-operation--new");
     expect(operations[1].classList).toContain("opencode-session-view__file-operation--deleted");

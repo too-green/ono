@@ -328,7 +328,7 @@ export class RequestDocksController {
     const title = this.deps.model.descendantSessions.get(sessionId)?.title ?? sessionId;
     const owner = container.createEl("button", {
       cls: "opencode-session-view__request-owner",
-      attr: { type: "button", "aria-label": `Open subagent session ${title}`, title: `Open subagent session ${title}` },
+      attr: { type: "button" },
     });
     owner.createSpan({ text: `Subagent: ${title}`, cls: "opencode-session-view__request-owner-label" });
     const icon = owner.createSpan({ cls: "opencode-session-view__request-owner-icon" });

@@ -17,6 +17,7 @@ import { SessionNotificationService, isElementVisibleInFocusedWindow, type Sessi
 import { confirmSessionArchive, requestSessionTitle, type SessionArchiveNode } from "./src/session-actions";
 import { AgentPanelView, VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./src/views/AgentPanelView";
 import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView";
+import { loadFolderSuggestions, NewSessionFolderModal } from "./src/views/NewSessionFolderModal";
 import { normalizeWorkingAnimation } from "./src/session-state";
 import { PermissionCoordinator } from "./src/permission-coordinator";
 import type { SessionAutoApproveState } from "./src/session-auto-approve";
@@ -93,7 +94,7 @@ export default class OpenCodePlugin extends Plugin {
 
     this.addCommand({
       id: "opencode-open-directory",
-      name: "Open directory in OpenCode agents panel",
+      name: "Open new directory",
       callback: () => void this.openDirectoryWithPicker(),
     });
 
@@ -104,24 +105,62 @@ export default class OpenCodePlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "opencode-toggle-context-tool-grouping",
-      name: "Toggle context tool grouping",
-      callback: () => void this.toggleContextToolGrouping(),
-    });
-
-    this.addCommand({
-      id: "opencode-toggle-reasoning-blocks",
-      name: "Toggle reasoning blocks",
-      callback: () => void this.toggleReasoningBlocks(),
-    });
-
-    this.addCommand({
       id: "opencode-cycle-active-session-island-tab",
       name: "Cycle active session island tab",
       checkCallback: (checking) => {
         const view = this.app.workspace.activeLeaf?.view;
         if (!(view instanceof SessionView) || !view.canCycleSessionIslandTabs()) return false;
         if (!checking) view.cycleSessionIslandTab();
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "opencode-cycle-favorite-model",
+      name: "Cycle favorite model-variant pairs",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.activeLeaf?.view;
+        if (!(view instanceof SessionView)) return false;
+        if (!checking) view.cycleFavoriteModel();
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "opencode-cycle-agent-mode",
+      name: "Cycle agent mode",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.activeLeaf?.view;
+        if (!(view instanceof SessionView)) return false;
+        if (!checking) view.cycleAgentMode();
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "opencode-new-session-in-current-folder",
+      name: "Create new session in current session's folder",
+      checkCallback: (checking) => {
+        const directory = this.getActiveSessionDirectory();
+        if (!directory) return false;
+        if (!checking) void this.openNewSessionTab(directory);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "opencode-new-session-in-opened-folder",
+      name: "Create new session in an opened folder",
+      callback: () => void this.openNewSessionFolderModal(),
+    });
+
+    this.addCommand({
+      id: "opencode-archive-current-session",
+      name: "Archive current session",
+      checkCallback: (checking) => {
+        const sessionId = this.getActiveSessionId();
+        if (!sessionId) return false;
+        if (!checking) void this.requestSessionArchive(sessionId, this.getActiveSessionDirectory());
         return true;
       },
     });
@@ -228,6 +267,12 @@ export default class OpenCodePlugin extends Plugin {
     const draftId = crypto.randomUUID();
     await leaf.setViewState({ type: VIEW_TYPE_OPENCODE_SESSION, state: { draftId, draftDirectory: directory }, active: true });
     this.app.workspace.revealLeaf(leaf);
+  }
+
+  /** Enriches opened folders with git/project metadata, then opens the new-session folder picker. */
+  private async openNewSessionFolderModal(): Promise<void> {
+    const suggestions = await loadFolderSuggestions(this);
+    new NewSessionFolderModal(this.app, suggestions, (directory) => void this.openNewSessionTab(directory)).open();
   }
 
   /** Forks through v1 and repairs duplicate sibling ordinals without overriding unique server-generated titles. */
@@ -687,30 +732,6 @@ export default class OpenCodePlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
       if (leaf.view instanceof SessionView) leaf.view.refreshSessionAutoApproveState();
     }
-  }
-
-  /** Toggles collapsed Gathered context grouping for read/search/list tool calls. */
-  private async toggleContextToolGrouping(): Promise<void> {
-    this.settings.groupContextTools = !this.settings.groupContextTools;
-    await this.saveSettings();
-    new Notice(`OpenCode context tool grouping ${this.settings.groupContextTools ? "enabled" : "disabled"}.`);
-    await Promise.all(
-      this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION).map(async (leaf) => {
-        if (leaf.view instanceof SessionView) await leaf.view.refresh();
-      }),
-    );
-  }
-
-  /** Toggles visibility for assistant reasoning/thinking blocks in session tabs. */
-  private async toggleReasoningBlocks(): Promise<void> {
-    this.settings.showReasoningBlocks = !this.settings.showReasoningBlocks;
-    await this.saveSettings();
-    new Notice(`OpenCode reasoning blocks ${this.settings.showReasoningBlocks ? "enabled" : "disabled"}.`);
-    await Promise.all(
-      this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION).map(async (leaf) => {
-        if (leaf.view instanceof SessionView) await leaf.view.refresh();
-      }),
-    );
   }
 
   /** Shows Electron's native open-directory dialog; referenced by the open-directory command and panel button. */

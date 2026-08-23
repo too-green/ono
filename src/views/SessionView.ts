@@ -1159,6 +1159,16 @@ export class SessionView extends ItemView {
     this.island.cycleTab();
   }
 
+  /** Selects the next starred model-variant pair; referenced by the plugin command. */
+  cycleFavoriteModel(): void {
+    void this.variants.cycleFavoriteModel();
+  }
+
+  /** Selects the next visible agent mode; referenced by the plugin command. */
+  cycleAgentMode(): void {
+    void this.variants.cycleAgentMode();
+  }
+
   /** Reads the workspace directory used for directory-scoped agent and prompt APIs. */
   private sessionDirectoryFromSession(session: JsonObject): string | undefined {
     return jsonHelpers.readString(session, ["directory", "cwd"]);

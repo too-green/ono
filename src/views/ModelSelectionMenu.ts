@@ -25,6 +25,7 @@ export interface ModelSelectionMenuConfig {
   anchorEl: HTMLElement;
   onSelect: (ref: OpenCodeModelRef) => void;
   onToggleFavorite: (ref: FavoriteModelRef) => void;
+  onReorderFavorites: (favorites: FavoriteModelRef[]) => void;
 }
 
 /** Normalizes variant labels for off-style reasoning presets. */
@@ -37,6 +38,21 @@ function variantLabel(variant: string): string {
 /** Stable key for comparing model + variant refs. */
 function refKey(ref: { providerID: string; modelID: string; variant?: string }): string {
   return `${ref.providerID}/${ref.modelID}/${ref.variant ?? ""}`;
+}
+
+/**
+ * Returns a copy of `list` with `list[srcIndex]` moved to land before/after
+ * `list[targetIndex]`; exported for unit tests and referenced by the
+ * favourites drag-and-drop drop handler.
+ */
+export function reorderFavoritesList<T>(list: readonly T[], srcIndex: number, targetIndex: number, insertAfter: boolean): T[] {
+  const next = [...list];
+  const [moved] = next.splice(srcIndex, 1);
+  let insertAt = targetIndex + (insertAfter ? 1 : 0);
+  if (srcIndex < insertAt) insertAt -= 1;
+  insertAt = Math.max(0, Math.min(next.length, insertAt));
+  next.splice(insertAt, 0, moved);
+  return next;
 }
 
 /**
@@ -55,6 +71,7 @@ export class ModelSelectionMenu {
   private highlightedRow: HTMLElement | null = null;
   private submenuEl: HTMLElement | null = null;
   private submenuHideTimer: number | null = null;
+  private dragSrcIndex: number | null = null;
   private outsideClickHandler: (event: MouseEvent) => void;
   private keydownHandler: (event: KeyboardEvent) => void;
   private resizeHandler: () => void;
@@ -142,11 +159,11 @@ export class ModelSelectionMenu {
     // -- Favourites section (only when search is empty) --
     if (!query && favorites.length > 0) {
       this.addSectionHeader("Favourites");
-      for (const fav of favorites) {
+      favorites.forEach((fav, favIndex) => {
         const entry = entries.find((e) => e.providerID === fav.providerID && e.modelID === fav.modelID);
-        if (!entry) continue;
-        this.addFavoriteRow(entry, fav.variant);
-      }
+        if (!entry) return;
+        this.addFavoriteRow(entry, fav.variant, favIndex);
+      });
       this.listEl.createDiv({ cls: "opencode-model-menu__separator" });
     }
 
@@ -185,14 +202,93 @@ export class ModelSelectionMenu {
   /**
    * Adds a row in the Favourites section.
    * Clicking selects the model (+variant) directly because the row represents
-   * a specific model-variant pair (per spec).
+   * a specific model-variant pair (per spec). Rows are draggable to reorder
+   * the favourites list.
    */
-  private addFavoriteRow(entry: ModelEntry, variant: string | undefined): void {
+  private addFavoriteRow(entry: ModelEntry, variant: string | undefined, favIndex: number): void {
     const isOff = variant && ["none", "off", "disabled"].includes(variant.toLowerCase().replace(/[_-]/g, " "));
     const displayName = variant ? `${entry.name} (${isOff ? "off" : variant})` : entry.name;
     const row = this.createRow(entry, displayName, variant, true);
+    row.dataset.favIndex = String(favIndex);
+    this.makeFavoriteRowDraggable(row);
     this.listEl.appendChild(row);
     this.rows.push(row);
+  }
+
+  /**
+   * Attaches HTML5 drag-and-drop handlers to a Favourites row so rows can be
+   * reordered within the section; referenced by `addFavoriteRow`.
+   */
+  private makeFavoriteRowDraggable(row: HTMLElement): void {
+    row.draggable = true;
+
+    row.addEventListener("dragstart", (event) => this.handleFavoriteDragStart(row, event));
+    row.addEventListener("dragover", (event) => this.handleFavoriteDragOver(row, event));
+    row.addEventListener("dragleave", () => row.removeClass("drop-before", "drop-after"));
+    row.addEventListener("drop", (event) => this.handleFavoriteDrop(row, event));
+    row.addEventListener("dragend", () => this.clearDragState());
+  }
+
+  /** Marks the drag source and configures the drag data transfer. */
+  private handleFavoriteDragStart(row: HTMLElement, event: DragEvent): void {
+    this.dragSrcIndex = this.readFavIndex(row);
+    if (this.dragSrcIndex === null) {
+      event.preventDefault();
+      return;
+    }
+    row.addClass("is-dragging");
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", String(this.dragSrcIndex));
+    }
+  }
+
+  /** Allows the drop and shows a before/after insertion indicator on the target row. */
+  private handleFavoriteDragOver(row: HTMLElement, event: DragEvent): void {
+    if (this.dragSrcIndex === null || this.readFavIndex(row) === null) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    this.clearDropIndicators();
+    row.addClass(this.isDropAfter(row, event.clientY) ? "drop-after" : "drop-before");
+  }
+
+  /** Reorders the favorites list and persists the new order via the config callback. */
+  private handleFavoriteDrop(row: HTMLElement, event: DragEvent): void {
+    const srcIndex = this.dragSrcIndex;
+    const targetIndex = this.readFavIndex(row);
+    if (srcIndex === null || targetIndex === null) return;
+    event.preventDefault();
+    const reordered = reorderFavoritesList(this.config.favorites, srcIndex, targetIndex, this.isDropAfter(row, event.clientY));
+    this.clearDragState();
+    // onReorderFavorites synchronously mutates the favorites array before its internal await
+    this.config.onReorderFavorites(reordered);
+    this.renderList(this.searchEl.value);
+  }
+
+  /** True when the pointer is in the lower half of the row (insert after it). */
+  private isDropAfter(row: HTMLElement, clientY: number): boolean {
+    const rect = row.getBoundingClientRect();
+    return clientY > rect.top + rect.height / 2;
+  }
+
+  /** Resets drag visuals and source tracking after a finished or cancelled drag. */
+  private clearDragState(): void {
+    this.dragSrcIndex = null;
+    for (const row of this.rows) row.removeClass("is-dragging");
+    this.clearDropIndicators();
+  }
+
+  /** Removes insertion indicators from every row. */
+  private clearDropIndicators(): void {
+    for (const row of this.rows) row.removeClass("drop-before", "drop-after");
+  }
+
+  /** Parses a row's favourites-array index from its data attribute. */
+  private readFavIndex(row: HTMLElement): number | null {
+    const raw = row.dataset.favIndex;
+    if (raw === undefined) return null;
+    const index = Number.parseInt(raw, 10);
+    return Number.isNaN(index) ? null : index;
   }
 
   /**

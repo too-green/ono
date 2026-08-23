@@ -57,12 +57,21 @@ export const NOTIFICATION_MODE_LABELS = {
 export type NotificationMode = keyof typeof NOTIFICATION_MODE_LABELS;
 export const DEFAULT_NOTIFICATION_MODE: NotificationMode = "none";
 
+/** Persisted data-backed image attached to an unsent session composer draft. */
+export interface ComposerImageAttachment {
+  filename: string;
+  mime: string;
+  url: string;
+}
+
+/** Filesystem paths and data-backed images accepted by the session composer. */
+export type ComposerAttachment = string | ComposerImageAttachment;
+
 export interface OpenCodePluginSettings {
   server: OpenCodeServerConfig;
   openedDirectories: string[];
   groupContextTools: boolean;
   showReasoningBlocks: boolean;
-  showContextBarThresholdLabels: boolean;
   sessionIslandContextLabel: SessionIslandContextLabel;
   todoInProgressStatusCharacter: string;
   interruptConfirmSeconds: number;
@@ -73,7 +82,7 @@ export interface OpenCodePluginSettings {
   sessionModelChoices: Record<string, { providerID: string; modelID: string; variant?: string }>;
   sessionAutoApprove: Record<string, boolean>;
   sessionMute: Record<string, boolean>;
-  sessionAttachedFiles: Record<string, string[]>;
+  sessionAttachedFiles: Record<string, ComposerAttachment[]>;
   sessionUnread: Record<string, boolean>;
   notificationMode: NotificationMode;
   notifyOnAttention: boolean;
@@ -101,7 +110,6 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   openedDirectories: [],
   groupContextTools: false,
   showReasoningBlocks: true,
-  showContextBarThresholdLabels: true,
   sessionIslandContextLabel: DEFAULT_SESSION_ISLAND_CONTEXT_LABEL,
   todoInProgressStatusCharacter: "",
   interruptConfirmSeconds: 3,
@@ -284,17 +292,6 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           await this.plugin.refreshAgentPanels({ showLoading: false });
         });
       });
-
-    new Setting(this.containerEl)
-      .setName("Show context bar threshold labels")
-      .setDesc("Show token thresholds beneath the checkpoint markers on the composer context bar.")
-      .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.showContextBarThresholdLabels).onChange(async (value) => {
-          this.plugin.settings.showContextBarThresholdLabels = value;
-          await this.plugin.saveSettings();
-          await this.plugin.refreshSessionViews();
-        }),
-      );
 
     new Setting(this.containerEl)
       .setName("Show session context as percentage")

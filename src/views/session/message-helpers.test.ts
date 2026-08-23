@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { JsonObject, OpenCodeMessageBundle } from "../../services/opencode-types";
-import { attachmentUrl, capitalized, elapsedDurationLabel, imageAttachments, isCompactionMessage, isImageAttachment, messageCompletedTime, messageId, messageRole, messageTime, modelLabel, reasoningComplete, reasoningText, reasoningTokenCount, textFromParts, userMessageText } from "./message-helpers";
+import { attachmentUrl, capitalized, elapsedDurationLabel, imageAttachments, isCompactionMessage, isImageAttachment, messageCompletedTime, messageId, messageRole, messageTime, modelLabel, modelVariantLabel, reasoningComplete, reasoningText, reasoningTokenCount, textFromParts, userMessageText } from "./message-helpers";
 
 function bundle(info: JsonObject, parts: JsonObject[] = []): OpenCodeMessageBundle {
   return { info, parts };
@@ -187,6 +187,20 @@ describe("modelLabel", () => {
 
   it("returns undefined when no model info", () => {
     expect(modelLabel({})).toBeUndefined();
+  });
+});
+
+describe("modelVariantLabel", () => {
+  it("reads nested user-message variants", () => {
+    expect(modelVariantLabel({ model: { variant: "high" } })).toBe("high");
+  });
+
+  it("reads flat assistant-message variants", () => {
+    expect(modelVariantLabel({ variant: "medium" })).toBe("medium");
+  });
+
+  it("returns undefined when no variant was used", () => {
+    expect(modelVariantLabel({ model: { modelID: "claude" } })).toBeUndefined();
   });
 });
 

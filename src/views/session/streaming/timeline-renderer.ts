@@ -1,4 +1,4 @@
-import { MarkdownRenderer, Modal, type App, type Component } from "obsidian";
+import { MarkdownRenderer, type App, type Component } from "obsidian";
 
 import type { JsonObject, OpenCodeMessageBundle } from "../../../services/opencode-types";
 import { orderedBoundary } from "../../../message-order";
@@ -15,6 +15,7 @@ import type { SessionViewModel } from "../session-view-model";
 import type { WorkingAnimation } from "../../../session-state";
 import type { FollowLatestAnchor } from "../scroll-controller";
 import type { ToolDisplaySetting } from "../../../settings";
+import { openImagePreview } from "../image-preview";
 
 const CONTEXT_TOOLS = new Set(["read", "read_file", "glob", "grep", "list"]);
 
@@ -580,17 +581,8 @@ export class TimelineRenderer {
       const button = grid.createEl("button", { attr: { "aria-label": `Open image ${image.name}` }, cls: "opencode-session-view__attachment" });
       button.createEl("img", { attr: { src: image.url, alt: image.name, loading: "lazy" }, cls: "opencode-session-view__attachment-image" });
       button.createSpan({ text: image.name, cls: "opencode-session-view__attachment-name" });
-      button.addEventListener("click", () => this.openImagePreview(image));
+      button.addEventListener("click", () => openImagePreview(this.deps.app, image));
     }
-  }
-
-  /** Opens an Obsidian modal for a full-size message attachment. */
-  private openImagePreview(image: ImageAttachment): void {
-    const modal = new Modal(this.deps.app);
-    modal.titleEl.setText(image.name);
-    modal.contentEl.addClass("opencode-session-view__image-modal");
-    modal.contentEl.createEl("img", { attr: { src: image.url, alt: image.name }, cls: "opencode-session-view__image-modal-img" });
-    modal.open();
   }
 
   /** Renders one static compaction boundary divider; its summary assistant renders as a normal turn. */

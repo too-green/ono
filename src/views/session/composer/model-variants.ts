@@ -397,6 +397,7 @@ export class ModelVariantsController {
       anchorEl: event.currentTarget as HTMLElement,
       onSelect: (ref) => void this.chooseComposerModel(ref),
       onToggleFavorite: (ref) => { void this.deps.plugin.toggleFavoriteModel(ref); },
+      onReorderFavorites: (favorites) => { void this.deps.plugin.reorderFavoriteModels(favorites); },
     });
   }
 }

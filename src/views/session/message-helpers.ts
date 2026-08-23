@@ -97,6 +97,12 @@ export function modelLabel(info: JsonObject): string | undefined {
   return readString(info, ["modelID", "modelId", "model"]);
 }
 
+/** Reads the reasoning/model-effort variant from user or assistant message metadata. */
+export function modelVariantLabel(info: JsonObject): string | undefined {
+  const model = readObject(info, "model");
+  return readString(model ?? {}, ["variant"]) ?? readString(info, ["variant"]);
+}
+
 /** Returns an assistant message completion timestamp when OpenCode has settled it. */
 export function messageCompletedTime(bundle: OpenCodeMessageBundle): number | undefined {
   const time = readObject(bundle.info, "time");

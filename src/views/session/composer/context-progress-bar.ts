@@ -146,8 +146,6 @@ export function contextUsage(model: SessionViewModel): ContextUsage | undefined 
 export interface ContextProgressBarDeps {
   /** Shared domain state; the bar reads `loadedMessages`, `selectedModel`, `availableModels`. */
   model: SessionViewModel;
-  /** Returns whether checkpoint token labels should be visible. */
-  showThresholdLabels: () => boolean;
 }
 
 /** Renders and updates the context-length progress bar pinned to the composer's bottom border. */
@@ -157,11 +155,9 @@ export class ContextProgressBarController {
   private fillEl?: HTMLElement;
   private readonly markers: HTMLElement[] = [];
   private readonly model: SessionViewModel;
-  private readonly showThresholdLabels: () => boolean;
 
   constructor(deps: ContextProgressBarDeps) {
     this.model = deps.model;
-    this.showThresholdLabels = deps.showThresholdLabels;
   }
 
   /** Creates the progress bar DOM inside the given container; called by `ComposerController.mount`. */
@@ -193,7 +189,6 @@ export class ContextProgressBarController {
     const used = usage?.used ?? 0;
     const hasAssistant = this.model.loadedMessages.some((bundle) => readString(bundle.info, ["role"]) === "assistant");
     const isEmpty = !hasAssistant || limit === 0 || used === 0;
-    const showThresholdLabels = this.showThresholdLabels();
 
     // Compute piecewise-linear sections from checkpoints, adjusted for the model's limit.
     const sections = computeProgressSections(limit);
@@ -213,14 +208,16 @@ export class ContextProgressBarController {
     const actualPct = !isEmpty && limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
     bar.title = limit > 0 && !isEmpty ? `${formatCompactNumber(used)}/${formatCompactNumber(limit)} tokens (${Math.round(actualPct)}%)` : "";
 
-    // Markers sit at section end-points with absolute token labels.
+    // Markers sit at section end-points; hover reveals their token count as inline beads.
     for (let i = 0; i < this.markers.length; i++) {
       const marker = this.markers[i];
       const label = marker.querySelector(".opencode-session-view__composer-progress-marker-label") as HTMLElement | null;
-      if (label) label.hidden = !showThresholdLabels;
       if (!isEmpty && i < sections.length) {
         marker.style.left = `${(sections[i].endFraction * 100).toFixed(2)}%`;
         marker.style.visibility = "visible";
+        marker.style.setProperty("--checkpoint-color", sections[i].color);
+        marker.toggleClass("is-passed", visualFrac >= sections[i].endFraction - 1e-9);
+        marker.toggleClass("is-warn", sections[i].color === "var(--color-yellow)");
         if (label) label.setText(formatCompactNumber(sections[i].endContext));
       } else {
         marker.style.visibility = "hidden";

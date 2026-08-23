@@ -149,7 +149,7 @@ describe("TimelineRenderer DOM", () => {
   it("renders live assistant metadata immediately before the first assistant message", async () => {
     const { contentEl, model, renderer } = setup();
     const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
-    const user = bundle("u1", "user", 2_000, [{ type: "text", text: "question" }], { agent: "build", model: { modelID: "test-model" }, time: {} });
+    const user = bundle("u1", "user", 2_000, [{ type: "text", text: "question" }], { agent: "build", model: { modelID: "test-model", variant: "high" }, time: {} });
     model.loadedMessages = [user];
     model.sessionBusy = true;
     model.activeTurnStartedAt = 2_000;
@@ -159,7 +159,7 @@ describe("TimelineRenderer DOM", () => {
 
     const meta = timeline.querySelector<HTMLElement>(".opencode-session-view__message-meta--working");
     const actions = Array.from(meta?.querySelectorAll<HTMLButtonElement>("button") ?? []);
-    expect(meta?.textContent).toContain("Build · test-model · 3.0s");
+    expect(meta?.textContent).toContain("Build · test-model · high · 3.0s");
     expect(meta?.getAttribute("aria-busy")).toBe("true");
     expect(meta?.querySelector(".opencode-status-badge--working")?.getAttribute("aria-hidden")).toBe("true");
     expect(actions).toHaveLength(0);

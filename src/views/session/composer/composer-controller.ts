@@ -1,6 +1,7 @@
 import { Notice, Platform, setIcon } from "obsidian";
 import { pathToFileURL } from "url";
 import type OpenCodePlugin from "../../../../main";
+import type { ComposerAttachment, ComposerImageAttachment } from "../../../settings";
 import type { JsonObject } from "../../../services/opencode-types";
 import type { SessionViewModel } from "../session-view-model";
 import type { DomEventRegistrar } from "../dom-registrar";
@@ -8,6 +9,7 @@ import { commandName, visibleBuiltinCommands } from "./slash-menu";
 import { ContextProgressBarController } from "./context-progress-bar";
 import { readString } from "../json-helpers";
 import { compactHomePath } from "../path-utils";
+import { openImagePreview, type PreviewableImage } from "../image-preview";
 
 /**
  * Composer cluster controller: textarea, send/abort, attachments, draft
@@ -29,6 +31,19 @@ interface ElectronDialogBridge {
   showOpenDialog(browserWindow: unknown, options: { properties: string[] }): Promise<{ canceled: boolean; filePaths: string[] }>;
   showOpenDialog(options: { properties: string[] }): Promise<{ canceled: boolean; filePaths: string[] }>;
 }
+
+interface ElectronClipboardBridge {
+  readImage(): { isEmpty(): boolean; toDataURL(): string };
+}
+
+const IMAGE_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
+  gif: "image/gif",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+};
+const SUPPORTED_IMAGE_MIMES = new Set(Object.values(IMAGE_MIME_BY_EXTENSION));
 
 /** Snapshot of composer focus + selection captured before a timeline reconciliation and restored after. */
 export interface ComposerDomState {
@@ -105,10 +120,7 @@ export class ComposerController {
 
   constructor(deps: ComposerDeps) {
     this.deps = deps;
-    this.progressBar = new ContextProgressBarController({
-      model: deps.model,
-      showThresholdLabels: () => deps.plugin.settings.showContextBarThresholdLabels,
-    });
+    this.progressBar = new ContextProgressBarController({ model: deps.model });
     // Captures macOS Command+Enter before Obsidian's global hotkey layer consumes it.
     deps.register.registerDomEvent(window, "keydown", this.handleGlobalComposerSend, { capture: true });
   }
@@ -143,6 +155,7 @@ export class ComposerController {
       this.composing = false;
       this.handleComposerInput(textarea);
     });
+    textarea.addEventListener("paste", (event) => void this.handleComposerPaste(event));
     textarea.addEventListener("keydown", (event) => this.handleComposerKeydown(event), { capture: true });
     if (shouldFocus) window.setTimeout(() => textarea.focus(), 0);
 
@@ -351,19 +364,47 @@ export class ComposerController {
     return el;
   }
 
-  /** Renders selected absolute file chips above the composer textarea. */
+  /** Renders image previews and non-image file chips above the composer textarea. */
   private renderAttachmentChips(container: HTMLElement, composerKey: string): void {
     const files = this.deps.plugin.settings.sessionAttachedFiles[composerKey] ?? [];
     if (files.length === 0) return;
+    const attachments = files.map((file) => ({ file, image: this.composerImagePreview(file) }));
+    this.renderComposerImagePreviews(container, attachments.flatMap(({ file, image }) => image ? [{ file, image }] : []));
+    const nonImages = attachments.filter(({ image }) => !image).map(({ file }) => file);
+    if (nonImages.length === 0) return;
     const chips = container.createDiv({ cls: "opencode-session-view__attachment-chips" });
-    for (const file of files) {
-      const chip = chips.createEl("button", { cls: "opencode-session-view__attachment-chip", attr: { "aria-label": `Remove ${file}` } });
+    for (const file of nonImages) {
+      const name = typeof file === "string" ? compactHomePath(file) : file.filename;
+      const chip = chips.createEl("button", { cls: "opencode-session-view__attachment-chip", attr: { "aria-label": `Remove ${name}` } });
       setIcon(chip, "file-text");
-      chip.createSpan({ text: compactHomePath(file) });
+      chip.createSpan({ text: name });
       const remove = chip.createSpan({ cls: "opencode-session-view__attachment-chip-remove" });
       setIcon(remove, "x");
       chip.addEventListener("click", () => void this.removeComposerAttachment(file));
     }
+  }
+
+  /** Renders compact image cards whose preview and removal actions stay independent. */
+  private renderComposerImagePreviews(container: HTMLElement, images: Array<{ file: ComposerAttachment; image: PreviewableImage }>): void {
+    if (images.length === 0) return;
+    const grid = container.createDiv({ cls: "opencode-session-view__composer-attachments" });
+    for (const { file, image } of images) {
+      const card = grid.createDiv({ cls: "opencode-session-view__composer-attachment" });
+      const preview = card.createEl("button", { cls: "opencode-session-view__attachment opencode-session-view__composer-attachment-preview", attr: { "aria-label": `Open image ${image.name}` } });
+      preview.createEl("img", { cls: "opencode-session-view__attachment-image", attr: { src: image.url, alt: image.name } });
+      preview.createSpan({ text: image.name, cls: "opencode-session-view__attachment-name" });
+      preview.addEventListener("click", () => openImagePreview(this.deps.plugin.app, image));
+      const remove = card.createEl("button", { cls: "opencode-session-view__composer-attachment-remove clickable-icon", attr: { "aria-label": `Remove ${image.name}` } });
+      setIcon(remove, "x");
+      remove.addEventListener("click", () => void this.removeComposerAttachment(file));
+    }
+  }
+
+  /** Resolves persisted image data or a selected image path into preview metadata. */
+  private composerImagePreview(file: ComposerAttachment): PreviewableImage | undefined {
+    if (typeof file !== "string") return { name: file.filename, url: file.url };
+    if (!this.fileMime(file).startsWith("image/")) return undefined;
+    return { name: compactHomePath(file), url: pathToFileURL(file).href };
   }
 
   /** Updates the CSS custom property that prevents latest messages from hiding behind the composer. */
@@ -386,6 +427,85 @@ export class ComposerController {
   }
 
   // ---- Attachments ----
+
+  /** Adds image files from a browser or Electron-native clipboard to the active draft. */
+  private async handleComposerPaste(event: ClipboardEvent): Promise<void> {
+    const clipboard = event.clipboardData;
+    const composerKey = this.deps.model.composerStorageKey;
+    if (!clipboard || !composerKey) return;
+
+    const itemFiles = Array.from(clipboard.items).flatMap((item) => {
+      if (item.kind !== "file") return [];
+      const file = item.getAsFile();
+      const mime = file ? this.imageMime(item.type, file.name) : undefined;
+      return file && mime ? [{ file, mime }] : [];
+    });
+    const imageFiles = itemFiles.length > 0
+      ? itemFiles
+      : Array.from(clipboard.files).flatMap((file) => {
+        const mime = this.imageMime(file.type, file.name);
+        return mime ? [{ file, mime }] : [];
+      });
+    if (imageFiles.length === 0 && clipboard.getData("text/plain")) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      const images = imageFiles.length > 0
+        ? await Promise.all(imageFiles.map(({ file, mime }) => this.composerImageFromFile(file, mime)))
+        : this.nativeClipboardImage();
+      if (!images) return;
+      await this.rememberPastedImages(composerKey, Array.isArray(images) ? images : [images]);
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Unable to paste image.");
+    }
+  }
+
+  /** Converts one browser clipboard image into the v1 data-URL attachment shape. */
+  private composerImageFromFile(file: File, mime: string): Promise<ComposerImageAttachment> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== "string") {
+          reject(new Error("Unable to read pasted image."));
+          return;
+        }
+        const comma = reader.result.indexOf(",");
+        const url = comma < 0 ? reader.result : `data:${mime};base64,${reader.result.slice(comma + 1)}`;
+        resolve({ filename: file.name || `pasted-image-${Date.now()}.${this.imageExtension(mime)}`, mime, url });
+      };
+      reader.onerror = () => reject(reader.error ?? new Error("Unable to read pasted image."));
+      reader.onabort = () => reject(new Error("Pasted image read was cancelled."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /** Reads image-only clipboard content through Electron when Chromium exposes no file item. */
+  private nativeClipboardImage(): ComposerImageAttachment | undefined {
+    try {
+      const electronRequire = (window as unknown as { require?: NodeRequire }).require ?? require;
+      const clipboard = (electronRequire("electron") as { clipboard?: ElectronClipboardBridge }).clipboard;
+      const image = clipboard?.readImage();
+      if (!image || image.isEmpty()) return undefined;
+      return { filename: `pasted-image-${Date.now()}.png`, mime: "image/png", url: image.toDataURL() };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Merges pasted images into the captured draft and refreshes its mounted chips. */
+  private async rememberPastedImages(composerKey: string, images: ComposerImageAttachment[]): Promise<void> {
+    const existing = this.deps.plugin.settings.sessionAttachedFiles[composerKey] ?? [];
+    const existingUrls = new Set(existing.flatMap((file) => typeof file === "string" ? [] : [file.url]));
+    const additions = images.filter((image) => {
+      if (existingUrls.has(image.url)) return false;
+      existingUrls.add(image.url);
+      return true;
+    });
+    if (additions.length === 0) return;
+    await this.deps.plugin.rememberSessionAttachedFiles(composerKey, [...existing, ...additions]);
+    if (this.deps.model.composerStorageKey === composerKey) await this.refresh();
+  }
 
   /** Opens Electron's native picker and stores selected absolute file paths as composer chips. */
   private async pickComposerFiles(): Promise<void> {
@@ -410,7 +530,7 @@ export class ComposerController {
   }
 
   /** Removes one selected file chip and re-renders only the composer shell. */
-  private async removeComposerAttachment(file: string): Promise<void> {
+  private async removeComposerAttachment(file: ComposerAttachment): Promise<void> {
     const composerKey = this.deps.model.composerStorageKey;
     if (!composerKey) return;
     const files = (this.deps.plugin.settings.sessionAttachedFiles[composerKey] ?? []).filter((item) => item !== file);
@@ -602,12 +722,33 @@ export class ComposerController {
 
   /** Converts selected composer attachment paths to prompt file parts. */
   private composerFileParts(key: string): Array<{ type: "file"; url: string; filename: string; mime: string }> {
-    return (this.deps.plugin.settings.sessionAttachedFiles[key] ?? []).map((file) => ({
-      type: "file" as const,
-      url: pathToFileURL(file).href,
-      filename: file,
-      mime: "text/plain",
-    }));
+    return (this.deps.plugin.settings.sessionAttachedFiles[key] ?? []).map((file) => typeof file === "string"
+      ? {
+        type: "file" as const,
+        url: pathToFileURL(file).href,
+        filename: file,
+        mime: this.fileMime(file),
+      }
+      : { type: "file" as const, url: file.url, filename: file.filename, mime: file.mime });
+  }
+
+  /** Infers image MIME for picker paths while retaining text context-file behavior. */
+  private fileMime(filename: string): string {
+    const extension = filename.split(".").pop()?.toLowerCase();
+    return extension ? IMAGE_MIME_BY_EXTENSION[extension] ?? "text/plain" : "text/plain";
+  }
+
+  /** Resolves one first-party-supported image MIME from clipboard metadata or its filename. */
+  private imageMime(mime: string, filename: string): string | undefined {
+    const normalized = mime.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    if (SUPPORTED_IMAGE_MIMES.has(normalized)) return normalized;
+    const inferred = this.fileMime(filename);
+    return inferred.startsWith("image/") ? inferred : undefined;
+  }
+
+  /** Returns a stable filename extension for pasted image MIME types. */
+  private imageExtension(mime: string): string {
+    return mime === "image/jpeg" ? "jpg" : mime.split("/")[1]?.replace("+xml", "") || "png";
   }
 
   /** Autosizes the composer textarea while keeping it bounded. */

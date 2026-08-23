@@ -4,7 +4,7 @@ import type { DiffFileSummary } from "../../../diff-utils";
 import type { OpenCodeMessageBundle } from "../../../services/opencode-types";
 import type { WorkingAnimation } from "../../../session-state";
 import { renderStatusBadge } from "../../../status-badge";
-import { capitalized, elapsedDurationLabel, messageId, messageTime, modelLabel } from "../message-helpers";
+import { capitalized, elapsedDurationLabel, messageId, messageTime, modelLabel, modelVariantLabel } from "../message-helpers";
 import { readObject, readString } from "../json-helpers";
 
 export type MessageRole = "assistant" | "user";
@@ -139,6 +139,7 @@ function renderAssistantMetaText(meta: HTMLElement, bundle: OpenCodeMessageBundl
   const items: Array<{ text: string; className?: string; startedAt?: number }> = [
     capitalized(readString(bundle.info, ["agent"])),
     modelLabel(bundle.info),
+    modelVariantLabel(bundle.info),
   ].filter((item): item is string => !!item).map((text) => ({ text }));
   if (duration) items.push({ text: duration, className: "opencode-session-view__message-meta-duration", startedAt: options?.working ? options.startedAt : undefined });
   const error = readObject(bundle.info, "error");

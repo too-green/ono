@@ -8,6 +8,7 @@ import {
   normalizeOpenIde,
   normalizeSessionIslandContextLabel,
   normalizeTodoStatusCharacter,
+  type ComposerAttachment,
   type OpenCodePluginSettings,
 } from "./src/settings";
 import { OpenCodeService } from "./src/services/opencode-service";
@@ -415,7 +416,6 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.openedDirectories = Array.isArray(this.settings.openedDirectories) ? this.settings.openedDirectories : [];
     this.settings.groupContextTools = this.settings.groupContextTools === true;
     this.settings.showReasoningBlocks = this.settings.showReasoningBlocks !== false;
-    this.settings.showContextBarThresholdLabels = this.settings.showContextBarThresholdLabels !== false;
     this.settings.sessionIslandContextLabel = normalizeSessionIslandContextLabel(this.settings.sessionIslandContextLabel);
     this.settings.todoInProgressStatusCharacter = normalizeTodoStatusCharacter(this.settings.todoInProgressStatusCharacter);
     this.settings.openIde = normalizeOpenIde(this.settings.openIde);
@@ -585,8 +585,8 @@ export default class OpenCodePlugin extends Plugin {
     await this.saveSettings();
   }
 
-  /** Persists selected absolute file attachments for an unsent composer draft. */
-  async rememberSessionAttachedFiles(sessionId: string, files: string[]): Promise<void> {
+  /** Persists selected file paths and pasted images for an unsent composer draft. */
+  async rememberSessionAttachedFiles(sessionId: string, files: ComposerAttachment[]): Promise<void> {
     if (files.length > 0) this.settings.sessionAttachedFiles[sessionId] = [...files];
     else delete this.settings.sessionAttachedFiles[sessionId];
     await this.saveSettings();
@@ -598,6 +598,13 @@ export default class OpenCodePlugin extends Plugin {
     const idx = this.settings.favoriteModels.findIndex((f) => key(f) === key(ref));
     if (idx >= 0) this.settings.favoriteModels.splice(idx, 1);
     else this.settings.favoriteModels.push(ref);
+    await this.saveSettings();
+  }
+
+  /** Persists a new order for the favorites list; referenced by ModelSelectionMenu drag-and-drop. */
+  async reorderFavoriteModels(favorites: Array<{ providerID: string; modelID: string; variant?: string }>): Promise<void> {
+    // Mutate in place so an open ModelSelectionMenu sharing the array reference sees the new order
+    this.settings.favoriteModels.splice(0, this.settings.favoriteModels.length, ...favorites);
     await this.saveSettings();
   }
 

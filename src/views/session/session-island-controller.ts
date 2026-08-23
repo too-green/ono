@@ -14,7 +14,8 @@ import {
 import type OpenCodePlugin from "../../../main";
 import type { OpenCodeMessageBundle, OpenCodeTodo } from "../../services/opencode-types";
 import { normalizeSessionIslandContextLabel, normalizeTodoStatusCharacter } from "../../settings";
-import { isActiveSessionStatus } from "../../session-state";
+import { isActiveSessionStatus, normalizeWorkingAnimation } from "../../session-state";
+import { renderStatusBadge } from "../../status-badge";
 import type { SessionViewModel } from "./session-view-model";
 import { collapseExpandedDiffContext, DIFF_ACTIVE_ROW_EVENT, renderDiffSection } from "./blocks/edit-tool";
 import { configuredToolIcon, toolIcon } from "./blocks/tool-renderer";
@@ -584,10 +585,8 @@ export class SessionIslandController {
       setIcon(icon, "bot");
       row.createSpan({ text: info.title, cls: "opencode-session-view__island-subagent-title" });
       if (working) {
-        row.createSpan({
-          cls: "opencode-session-view__island-subagent-status opencode-session-view__message-working-indicator",
-          attr: { "aria-hidden": "true" },
-        });
+        const status = row.createSpan({ cls: "opencode-session-view__island-subagent-status", attr: { "aria-hidden": "true" } });
+        renderStatusBadge(status, { status: "working", workingAnimation: normalizeWorkingAnimation(this.deps.plugin.settings.workingAnimation) });
       } else {
         row.createSpan({ text: "Idle", cls: "opencode-session-view__island-subagent-status" });
       }

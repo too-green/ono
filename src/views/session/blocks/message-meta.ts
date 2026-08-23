@@ -2,14 +2,14 @@ import { setIcon } from "obsidian";
 
 import type { DiffFileSummary } from "../../../diff-utils";
 import type { OpenCodeMessageBundle } from "../../../services/opencode-types";
+import type { WorkingAnimation } from "../../../session-state";
+import { renderStatusBadge } from "../../../status-badge";
 import { capitalized, elapsedDurationLabel, messageId, messageTime, modelLabel } from "../message-helpers";
 import { readObject, readString } from "../json-helpers";
 
 export type MessageRole = "assistant" | "user";
 
 export interface MessageMetaCallbacks {
-  /** Returns true when a message id is currently queued for send. */
-  isQueued: (messageId: string) => boolean;
   /** Fork the session after the given included assistant message id. */
   onFork: (messageId: string) => void;
   /** Request a rewind to the given user message bundle. */
@@ -28,6 +28,8 @@ export interface RewindBoundaryProps {
 export interface AssistantMetaOptions {
   /** Whether this row represents the assistant turn that is currently active. */
   working: boolean;
+  /** Working animation variant for the shared status badge; supplied by `TimelineRenderer`. */
+  workingAnimation: WorkingAnimation;
   /** Start of the complete assistant turn, normally the preceding user message creation time. */
   startedAt?: number;
   /** End of the complete assistant turn, normally the final assistant message completion time. */
@@ -44,19 +46,20 @@ export function renderMessageMeta(
   copyText: string,
   callbacks: MessageMetaCallbacks,
   assistantOptions?: AssistantMetaOptions,
+  queued = false,
 ): HTMLElement {
   const meta = container.createDiv({ cls: `opencode-session-view__message-meta opencode-session-view__message-meta--${role}` });
   if (role === "assistant" && assistantOptions?.working) {
     meta.addClass("opencode-session-view__message-meta--working");
     meta.setAttr("aria-busy", "true");
-    meta.createSpan({ cls: "opencode-session-view__message-working-indicator", attr: { "aria-hidden": "true" } });
+    renderStatusBadge(meta, { status: "working", workingAnimation: assistantOptions.workingAnimation }).setAttr("aria-hidden", "true");
   }
   if (role === "assistant") renderAssistantMetaText(meta, bundle, assistantOptions);
   else {
     const items = userMetaItems(bundle);
     if (items.length > 0) meta.createSpan({ text: items.join(" · "), cls: "opencode-session-view__message-meta-text" });
   }
-  if (role === "user" && callbacks.isQueued(messageId(bundle))) {
+  if (role === "user" && queued) {
     meta.createSpan({ text: "QUEUED", cls: "opencode-session-view__queued-badge is-visible" });
   }
   if (role === "assistant" && assistantOptions?.working) return meta;

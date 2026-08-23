@@ -12,6 +12,7 @@ import * as messageHelpers from "../message-helpers";
 import type { ImageAttachment } from "../message-helpers";
 import { hashRenderState } from "../render-signature";
 import type { SessionViewModel } from "../session-view-model";
+import type { WorkingAnimation } from "../../../session-state";
 import type { FollowLatestAnchor } from "../scroll-controller";
 import type { ToolDisplaySetting } from "../../../settings";
 
@@ -36,6 +37,7 @@ export interface TimelineDeps {
   contentEl: HTMLElement;
   model: SessionViewModel;
   getShowReasoningBlocks: () => boolean;
+  getWorkingAnimation: () => WorkingAnimation;
   getGroupContextTools: () => boolean;
   getCustomToolDisplays: () => ToolDisplaySetting[];
   getBindingVersion: () => number;
@@ -108,6 +110,22 @@ export function latestVisibleAssistantIndex(messages: OpenCodeMessageBundle[], e
   return -1;
 }
 
+/**
+ * Index of the last uncompleted assistant turn; user messages after it are queued
+ * while the session is busy. Mirrors the first-party TUI derivation
+ * (`packages/tui/src/routes/session/index.tsx`) because the v1 API exposes no
+ * queued flag: a prompt sent during a run is persisted immediately and only an
+ * assistant message appearing after it distinguishes pickup.
+ */
+export function lastUncompletedAssistantIndex(messages: OpenCodeMessageBundle[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (messageHelpers.messageRole(message) !== "assistant" || messageHelpers.isCompactionMessage(message)) continue;
+    return messageHelpers.messageCompletedTime(message) === undefined ? index : -1;
+  }
+  return -1;
+}
+
 /** Decides whether a visible assistant message closes an assistant turn and builds its combined prose. */
 export function messageRenderOptions(messages: OpenCodeMessageBundle[], index: number): MessageRenderOptions {
   const bundle = messages[index];
@@ -174,11 +192,12 @@ export class TimelineRenderer {
     this.renderHistoryBoundary(timeline);
     const visibleMessages = this.visibleMessages(messages);
     const activeAssistantId = this.activeAssistantMessageId(visibleMessages);
+    const pendingIndex = lastUncompletedAssistantIndex(visibleMessages);
     for (let index = 0; index < visibleMessages.length; index += 1) {
       const message = visibleMessages[index];
       const options = messageRenderOptions(visibleMessages, index);
       const assistantOptions = this.assistantMetaOptions(visibleMessages, index, activeAssistantId);
-      const row = await this.renderMessageRow(message, options, assistantOptions);
+      const row = await this.renderMessageRow(message, options, assistantOptions, this.isUserQueued(visibleMessages, index, pendingIndex));
       if (!this.isBindingCurrent(binding)) return visibleMessages.length;
       timeline.appendChild(row);
     }
@@ -215,6 +234,7 @@ export class TimelineRenderer {
 
     const visibleMessages = this.visibleMessages(messages);
     const activeAssistantId = this.activeAssistantMessageId(visibleMessages);
+    const pendingIndex = lastUncompletedAssistantIndex(visibleMessages);
     const mountedRows = new Map(
       Array.from(timeline.children)
         .filter((child): child is HTMLElement => child instanceof HTMLElement && !!child.dataset.messageId)
@@ -228,15 +248,17 @@ export class TimelineRenderer {
       const id = messageHelpers.messageId(message);
       const options = messageRenderOptions(visibleMessages, index);
       const assistantOptions = this.assistantMetaOptions(visibleMessages, index, activeAssistantId);
-      const signature = this.messageRowSignature(message, options, assistantOptions);
+      const queued = this.isUserQueued(visibleMessages, index, pendingIndex);
+      const signature = this.messageRowSignature(message, options, assistantOptions, queued);
       const current = mountedRows.get(id);
-      const next = current?.dataset.messageSignature === signature ? undefined : await this.renderMessageRow(message, options, assistantOptions);
+      const next = current?.dataset.messageSignature === signature ? undefined : await this.renderMessageRow(message, options, assistantOptions, queued);
       if (!this.isBindingCurrent(binding) || reconcileVersion !== this.reconcileVersion || !timeline.isConnected) return;
       entries.push({ id, signature, current, next });
     }
 
     const latestVisibleMessages = this.visibleMessages(messages);
     const latestActiveAssistantId = this.activeAssistantMessageId(latestVisibleMessages);
+    const latestPendingIndex = lastUncompletedAssistantIndex(latestVisibleMessages);
     const staleSnapshot = latestVisibleMessages.length !== entries.length || entries.some((entry, index) => {
       const message = latestVisibleMessages[index];
       if (!message || messageHelpers.messageId(message) !== entry.id) return true;
@@ -244,6 +266,7 @@ export class TimelineRenderer {
         message,
         messageRenderOptions(latestVisibleMessages, index),
         this.assistantMetaOptions(latestVisibleMessages, index, latestActiveAssistantId),
+        this.isUserQueued(latestVisibleMessages, index, latestPendingIndex),
       ) !== entry.signature;
     });
     if (staleSnapshot) {
@@ -301,22 +324,30 @@ export class TimelineRenderer {
     bundle: OpenCodeMessageBundle,
     options: MessageRenderOptions,
     assistantOptions?: AssistantMetaOptions,
+    queued = false,
   ): Promise<HTMLElement> {
     const row = document.createElement("div");
     row.classList.add("opencode-session-view__message-row");
     row.dataset.messageId = messageHelpers.messageId(bundle);
-    row.dataset.messageSignature = this.messageRowSignature(bundle, options, assistantOptions);
-    await this.renderMessage(row, bundle, options, assistantOptions);
+    row.dataset.messageSignature = this.messageRowSignature(bundle, options, assistantOptions, queued);
+    await this.renderMessage(row, bundle, options, assistantOptions, queued);
     return row;
   }
 
-  /** Includes adjacent-turn and busy metadata in the visual signature for one message row. */
+  /** Includes adjacent-turn, busy, and queued metadata in the visual signature for one message row. */
   private messageRowSignature(
     bundle: OpenCodeMessageBundle,
     options: MessageRenderOptions,
     assistantOptions?: AssistantMetaOptions,
+    queued = false,
   ): string {
-    return hashRenderState(JSON.stringify([bundle, options, assistantOptions]));
+    return hashRenderState(JSON.stringify([bundle, options, assistantOptions, queued]));
+  }
+
+  /** Derives TUI-parity queued state: a user message trailing the active assistant turn while busy. */
+  private isUserQueued(messages: OpenCodeMessageBundle[], index: number, pendingIndex: number): boolean {
+    if (!this.deps.model.sessionBusy || pendingIndex < 0) return false;
+    return messageHelpers.messageRole(messages[index]) === "user" && index > pendingIndex;
   }
 
   /** Reuses stable direct blocks while committing changed content into an existing message row. */
@@ -369,10 +400,10 @@ export class TimelineRenderer {
     this.commitChildrenInPlace(current, desiredChildren, retainedChildren);
   }
 
-  /** Updates live metadata while preserving the mounted CSS-animation indicator element. */
+  /** Updates live metadata while preserving the mounted CSS-animation badge element. */
   private reconcileWorkingMeta(current: HTMLElement, next: HTMLElement): void {
-    const currentIndicator = current.querySelector<HTMLElement>(".opencode-session-view__message-working-indicator");
-    const nextIndicator = next.querySelector<HTMLElement>(".opencode-session-view__message-working-indicator");
+    const currentIndicator = current.querySelector<HTMLElement>(".opencode-status-badge");
+    const nextIndicator = next.querySelector<HTMLElement>(".opencode-status-badge");
     const retainedChildren = new Set<ChildNode>();
     const desiredChildren = Array.from(next.childNodes, (nextChild) => {
       if (nextChild !== nextIndicator || !currentIndicator) return nextChild;
@@ -513,6 +544,7 @@ export class TimelineRenderer {
     bundle: OpenCodeMessageBundle,
     options: MessageRenderOptions,
     assistantOptions?: AssistantMetaOptions,
+    queued = false,
   ): Promise<void> {
     if (messageHelpers.isCompactionMessage(bundle)) {
       this.renderCompactionDivider(container, bundle);
@@ -536,8 +568,8 @@ export class TimelineRenderer {
       const body = article.createDiv({ cls: "opencode-session-view__markdown markdown-rendered" });
       await MarkdownRenderer.renderMarkdown(text, body, this.markdownSourcePath(), this.deps.component);
     }
-    renderMessageMeta(wrapper, bundle, "user", text, this.messageMetaCallbacks());
-    this.annotateBlock(wrapper, "user-message", bundle);
+    renderMessageMeta(wrapper, bundle, "user", text, this.messageMetaCallbacks(), undefined, queued);
+    this.annotateBlock(wrapper, "user-message", [bundle, queued]);
   }
 
   /** Renders clickable image thumbnails attached to a user message. */
@@ -741,10 +773,11 @@ export class TimelineRenderer {
     if (!this.deps.model.sessionBusy) return undefined;
     const latest = messages.at(-1);
     if (latest && messageHelpers.messageRole(latest) === "assistant" && !messageHelpers.isCompactionMessage(latest)) return messageHelpers.messageId(latest);
-    if (!latest || messageHelpers.messageRole(latest) !== "user" || !this.deps.model.queuedMessageIds.has(messageHelpers.messageId(latest))) return undefined;
+    if (!latest || messageHelpers.messageRole(latest) !== "user") return undefined;
+    // A trailing user message during a busy turn means the active row is the last uncompleted assistant before it.
     for (const message of [...messages].reverse()) {
       if (messageHelpers.messageRole(message) !== "assistant" || messageHelpers.isCompactionMessage(message)) continue;
-      if (messageHelpers.messageCompletedTime(message) === undefined) return messageHelpers.messageId(message);
+      return messageHelpers.messageCompletedTime(message) === undefined ? messageHelpers.messageId(message) : undefined;
     }
     return undefined;
   }
@@ -758,6 +791,7 @@ export class TimelineRenderer {
     const latestAssistant = index === messages.length - 1;
     return {
       working,
+      workingAnimation: this.deps.getWorkingAnimation(),
       startedAt: working ? this.liveTurnStartedAt(timing.startedAt) : timing.startedAt,
       completedAt: !this.deps.model.sessionBusy && latestAssistant
         ? this.deps.model.activeTurnCompletedAt ?? timing.completedAt
@@ -775,7 +809,7 @@ export class TimelineRenderer {
     const startedAt = this.liveTurnStartedAt(latestUser ? messageHelpers.messageTime(latestUser) : undefined);
     const source = latestUser ?? this.syntheticAssistantMetaSource(startedAt);
     const row = container.createDiv({ cls: "opencode-session-view__message-row opencode-session-view__assistant-meta-placeholder" });
-    const meta = renderMessageMeta(row, source, "assistant", "", this.messageMetaCallbacks(), { working: true, startedAt });
+    const meta = renderMessageMeta(row, source, "assistant", "", this.messageMetaCallbacks(), { working: true, workingAnimation: this.deps.getWorkingAnimation(), startedAt });
     this.annotateBlock(meta, "assistant-meta", [source.info, startedAt, true]);
     return true;
   }
@@ -820,7 +854,6 @@ export class TimelineRenderer {
   /** Builds message action callbacks without exposing shell/controller references. */
   private messageMetaCallbacks(): MessageMetaCallbacks {
     return {
-      isQueued: (id) => this.deps.model.queuedMessageIds.has(id),
       onFork: (id) => this.deps.onFork(id),
       onRewind: (bundle) => this.deps.onRewind(bundle),
     };

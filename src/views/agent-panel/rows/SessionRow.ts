@@ -1,5 +1,6 @@
 import { setIcon } from "obsidian";
 import type { SessionVisualStatus, WorkingAnimation } from "../../../session-state";
+import { paintStatusBadge } from "../../../status-badge";
 import type { AgentPanelSessionRowComponent, AgentPanelSessionRowHandle, SessionRowProps } from "./types";
 
 /** Default compact Obsidian-native session row used by AgentPanelView. */
@@ -50,16 +51,15 @@ export class SessionRow implements AgentPanelSessionRowComponent {
 
   /** Paints the status slot owned by this session-row layout. */
   private paintStatus(slot: HTMLElement, status: SessionVisualStatus, workingAnimation: WorkingAnimation): void {
-    const signature = `${status}:${workingAnimation}`;
-    if (slot.dataset.statusSignature === signature) return;
-    slot.empty();
-    slot.className = `tree-item-icon opencode-agent-panel__status opencode-agent-panel__status--${status}`;
-    slot.dataset.statusSignature = signature;
-    slot.dataset.workingAnimation = workingAnimation;
-    if (status === "attention") setIcon(slot, "megaphone");
-    if (status === "error") setIcon(slot, "alert-circle");
-    if (status === "retry") setIcon(slot, "rotate-cw");
-    if (status === "done" || status === "working") slot.createSpan();
+    // The wrapper keeps Obsidian's tree-item-icon nav layout while the badge
+    // owns its own color, immune to core `.tree-item-self .tree-item-icon` rules.
+    let badge = slot.querySelector<HTMLElement>(":scope > .opencode-status-badge") ?? undefined;
+    if (!badge) {
+      slot.empty();
+      slot.className = "tree-item-icon opencode-agent-panel__status";
+      badge = slot.createDiv({ cls: "opencode-status-badge" });
+    }
+    paintStatusBadge(badge, { status, workingAnimation });
   }
 
   /** Adds a compact relative modified timestamp at the row's trailing edge. */

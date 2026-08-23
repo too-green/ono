@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   assistantTurnTiming,
   isCompactAssistantPart,
+  lastUncompletedAssistantIndex,
   latestMessageIndex,
   latestVisibleAssistantIndex,
   messageRenderKind,
@@ -97,6 +98,40 @@ describe("timeline index helpers", () => {
   it("finds the latest non-compaction assistant", () => {
     expect(latestVisibleAssistantIndex(messages, 2)).toBe(2);
     expect(latestVisibleAssistantIndex(messages, 0)).toBe(-1);
+  });
+});
+
+describe("lastUncompletedAssistantIndex", () => {
+  it("returns -1 for empty or user-only timelines", () => {
+    expect(lastUncompletedAssistantIndex([])).toBe(-1);
+    expect(lastUncompletedAssistantIndex([bundle("u1", "user", 1, [{ type: "text", text: "hi" }])])).toBe(-1);
+  });
+
+  it("returns the streaming assistant that queued user messages trail", () => {
+    const messages = [
+      bundle("u1", "user", 1, [{ type: "text", text: "question" }]),
+      bundle("a1", "assistant", 2, [{ type: "text", text: "streaming" }], { time: { created: 2 } }),
+      bundle("u2", "user", 3, [{ type: "text", text: "queued" }]),
+    ];
+    expect(lastUncompletedAssistantIndex(messages)).toBe(1);
+  });
+
+  it("returns -1 once the last assistant completed, even with a trailing user message", () => {
+    const messages = [
+      bundle("u1", "user", 1, [{ type: "text", text: "question" }]),
+      bundle("a1", "assistant", 2, [{ type: "text", text: "done" }], { time: { created: 2, completed: 3 } }),
+      bundle("u2", "user", 4, [{ type: "text", text: "being processed" }]),
+    ];
+    expect(lastUncompletedAssistantIndex(messages)).toBe(-1);
+  });
+
+  it("skips compaction assistants when finding the last real assistant", () => {
+    const messages = [
+      bundle("a1", "assistant", 1, [{ type: "text", text: "streaming" }], { time: { created: 1 } }),
+      bundle("c1", "assistant", 2, [], { type: "compaction" }),
+      bundle("u1", "user", 3, [{ type: "text", text: "queued" }]),
+    ];
+    expect(lastUncompletedAssistantIndex(messages)).toBe(0);
   });
 });
 

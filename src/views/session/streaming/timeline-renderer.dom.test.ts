@@ -81,6 +81,7 @@ describe("TimelineRenderer DOM", () => {
       contentEl,
       model,
       getShowReasoningBlocks: vi.fn(() => true),
+      getWorkingAnimation: vi.fn(() => "bounce" as const),
       getGroupContextTools: vi.fn(() => true),
       getCustomToolDisplays: vi.fn(() => []),
       getBindingVersion: () => bindingVersion,
@@ -160,7 +161,7 @@ describe("TimelineRenderer DOM", () => {
     const actions = Array.from(meta?.querySelectorAll<HTMLButtonElement>("button") ?? []);
     expect(meta?.textContent).toContain("Build · test-model · 3.0s");
     expect(meta?.getAttribute("aria-busy")).toBe("true");
-    expect(meta?.querySelector(".opencode-session-view__message-working-indicator")?.getAttribute("aria-hidden")).toBe("true");
+    expect(meta?.querySelector(".opencode-status-badge--working")?.getAttribute("aria-hidden")).toBe("true");
     expect(actions).toHaveLength(0);
 
     renderer.refreshActiveTurnDuration(7_500);
@@ -210,7 +211,7 @@ describe("TimelineRenderer DOM", () => {
     await renderer.renderInto(timeline, model.loadedMessages);
     const row = timeline.querySelector<HTMLElement>('[data-message-id="a1"]')!;
     const meta = row.querySelector<HTMLElement>(".opencode-session-view__message-meta--working")!;
-    const indicator = row.querySelector<HTMLElement>(".opencode-session-view__message-working-indicator")!;
+    const indicator = row.querySelector<HTMLElement>(".opencode-status-badge--working")!;
     const removals = recordRemovedNodes(row);
 
     assistant.parts[0].text = "second";
@@ -219,7 +220,7 @@ describe("TimelineRenderer DOM", () => {
 
     expect(timeline.querySelector('[data-message-id="a1"]')).toBe(row);
     expect(row.querySelector(".opencode-session-view__message-meta--working")).toBe(meta);
-    expect(row.querySelector(".opencode-session-view__message-working-indicator")).toBe(indicator);
+    expect(row.querySelector(".opencode-status-badge--working")).toBe(indicator);
     expect(removals.removedNodes).not.toContain(meta);
     expect(removals.removedNodes).not.toContain(indicator);
     expect(row.querySelector(".opencode-session-view__assistant-markdown")?.textContent).toBe("second");

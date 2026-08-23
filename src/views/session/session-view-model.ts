@@ -98,12 +98,6 @@ export class SessionViewModel {
   /** Latest request-state revision by request id; referenced by canonical request reconciliation. */
   pendingRequestRevisionById = new Map<string, number>();
 
-  // ---- queue
-  /** Server-assigned ids of queued user messages awaiting processing. */
-  queuedMessageIds = new Set<string>();
-  /** Count of queued user messages without a server id yet (submitted but unacknowledged). */
-  pendingQueuedUserMessages = 0;
-
   /**
    * Stable persistence key for the composer's draft/attachments/mute state.
    *

@@ -1,4 +1,4 @@
-import { ItemView, Menu, Notice, WorkspaceLeaf, type ViewStateResult } from "obsidian";
+import { ItemView, Menu, Notice, setIcon, WorkspaceLeaf, type ViewStateResult } from "obsidian";
 import type OpenCodePlugin from "../../main";
 import { RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
 import { diffFilesFromUnifiedPatch, type DiffFileSummary } from "../diff-utils";
@@ -15,6 +15,7 @@ import type {
   OpenCodeSession,
 } from "../services/opencode-types";
 import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
+import { paintStatusBadge, renderStatusBadge } from "../status-badge";
 import * as jsonHelpers from "./session/json-helpers";
 import * as messageHelpers from "./session/message-helpers";
 import { SessionViewModel } from "./session/session-view-model";
@@ -103,6 +104,7 @@ export class SessionView extends ItemView {
       model: this.model,
       getShowReasoningBlocks: () => this.plugin.settings.showReasoningBlocks,
       getGroupContextTools: () => this.plugin.settings.groupContextTools,
+      getWorkingAnimation: () => normalizeWorkingAnimation(this.plugin.settings.workingAnimation),
       getCustomToolDisplays: () => this.plugin.settings.customToolDisplays,
       getBindingVersion: () => this.sessionBindingVersion,
       isCurrentBinding: (sessionId, bindingVersion) => this.isCurrentSessionBinding(sessionId, bindingVersion),
@@ -228,22 +230,9 @@ export class SessionView extends ItemView {
     return this.model.sessionTitle ?? this.model.sessionId ?? (this.model.draftId ? "New session" : "OpenCode session");
   }
 
-  /** Returns the Lucide icon used by the session tab. */
+  /** Returns the Lucide icon used by the session tab; the mounted status badge replaces it after open. */
   getIcon(): string {
-    switch (this.sessionVisualStatus()) {
-      case "working":
-        return "circle";
-      case "attention":
-        return "megaphone";
-      case "error":
-        return "alert-circle";
-      case "retry":
-        return "rotate-cw";
-      case "done":
-        return "circle";
-      default:
-        return "message-square";
-    }
+    return "message-square";
   }
 
   /** Adds the canonical session actions to both the native title-bar and tab-header menus. */
@@ -390,6 +379,8 @@ export class SessionView extends ItemView {
   /** Refreshes layout styling and schedules relocation recovery when this leaf changed tab groups. */
   private handleWorkspaceLayoutChange(): void {
     this.syncReadableLineLength();
+    // Obsidian can rebuild native icon containers (drag, split, header refresh); re-mount the badge if lost.
+    this.decorateSessionHeader();
     if (this.consumeTabGroupRelocation()) this.scroll.handleTabGroupRelocation();
   }
 
@@ -457,8 +448,6 @@ export class SessionView extends ItemView {
     this.descendantChildrenCache.clear();
     this.descendantDiscoveryIncomplete = false;
     this.descendantDiscoveryRetryDelay = 1_000;
-    this.model.queuedMessageIds.clear();
-    this.model.pendingQueuedUserMessages = 0;
     this.timeline.clearDisclosureState();
     this.scroll.clearJumpButtonReference();
     if (!submittingPrompt) this.scroll.disableFollowLatest();
@@ -628,8 +617,6 @@ export class SessionView extends ItemView {
     if (wasBusy && !isBusy) this.model.activeTurnCompletedAt = Date.now();
 
     if (fromEvent && nextType === "idle") {
-      this.model.queuedMessageIds.clear();
-      this.model.pendingQueuedUserMessages = 0;
       this.stream.scheduleCanonicalSync(120);
       this.scroll.releaseFollowLatestAfterIdle();
     }
@@ -648,9 +635,6 @@ export class SessionView extends ItemView {
 
   /** Updates the native tab and view-header status treatment after status changes. */
   private refreshSessionStateChrome(): void {
-    const status = this.sessionVisualStatus();
-    this.contentEl.dataset.sessionState = status;
-    this.contentEl.dataset.workingAnimation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
     this.refreshLeafTitle();
   }
 
@@ -738,7 +722,6 @@ export class SessionView extends ItemView {
     this.composer.persistDraft();
     this.slash.hide();
     this.variants.hideModelMenu();
-    this.contentEl.dataset.workingAnimation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
     this.contentEl.replaceChildren(shell);
     this.refreshSessionStateChrome();
     const bottomDock = shell.createDiv({ cls: "opencode-session-view__bottom-dock" });
@@ -1253,30 +1236,43 @@ export class SessionView extends ItemView {
 
   /** Applies the current status to native tab and view-header icons. */
   private decorateSessionHeader(): void {
-    const status = this.sessionVisualStatus();
-    const animation = normalizeWorkingAnimation(this.plugin.settings.workingAnimation);
+    const options = {
+      status: this.sessionVisualStatus(),
+      workingAnimation: normalizeWorkingAnimation(this.plugin.settings.workingAnimation),
+      idleGlyph: "message-square",
+    };
+    const headerIcon = this.containerEl.querySelector<HTMLElement>(".view-header-icon");
+    if (headerIcon) this.decorateChromeIconContainer(headerIcon, options);
+    const leaf = this.leaf as WorkspaceLeaf & { tabHeaderEl?: HTMLElement | null };
+    const tabIcon = leaf.tabHeaderEl?.querySelector<HTMLElement>(".workspace-tab-header-inner-icon");
+    if (tabIcon) this.decorateChromeIconContainer(tabIcon, options);
+  }
+
+  /** Mounts or repaints the shared status badge inside one native chrome icon container. */
+  private decorateChromeIconContainer(container: HTMLElement, options: Parameters<typeof paintStatusBadge>[1]): void {
+    container.dataset.opencodeSessionState = options.status;
+    let badge = container.querySelector<HTMLElement>(":scope > .opencode-status-badge");
+    if (!badge) {
+      container.empty();
+      badge = renderStatusBadge(container, options);
+      return;
+    }
+    paintStatusBadge(badge, options);
+  }
+
+  /** Restores the plain native icon before Obsidian reuses this leaf. */
+  private clearSessionHeaderDecoration(): void {
     const headerIcon = this.containerEl.querySelector<HTMLElement>(".view-header-icon");
     if (headerIcon) {
-      headerIcon.dataset.opencodeSessionState = status;
-      headerIcon.dataset.workingAnimation = animation;
+      headerIcon.removeAttribute("data-opencode-session-state");
+      setIcon(headerIcon, "message-square");
     }
     const leaf = this.leaf as WorkspaceLeaf & { tabHeaderEl?: HTMLElement | null };
     const tabIcon = leaf.tabHeaderEl?.querySelector<HTMLElement>(".workspace-tab-header-inner-icon");
     if (tabIcon) {
-      tabIcon.dataset.opencodeSessionState = status;
-      tabIcon.dataset.workingAnimation = animation;
+      tabIcon.removeAttribute("data-opencode-session-state");
+      setIcon(tabIcon, "message-square");
     }
-  }
-
-  /** Removes plugin status attributes from native chrome before Obsidian reuses the leaf. */
-  private clearSessionHeaderDecoration(): void {
-    const headerIcon = this.containerEl.querySelector<HTMLElement>(".view-header-icon");
-    headerIcon?.removeAttribute("data-opencode-session-state");
-    headerIcon?.removeAttribute("data-working-animation");
-    const leaf = this.leaf as WorkspaceLeaf & { tabHeaderEl?: HTMLElement | null };
-    const tabIcon = leaf.tabHeaderEl?.querySelector<HTMLElement>(".workspace-tab-header-inner-icon");
-    tabIcon?.removeAttribute("data-opencode-session-state");
-    tabIcon?.removeAttribute("data-working-animation");
   }
 
 }

@@ -193,11 +193,11 @@ describe("AgentPanelView lifecycle", () => {
     expect(tree.scrollTop).toBe(140);
 
     const refreshCount = listSessions.mock.calls.length;
-    const indicator = row.querySelector(".opencode-agent-panel__status--working span");
+    const indicator = row.querySelector(".opencode-status-badge--working span");
     onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "busy" } } });
     vi.advanceTimersByTime(300);
 
-    expect(row.querySelector(".opencode-agent-panel__status--working span")).toBe(indicator);
+    expect(row.querySelector(".opencode-status-badge--working span")).toBe(indicator);
     expect(listSessions).toHaveBeenCalledTimes(refreshCount);
 
     onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "idle" } } });
@@ -205,7 +205,7 @@ describe("AgentPanelView lifecycle", () => {
 
     expect(view.contentEl.querySelector(".opencode-agent-panel__tree")).toBe(tree);
     expect(tree.scrollTop).toBe(140);
-    expect(row.querySelector(".opencode-agent-panel__status--working")).toBeNull();
+    expect(row.querySelector(".opencode-status-badge--working")).toBeNull();
     expect(listSessions).toHaveBeenCalledTimes(refreshCount);
 
     onOpen?.();

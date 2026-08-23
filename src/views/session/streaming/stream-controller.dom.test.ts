@@ -135,14 +135,11 @@ describe("StreamController", () => {
     expect(deps.requestCanonicalSync).toHaveBeenCalledTimes(2);
   });
 
-  it("upserts, sorts, acknowledges, and removes streamed messages", async () => {
+  it("upserts, sorts, and removes streamed messages", async () => {
     const { model, handlers, deps } = setup();
-    model.pendingQueuedUserMessages = 1;
     emit(handlers, "message.updated", { sessionID: "s1", info: { id: "user", role: "user", time: { created: 2 } } });
     emit(handlers, "message.updated", { sessionID: "s1", info: { id: "assistant", role: "assistant", time: { created: 1 } } });
     expect(model.loadedMessages.map((bundle) => bundle.info.id)).toEqual(["assistant", "user"]);
-    expect(model.pendingQueuedUserMessages).toBe(0);
-    expect(model.queuedMessageIds.has("user")).toBe(true);
     expect(frames.size).toBe(1);
 
     runNextFrame();
@@ -152,7 +149,6 @@ describe("StreamController", () => {
 
     emit(handlers, "message.removed", { sessionID: "s1", messageID: "user" });
     expect(model.loadedMessages.map((bundle) => bundle.info.id)).toEqual(["assistant"]);
-    expect(model.queuedMessageIds.has("user")).toBe(false);
     expect(deps.onMessageRemoved).toHaveBeenCalledWith("user");
   });
 

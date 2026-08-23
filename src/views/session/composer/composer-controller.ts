@@ -95,7 +95,6 @@ export class ComposerController {
   private insetObserver?: ResizeObserver;
   private composerTextarea?: HTMLTextAreaElement;
   private composerSendButtons: HTMLButtonElement[] = [];
-  private composerQueuedBadges: HTMLElement[] = [];
   private abortingSession = false;
   private composing = false;
   private pendingInterruptConfirm = false;
@@ -125,7 +124,6 @@ export class ComposerController {
     this.observeInsetTarget(container.closest<HTMLElement>(".opencode-session-view__bottom-dock") ?? composer);
     this.composerEl = composer;
     this.composerSendButtons = [];
-    this.composerQueuedBadges = [];
     this.renderAttachmentChips(composer, composerKey);
     const inputRow = composer.createDiv({ cls: "opencode-session-view__composer-input-row" });
     const textarea = inputRow.createEl("textarea", {
@@ -159,7 +157,6 @@ export class ComposerController {
     this.deps.renderThinkingPill(labels);
 
     const right = controls.createDiv({ cls: "opencode-session-view__composer-right" });
-    this.renderQueuedBadge(right);
     this.renderTogglePill(
       right,
       "",
@@ -194,7 +191,6 @@ export class ComposerController {
     this.insetObserver = undefined;
     this.composerTextarea = undefined;
     this.composerSendButtons = [];
-    this.composerQueuedBadges = [];
     this.composing = false;
     this.progressBar.dispose();
   }
@@ -250,7 +246,6 @@ export class ComposerController {
   onSessionStatusChanged(): void {
     if (!this.deps.model.sessionBusy) this.clearInterruptConfirmation();
     if (this.composerTextarea?.isConnected) this.composerTextarea.disabled = this.deps.isComposerBlocked();
-    for (const badge of this.composerQueuedBadges) badge.toggleClass("is-visible", this.deps.model.sessionBusy);
     this.syncSendButtons();
     this.updateInsetSoon();
   }
@@ -288,13 +283,6 @@ export class ComposerController {
   }
 
   // ---- Composer rendering helpers ----
-
-  /** Renders the QUEUED badge shown while the agent is streaming. */
-  private renderQueuedBadge(container: HTMLElement): void {
-    const badge = container.createSpan({ text: "QUEUED", cls: "opencode-session-view__queued-badge" });
-    badge.toggleClass("is-visible", this.deps.model.sessionBusy);
-    this.composerQueuedBadges.push(badge);
-  }
 
   /** Renders the send/stop button; click calls abort when busy + composer empty, otherwise sends. */
   private renderSendButton(container: HTMLElement, textarea: HTMLTextAreaElement): void {
@@ -519,7 +507,6 @@ export class ComposerController {
     const builtinName = text.match(/^\/(\w+)$/)?.[1];
     const isBuiltin = !!builtinName && visibleBuiltinCommands(model.currentSession, model.serverConfig).some((command) => command.name === builtinName);
     // Per spec: while streaming, the composer stays enabled and prompts queue server-side.
-    if (model.sessionBusy) model.pendingQueuedUserMessages += 1;
     this.deps.enableFollowLatest();
     model.submittingPrompt = true;
     let targetSessionId = model.sessionId;
@@ -592,8 +579,6 @@ export class ComposerController {
     } catch (error) {
       if (isSubmissionBound()) {
         this.deps.disableFollowLatest();
-        // Roll back the queue counter so the next successful send does not paint a stale QUEUED badge.
-        if (model.pendingQueuedUserMessages > 0) model.pendingQueuedUserMessages -= 1;
       }
       if (targetSessionId && model.composerStorageKey === composerKey && model.draftId) await this.deps.requestDraftPromotion(targetSessionId, createdTitle);
       new Notice(error instanceof Error ? error.message : "Unable to send OpenCode prompt.");

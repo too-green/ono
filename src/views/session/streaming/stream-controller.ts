@@ -184,7 +184,6 @@ export class StreamController {
       const removedId = jsonHelpers.readString(properties, ["messageID", "messageId"]);
       if (removedId) {
         this.deps.model.loadedMessages = this.deps.model.loadedMessages.filter((message) => messageId(message) !== removedId);
-        this.deps.model.queuedMessageIds.delete(removedId);
         this.deps.onMessageRemoved(removedId);
         this.scheduleRender();
       }
@@ -267,15 +266,9 @@ export class StreamController {
   private upsertMessage(info: JsonObject): OpenCodeMessageBundle | undefined {
     const id = jsonHelpers.readString(info, ["id", "messageID", "messageId"]);
     if (!id) return undefined;
-    const role = jsonHelpers.readString(info, ["role"]);
     const index = this.deps.model.loadedMessages.findIndex((bundle) => messageId(bundle) === id);
-    const isNew = index < 0;
     if (index >= 0) this.deps.model.loadedMessages[index] = { ...this.deps.model.loadedMessages[index], info };
     else this.deps.model.loadedMessages.push({ info, parts: [] });
-    if (isNew && role === "user" && this.deps.model.pendingQueuedUserMessages > 0) {
-      this.deps.model.pendingQueuedUserMessages -= 1;
-      this.deps.model.queuedMessageIds.add(id);
-    }
     this.deps.model.loadedMessages.sort((left, right) => messageTime(left) - messageTime(right));
     return this.deps.model.loadedMessages.find((bundle) => messageId(bundle) === id);
   }

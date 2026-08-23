@@ -102,19 +102,19 @@ describe("agents-panel row components", () => {
     expect(handle.rowEl.querySelector(".opencode-agent-panel__notification")).not.toBeNull();
     expect(handle.rowEl.querySelector(".opencode-agent-panel__session-modified")?.textContent).toBe("1m");
     expect(handle.rowEl.lastElementChild?.classList.contains("opencode-agent-panel__session-modified")).toBe(true);
-    expect(handle.rowEl.querySelector(".opencode-agent-panel__status--working")?.getAttribute("data-working-animation")).toBe("pulse");
-    const workingIndicator = handle.rowEl.querySelector(".opencode-agent-panel__status--working span");
+    expect(handle.rowEl.querySelector(".opencode-status-badge--working")?.getAttribute("data-working-animation")).toBe("pulse");
+    const workingIndicator = handle.rowEl.querySelector(".opencode-status-badge--working span");
 
     handle.updatePresentation?.({ ...session, updatedAt: Date.now() }, true, "pulse");
 
-    expect(handle.rowEl.querySelector(".opencode-agent-panel__status--working span")).toBe(workingIndicator);
+    expect(handle.rowEl.querySelector(".opencode-status-badge--working span")).toBe(workingIndicator);
 
     handle.updateActive(false);
     handle.updateStatus("done", "orbit");
 
     expect(handle.rowEl.classList.contains("is-active")).toBe(false);
-    expect(handle.rowEl.querySelector(".opencode-agent-panel__status--working")).toBeNull();
-    expect(handle.rowEl.querySelector(".opencode-agent-panel__status--done")?.getAttribute("data-working-animation")).toBe("orbit");
+    expect(handle.rowEl.querySelector(".opencode-status-badge--working")).toBeNull();
+    expect(handle.rowEl.querySelector(".opencode-status-badge--done")?.getAttribute("data-working-animation")).toBe("orbit");
   });
 
   it("formats compact relative modified times across useful sidebar ranges", () => {

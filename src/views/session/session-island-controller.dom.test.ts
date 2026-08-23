@@ -561,7 +561,7 @@ describe("SessionIslandController", () => {
     (dock.querySelector('[data-island-tab="subagents"]') as HTMLButtonElement).click();
     const rows = dock.querySelectorAll<HTMLButtonElement>(".opencode-session-view__island-subagent");
     expect(rows).toHaveLength(2);
-    expect(rows[0].querySelector(".opencode-session-view__message-working-indicator")?.getAttribute("aria-hidden")).toBe("true");
+    expect(rows[0].querySelector(".opencode-session-view__island-subagent-status .opencode-status-badge--working")).not.toBeNull();
     expect(rows[0].getAttribute("aria-busy")).toBe("true");
     expect(rows[0].textContent).not.toContain("Working");
     expect(rows[1].textContent).toContain("Idle");

@@ -19,6 +19,10 @@ export interface RequestDocksDeps {
   requestCanonicalSync: () => void;
 }
 
+type PendingSessionRequest =
+  | { kind: "permission"; request: OpenCodePermissionRequest }
+  | { kind: "question"; request: OpenCodeQuestionRequest };
+
 /**
  * Owns the permission and question request docks above the composer.
  *
@@ -32,6 +36,9 @@ export interface RequestDocksDeps {
  */
 export class RequestDocksController {
   private requestDockEl?: HTMLElement;
+  private activeRequestId?: string;
+  private nextRequestOrder = 0;
+  private readonly requestOrderById = new Map<string, number>();
 
   constructor(private readonly deps: RequestDocksDeps) {}
 
@@ -46,6 +53,14 @@ export class RequestDocksController {
   /** Drops DOM references so a closed view cannot leak dock updates; called by `SessionView.onClose`. */
   dispose(): void {
     this.requestDockEl = undefined;
+    this.resetQueue();
+  }
+
+  /** Clears request ordering when `SessionView` binds this controller to another session. */
+  resetQueue(): void {
+    this.activeRequestId = undefined;
+    this.requestOrderById.clear();
+    this.nextRequestOrder = 0;
   }
 
   // ---- stream-event ingestion (replaces inline shell blocks in applyStreamingEvent)
@@ -135,7 +150,10 @@ export class RequestDocksController {
     const list = this.deps.model.pendingPermissions;
     const index = list.findIndex((item) => item.id === request.id);
     if (index >= 0) list[index] = request;
-    else list.push(request);
+    else {
+      list.push(request);
+      this.rememberRequestOrder(request.id);
+    }
     this.recordRequestMutation(request.id);
   }
 
@@ -145,7 +163,10 @@ export class RequestDocksController {
     const list = this.deps.model.pendingQuestions;
     const index = list.findIndex((item) => item.id === request.id);
     if (index >= 0) list[index] = request;
-    else list.push(request);
+    else {
+      list.push(request);
+      this.rememberRequestOrder(request.id);
+    }
     this.recordRequestMutation(request.id);
   }
 
@@ -155,7 +176,10 @@ export class RequestDocksController {
     const list = this.deps.model.unscopedPendingPermissions;
     const index = list.findIndex((item) => item.id === request.id);
     if (index >= 0) list[index] = request;
-    else list.push(request);
+    else {
+      list.push(request);
+      this.rememberRequestOrder(request.id);
+    }
     this.recordRequestMutation(request.id);
   }
 
@@ -165,7 +189,10 @@ export class RequestDocksController {
     const list = this.deps.model.unscopedPendingQuestions;
     const index = list.findIndex((item) => item.id === request.id);
     if (index >= 0) list[index] = request;
-    else list.push(request);
+    else {
+      list.push(request);
+      this.rememberRequestOrder(request.id);
+    }
     this.recordRequestMutation(request.id);
   }
 
@@ -177,7 +204,16 @@ export class RequestDocksController {
     model.pendingQuestions = model.pendingQuestions.filter((item) => item.id !== requestId);
     model.unscopedPendingPermissions = model.unscopedPendingPermissions.filter((item) => item.id !== requestId);
     model.unscopedPendingQuestions = model.unscopedPendingQuestions.filter((item) => item.id !== requestId);
+    this.requestOrderById.delete(requestId);
+    if (this.activeRequestId === requestId) this.activeRequestId = undefined;
     this.recordRequestMutation(requestId);
+  }
+
+  /** Assigns a stable arrival position shared by permission and question requests. */
+  private rememberRequestOrder(requestId: string): void {
+    if (this.requestOrderById.has(requestId)) return;
+    this.requestOrderById.set(requestId, this.nextRequestOrder);
+    this.nextRequestOrder += 1;
   }
 
   /** Returns true when a request belongs to this session or one of its loaded descendants. */
@@ -194,13 +230,18 @@ export class RequestDocksController {
 
   // ---- rendering (private)
 
-  /** Renders pending permission and question requests into a container. */
+  /** Renders only the active permission or question while retaining the rest as a queue. */
   private renderRequestDocks(container: HTMLElement): void {
-    const { model } = this.deps;
-    const permissions = this.visiblePermissions();
-    container.toggleClass("is-empty", permissions.length === 0 && model.pendingQuestions.length === 0);
-    for (const request of this.requestsInDisplayOrder(permissions)) this.renderPermissionDock(container, request);
-    for (const request of this.requestsInDisplayOrder(model.pendingQuestions)) this.renderQuestionDock(container, request);
+    const requests = this.pendingRequestsInQueueOrder();
+    container.toggleClass("is-empty", requests.length === 0);
+    if (requests.length === 0) {
+      this.activeRequestId = undefined;
+      return;
+    }
+    const active = requests.find((item) => item.request.id === this.activeRequestId) ?? requests[0]!;
+    this.activeRequestId = active.request.id;
+    if (active.kind === "permission") this.renderPermissionDock(container, active.request, requests.length);
+    else this.renderQuestionDock(container, active.request, requests.length);
   }
 
   /** Reconciles request roots by id while retaining unchanged form controls and their browser state. */
@@ -216,7 +257,7 @@ export class RequestDocksController {
       const currentDock = currentDocks.get(nextDock.dataset.requestKey);
       if (!currentDock || currentDock.dataset.requestSignature !== nextDock.dataset.requestSignature) return nextDock;
       currentDocks.delete(nextDock.dataset.requestKey);
-      this.syncRequestButtonState(currentDock, nextDock);
+      this.syncRequestDockState(currentDock, nextDock);
       return currentDock;
     });
     const retained = new Set(desired.filter((dock) => dock.parentElement === current));
@@ -233,8 +274,11 @@ export class RequestDocksController {
     }
   }
 
-  /** Updates responding button state without replacing a retained request form. */
-  private syncRequestButtonState(current: HTMLElement, next: HTMLElement): void {
+  /** Updates queue and responding state without replacing a retained request form. */
+  private syncRequestDockState(current: HTMLElement, next: HTMLElement): void {
+    const currentTitle = current.querySelector<HTMLElement>(".opencode-session-view__request-title-label");
+    const nextTitle = next.querySelector<HTMLElement>(".opencode-session-view__request-title-label");
+    if (currentTitle && nextTitle) currentTitle.textContent = nextTitle.textContent;
     const currentButtons = current.querySelectorAll<HTMLButtonElement>(".opencode-session-view__request-actions > button");
     const nextButtons = next.querySelectorAll<HTMLButtonElement>(".opencode-session-view__request-actions > button");
     for (let index = 0; index < currentButtons.length; index += 1) {
@@ -260,19 +304,23 @@ export class RequestDocksController {
     return this.deps.model.pendingPermissions.filter((request) => !this.deps.plugin.shouldSuppressPermissionRequest(request.id));
   }
 
-  /** Keeps current-session requests ahead of descendant requests while preserving arrival order. */
-  private requestsInDisplayOrder<T extends { sessionID: string }>(requests: T[]): T[] {
-    const currentSessionId = this.deps.model.sessionId;
-    return [...requests].sort((left, right) => Number(right.sessionID === currentSessionId) - Number(left.sessionID === currentSessionId));
+  /** Combines permissions and questions into one stable first-in, first-out interaction queue. */
+  private pendingRequestsInQueueOrder(): PendingSessionRequest[] {
+    const requests: PendingSessionRequest[] = [
+      ...this.visiblePermissions().map((request): PendingSessionRequest => ({ kind: "permission", request })),
+      ...this.deps.model.pendingQuestions.map((request): PendingSessionRequest => ({ kind: "question", request })),
+    ];
+    for (const item of requests) this.rememberRequestOrder(item.request.id);
+    return requests.sort((left, right) => this.requestOrderById.get(left.request.id)! - this.requestOrderById.get(right.request.id)!);
   }
 
   /** Renders one permission decision prompt with deny, always, and once actions. */
-  private renderPermissionDock(container: HTMLElement, request: OpenCodePermissionRequest): void {
+  private renderPermissionDock(container: HTMLElement, request: OpenCodePermissionRequest, pendingCount: number): void {
     const dock = container.createDiv({ cls: "opencode-session-view__request-dock opencode-session-view__request-dock--permission" });
     this.annotateRequestDock(dock, "permission", request);
     const header = dock.createDiv({ cls: "opencode-session-view__request-header" });
     const title = header.createDiv({ cls: "opencode-session-view__request-title" });
-    title.createSpan({ text: "Permission required" });
+    title.createSpan({ text: this.requestTitle("Permission required", pendingCount), cls: "opencode-session-view__request-title-label" });
     title.createSpan({ text: request.permission, cls: "opencode-session-view__request-badge" });
     this.renderRequestOwner(header, request.sessionID);
     const summary = dock.createDiv({ cls: "opencode-session-view__request-summary" });
@@ -288,11 +336,14 @@ export class RequestDocksController {
   }
 
   /** Renders one question request, supporting single-select, multi-select, and custom answers. */
-  private renderQuestionDock(container: HTMLElement, request: OpenCodeQuestionRequest): void {
+  private renderQuestionDock(container: HTMLElement, request: OpenCodeQuestionRequest, pendingCount: number): void {
     const dock = container.createDiv({ cls: "opencode-session-view__request-dock opencode-session-view__request-dock--question" });
     this.annotateRequestDock(dock, "question", request);
     const header = dock.createDiv({ cls: "opencode-session-view__request-header" });
-    header.createDiv({ text: "Question from OpenCode", cls: "opencode-session-view__request-title" });
+    header.createDiv({
+      text: this.requestTitle("Question from OpenCode", pendingCount),
+      cls: "opencode-session-view__request-title opencode-session-view__request-title-label",
+    });
     this.renderRequestOwner(header, request.sessionID);
     const form = dock.createDiv({ cls: "opencode-session-view__question-form" });
     const answerControls: Array<() => string[]> = [];
@@ -320,6 +371,11 @@ export class RequestDocksController {
     const responding = this.deps.plugin.isSessionRequestResponding(request.id);
     this.renderRequestButton(actions, "Reject", "", responding, () => void this.rejectQuestion(request));
     this.renderRequestButton(actions, "Answer", "mod-cta", responding, () => void this.replyQuestion(request, answerControls.map((readAnswer) => readAnswer())));
+  }
+
+  /** Adds a compact queue count without rendering the waiting request dialogs. */
+  private requestTitle(title: string, pendingCount: number): string {
+    return pendingCount > 1 ? `${title} (${pendingCount} pending)` : title;
   }
 
   /** Renders a compact owner chip that opens the child session responsible for a routed request. */

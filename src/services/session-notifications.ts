@@ -36,12 +36,19 @@ interface NotificationContent {
   sessionId: string;
   directory?: string;
   requestId?: string;
+  attentionGeneration?: number;
   body: string;
+}
+
+interface AttentionGroup {
+  requestIds: Set<string>;
+  generation: number;
 }
 
 const RECENT_REQUEST_LIMIT = 1_000;
 const ACTIVE_DELIVERY_LIMIT = 1_000;
 const SESSION_STATE_LIMIT = 1_000;
+const NOTICE_DURATION_MS = 8_000;
 
 /** Returns whether an element is rendered inside the currently focused Obsidian window. */
 export function isElementVisibleInFocusedWindow(element: HTMLElement): boolean {
@@ -71,7 +78,7 @@ export function sessionErrorMessage(error: unknown): string {
 
 /** Shows a clickable Obsidian Notice using only native Notice content and lifecycle APIs. */
 function showObsidianNotice(message: string, onClick: () => void): CloseableNotification {
-  const notice = new Notice(message, 8_000);
+  const notice = new Notice(message, NOTICE_DURATION_MS);
   const content = notice.messageEl ?? notice.noticeEl;
   content.tabIndex = 0;
   content.setAttribute("role", "button");
@@ -90,6 +97,10 @@ export class SessionNotificationService {
   private readonly seenRequestKeys = new Set<string>();
   private readonly settledRequestIds = new Set<string>();
   private readonly activeDeliveries = new Map<string, CloseableNotification>();
+  private readonly attentionGroups = new Map<string, AttentionGroup>();
+  private readonly attentionKeyByRequestId = new Map<string, string>();
+  private readonly preparingAttentionGenerationByKey = new Map<string, number>();
+  private nextAttentionGeneration = 0;
   private disposed = false;
 
   constructor(private readonly deps: SessionNotificationServiceDeps) {}
@@ -171,24 +182,28 @@ export class SessionNotificationService {
     });
   }
 
-  /** Emits one notification after a permission request survives auto-approval policy evaluation. */
+  /** Adds a surfaced permission to its session's single attention notification queue. */
   notifyPermission(request: OpenCodePermissionRequest, directory?: string): void {
-    this.notifyRequest("permission", request.id, request.sessionID, directory, "Permission required.");
+    this.notifyRequest("permission", request.id, request.sessionID, directory, "OpenCode needs your input.");
   }
 
-  /** Emits one notification for a question request regardless of duplicate view subscriptions. */
+  /** Adds a question to its session's single attention notification queue. */
   notifyQuestion(request: OpenCodeQuestionRequest, directory?: string): void {
-    this.notifyRequest("question", request.id, request.sessionID, directory, "Question needs your input.");
+    this.notifyRequest("question", request.id, request.sessionID, directory, "OpenCode needs your input.");
   }
 
   /** Cancels pending or displayed request notifications once another client settles the request. */
   settleRequest(requestId: string): void {
     this.rememberSettledRequest(requestId);
-    for (const [key, delivery] of this.activeDeliveries) {
-      if (!key.endsWith(`:${requestId}`)) continue;
-      delivery.close();
-      this.activeDeliveries.delete(key);
-    }
+    const attentionKey = this.attentionKeyByRequestId.get(requestId);
+    if (!attentionKey) return;
+    this.attentionKeyByRequestId.delete(requestId);
+    const group = this.attentionGroups.get(attentionKey);
+    group?.requestIds.delete(requestId);
+    if (group && group.requestIds.size > 0) return;
+    this.attentionGroups.delete(attentionKey);
+    this.preparingAttentionGenerationByKey.delete(attentionKey);
+    this.closeDelivery(attentionKey);
   }
 
   /** Closes live notifications and prevents async lookups from delivering after plugin unload. */
@@ -196,21 +211,46 @@ export class SessionNotificationService {
     this.disposed = true;
     for (const delivery of this.activeDeliveries.values()) delivery.close();
     this.activeDeliveries.clear();
+    this.attentionGroups.clear();
+    this.attentionKeyByRequestId.clear();
+    this.preparingAttentionGenerationByKey.clear();
     this.terminalStateBySessionKey.clear();
   }
 
-  /** Deduplicates one request before scheduling its session lookup and delivery. */
+  /** Deduplicates and groups one request before scheduling at most one session alert. */
   private notifyRequest(type: "permission" | "question", requestId: string, sessionId: string, directory: string | undefined, body: string): void {
     if (!requestId || !sessionId || this.settledRequestIds.has(requestId)) return;
     const key = `${type}:${requestId}`;
     if (this.seenRequestKeys.has(key)) return;
     this.rememberRequest(key);
-    this.queue({ key, kind: "attention", sessionId, directory, requestId, body });
+    const attentionKey = `attention:${this.sessionKey(sessionId, directory)}`;
+    const group = this.attentionGroups.get(attentionKey) ?? {
+      requestIds: new Set<string>(),
+      generation: this.nextAttentionGeneration + 1,
+    };
+    if (!this.attentionGroups.has(attentionKey)) this.nextAttentionGeneration = group.generation;
+    group.requestIds.add(requestId);
+    this.attentionGroups.set(attentionKey, group);
+    this.attentionKeyByRequestId.set(requestId, attentionKey);
+    this.trimAttentionGroups();
+    if (this.preparingAttentionGenerationByKey.has(attentionKey) || this.activeDeliveries.has(attentionKey)) return;
+    this.preparingAttentionGenerationByKey.set(attentionKey, group.generation);
+    this.queue({ key: attentionKey, kind: "attention", sessionId, directory, requestId, attentionGeneration: group.generation, body });
   }
 
   /** Runs asynchronous notification preparation without exposing unhandled promise rejections. */
   private queue(content: NotificationContent): void {
-    void this.show(content).catch((error) => console.warn("[opencode-plugin:notifications] delivery failed", error));
+    void this.show(content)
+      .catch((error) => console.warn("[opencode-plugin:notifications] delivery failed", error))
+      .finally(() => {
+        if (
+          content.kind === "attention" &&
+          content.requestId &&
+          this.preparingAttentionGenerationByKey.get(content.key) === content.attentionGeneration
+        ) {
+          this.preparingAttentionGenerationByKey.delete(content.key);
+        }
+      });
   }
 
   /** Resolves the owner or nearest enabled ancestor, then rechecks all delivery gates. */
@@ -237,10 +277,27 @@ export class SessionNotificationService {
     });
   }
 
+  /** Bounds notification groups and clears their reverse request mappings on eviction. */
+  private trimAttentionGroups(): void {
+    while (this.attentionGroups.size > SESSION_STATE_LIMIT) {
+      const oldest = this.attentionGroups.entries().next().value as [string, AttentionGroup] | undefined;
+      if (!oldest) return;
+      for (const requestId of oldest[1].requestIds) this.attentionKeyByRequestId.delete(requestId);
+      this.attentionGroups.delete(oldest[0]);
+      this.preparingAttentionGenerationByKey.delete(oldest[0]);
+      this.closeDelivery(oldest[0]);
+    }
+  }
+
   /** Applies global preferences and request settlement before and after asynchronous preparation. */
   private shouldPrepare(content: NotificationContent): boolean {
     if (this.disposed) return false;
-    if (content.requestId && this.settledRequestIds.has(content.requestId)) return false;
+    if (content.kind === "attention" && content.requestId) {
+      const group = this.attentionGroups.get(content.key);
+      if (!group?.requestIds.size || group.generation !== content.attentionGeneration) return false;
+    } else if (content.requestId && this.settledRequestIds.has(content.requestId)) {
+      return false;
+    }
     const preferences = this.deps.getPreferences();
     if (preferences.mode === "none") return false;
     if (content.kind === "attention") return preferences.attention;
@@ -282,6 +339,11 @@ export class SessionNotificationService {
     };
     handle = this.showNotice(`${title}: ${content.body}`, activate);
     this.trackDelivery(content.key, handle);
+    if (!this.deps.showNotice) {
+      this.notificationWindow()?.setTimeout(() => {
+        if (this.activeDeliveries.get(content.key) === handle) this.activeDeliveries.delete(content.key);
+      }, NOTICE_DURATION_MS);
+    }
   }
 
   /** Returns the focused Obsidian window's renderer Notification constructor when available. */

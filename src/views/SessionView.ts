@@ -295,6 +295,8 @@ export class SessionView extends ItemView {
     const sessionTitle = typeof state.sessionTitle === "string" ? state.sessionTitle : undefined;
     const draftId = typeof state.draftId === "string" ? state.draftId : undefined;
     const draftDirectory = typeof state.draftDirectory === "string" ? state.draftDirectory : undefined;
+    const autoApproveKey = sessionId ?? (draftId ? `draft:${draftId}` : undefined);
+    if (autoApproveKey) await this.plugin.ensureSessionAutoApproveDefault(autoApproveKey);
     if (sessionId === this.model.sessionId && draftId === this.model.draftId && draftDirectory === this.model.draftDirectory) {
       if (sessionTitle && sessionTitle !== this.model.sessionTitle) this.applySessionTitle(sessionTitle);
       else this.refreshLeafTitle();
@@ -445,6 +447,7 @@ export class SessionView extends ItemView {
     this.model.descendantSessions.clear();
     this.model.pendingRequestRevision = 0;
     this.model.pendingRequestRevisionById.clear();
+    this.docks.resetQueue();
     this.descendantChildrenCache.clear();
     this.descendantDiscoveryIncomplete = false;
     this.descendantDiscoveryRetryDelay = 1_000;

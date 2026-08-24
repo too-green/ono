@@ -19,6 +19,7 @@ function setup(options: {
   lineage?: OpenCodeSession[];
   isMuted?: (sessionId: string) => boolean;
   isVisible?: (sessionId: string) => boolean;
+  getLineage?: (sessionId: string) => Promise<OpenCodeSession[]>;
 } = {}) {
   const notifications: FakeNotificationRecord[] = [];
   const focus = vi.fn();
@@ -51,7 +52,7 @@ function setup(options: {
   const openSession = vi.fn(async () => undefined);
   const getSession = vi.fn(async (sessionId: string) => options.lineage?.find((session) => session.id === sessionId)
     ?? { id: sessionId, title: "Refactor parser" });
-  const getSessionLineage = vi.fn(async (sessionId: string) => options.lineage ?? [await getSession(sessionId)]);
+  const getSessionLineage = vi.fn(async (sessionId: string) => options.getLineage?.(sessionId) ?? options.lineage ?? [await getSession(sessionId)]);
   const noticeClose = vi.fn();
   const notices: Array<{ message: string; onClick: () => void }> = [];
   const service = new SessionNotificationService({
@@ -148,6 +149,104 @@ describe("SessionNotificationService", () => {
     expect(notifications).toHaveLength(1);
   });
 
+  it("groups permission and question alerts into one notification until the session queue settles", async () => {
+    const { service, notifications, getSessionLineage } = setup();
+
+    service.notifyPermission({ id: "permission-1", sessionID: "session-1", permission: "bash", patterns: [], metadata: {}, always: [] }, "/repo");
+    service.notifyQuestion({ id: "question-1", sessionID: "session-1", questions: [] }, "/repo");
+
+    await vi.waitFor(() => {
+      expect(getSessionLineage).toHaveBeenCalledOnce();
+      expect(notifications).toHaveLength(1);
+    });
+    service.settleRequest("permission-1");
+    expect(notifications[0]?.close).not.toHaveBeenCalled();
+
+    service.settleRequest("question-1");
+    expect(notifications[0]?.close).toHaveBeenCalledOnce();
+  });
+
+  it("does not notify again when the first request settles during a queued request lookup", async () => {
+    const session = { id: "session-1", title: "Refactor parser" };
+    let lookupCount = 0;
+    let resolveLookup: ((sessions: OpenCodeSession[]) => void) | undefined;
+    const { service, notifications } = setup({
+      getLineage: async () => {
+        lookupCount += 1;
+        return new Promise((resolve) => { resolveLookup = resolve; });
+      },
+    });
+
+    service.notifyPermission({ id: "permission-1", sessionID: "session-1", permission: "bash", patterns: [], metadata: {}, always: [] });
+    service.notifyQuestion({ id: "question-1", sessionID: "session-1", questions: [] });
+    await vi.waitFor(() => expect(lookupCount).toBe(1));
+
+    service.settleRequest("permission-1");
+    resolveLookup?.([session]);
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.close).not.toHaveBeenCalled();
+  });
+
+  it("allows a dismissed stale alert to be replaced by a later request", async () => {
+    const { service, notifications } = setup();
+    service.notifyPermission({ id: "permission-1", sessionID: "session-1", permission: "bash", patterns: [], metadata: {}, always: [] });
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    notifications[0]?.onclose?.();
+
+    service.notifyQuestion({ id: "question-1", sessionID: "session-1", questions: [] });
+
+    await vi.waitFor(() => expect(notifications).toHaveLength(2));
+  });
+
+  it("ignores an obsolete lookup after a settled queue is replaced", async () => {
+    const session = { id: "session-1", title: "Refactor parser" };
+    let lookupCount = 0;
+    let resolveObsoleteLookup: ((sessions: OpenCodeSession[]) => void) | undefined;
+    const { service, notifications } = setup({
+      getLineage: async () => {
+        lookupCount += 1;
+        if (lookupCount > 1) return [session];
+        return new Promise((resolve) => { resolveObsoleteLookup = resolve; });
+      },
+    });
+
+    service.notifyPermission({ id: "permission-1", sessionID: "session-1", permission: "bash", patterns: [], metadata: {}, always: [] });
+    await vi.waitFor(() => expect(lookupCount).toBe(1));
+    service.settleRequest("permission-1");
+    service.notifyQuestion({ id: "question-1", sessionID: "session-1", questions: [] });
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+
+    resolveObsoleteLookup?.([session]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.close).not.toHaveBeenCalled();
+  });
+
+  it("keeps the replacement queue locked when an obsolete lookup finishes first", async () => {
+    const session = { id: "session-1", title: "Refactor parser" };
+    const lookupResolvers: Array<(sessions: OpenCodeSession[]) => void> = [];
+    const { service, notifications, getSessionLineage } = setup({
+      getLineage: async () => new Promise((resolve) => { lookupResolvers.push(resolve); }),
+    });
+
+    service.notifyPermission({ id: "permission-1", sessionID: "session-1", permission: "bash", patterns: [], metadata: {}, always: [] });
+    await vi.waitFor(() => expect(getSessionLineage).toHaveBeenCalledOnce());
+    service.settleRequest("permission-1");
+    service.notifyQuestion({ id: "question-1", sessionID: "session-1", questions: [] });
+    await vi.waitFor(() => expect(getSessionLineage).toHaveBeenCalledTimes(2));
+
+    lookupResolvers[0]?.([session]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    service.notifyPermission({ id: "permission-2", sessionID: "session-1", permission: "edit", patterns: [], metadata: {}, always: [] });
+    expect(getSessionLineage).toHaveBeenCalledTimes(2);
+
+    lookupResolvers[1]?.([session]);
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+  });
+
   it("routes child attention to the nearest enabled ancestor and opens that session", async () => {
     const lineage = [
       { id: "child", title: "Research JWT", parentID: "parent" },
@@ -163,7 +262,7 @@ describe("SessionNotificationService", () => {
 
     await vi.waitFor(() => expect(notifications).toHaveLength(1));
     expect(notifications[0]?.title).toBe("Implement authentication");
-    expect(notifications[0]?.options?.body).toBe("Research JWT: Permission required.");
+    expect(notifications[0]?.options?.body).toBe("Research JWT: OpenCode needs your input.");
     notifications[0]?.onclick?.();
     expect(openSession).toHaveBeenCalledWith("parent", "Implement authentication");
   });
@@ -285,7 +384,7 @@ describe("SessionNotificationService", () => {
     service.notifyQuestion({ id: "question-1", sessionID: "session-1", questions: [] });
 
     await vi.waitFor(() => expect(notices).toHaveLength(1));
-    expect(notices[0]?.message).toBe("Refactor parser: Question needs your input.");
+    expect(notices[0]?.message).toBe("Refactor parser: OpenCode needs your input.");
     notices[0]?.onClick();
     expect(openSession).toHaveBeenCalledWith("session-1", "Refactor parser");
     expect(noticeClose).toHaveBeenCalledOnce();

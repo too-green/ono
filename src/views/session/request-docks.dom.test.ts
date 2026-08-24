@@ -88,7 +88,7 @@ describe("RequestDocksController descendant routing", () => {
     expect(plugin.openSessionTab).toHaveBeenCalledWith("child", "Research API");
   });
 
-  it("keeps parent-owned requests first and ignores requests outside the loaded tree", () => {
+  it("keeps the active request stable and ignores requests outside the loaded tree", () => {
     const { model, controller, container, requestCanonicalSync } = setup();
     controller.ingestPermissionAsked({ id: "child", sessionID: "child", permission: "bash", patterns: ["child"], metadata: {}, always: [] });
     controller.ingestPermissionAsked({ id: "parent", sessionID: "parent", permission: "edit", patterns: ["parent"], metadata: {}, always: [] });
@@ -96,11 +96,41 @@ describe("RequestDocksController descendant routing", () => {
 
     expect(model.pendingPermissions.map((request) => request.id)).toEqual(["child", "parent"]);
     const summaries = container.querySelectorAll(".opencode-session-view__request-summary");
-    expect(summaries[0]?.textContent).toBe("parent");
-    expect(summaries[1]?.textContent).toBe("child");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.textContent).toBe("child");
+    expect(container.textContent).toContain("2 pending");
+    expect(container.textContent).not.toContain("parent");
     expect(container.textContent).not.toContain("foreign");
     expect(model.unscopedPendingPermissions.map((request) => request.id)).toEqual(["foreign"]);
     expect(requestCanonicalSync).toHaveBeenCalledOnce();
+
+    controller.ingestPermissionReplied("child");
+    expect(container.querySelectorAll(".opencode-session-view__request-dock")).toHaveLength(1);
+    expect(container.textContent).toContain("parent");
+  });
+
+  it("queues permission and question dialogs in one interaction flow", () => {
+    const { model, controller, container } = setup();
+    controller.ingestPermissionAsked({ id: "permission-parent", sessionID: "parent", permission: "edit", patterns: ["first"], metadata: {}, always: [] });
+    controller.ingestQuestionAsked({
+      id: "question-parent",
+      sessionID: "parent",
+      questions: [{ header: "Next", question: "Continue?", options: [], multiple: false, custom: true }],
+    });
+
+    expect(model.pendingPermissions).toHaveLength(1);
+    expect(model.pendingQuestions).toHaveLength(1);
+    expect(container.querySelectorAll(".opencode-session-view__request-dock")).toHaveLength(1);
+    expect(container.textContent).toContain("first");
+    expect(container.textContent).toContain("2 pending");
+    expect(container.textContent).not.toContain("Continue?");
+
+    controller.ingestPermissionReplied("permission-parent");
+
+    expect(container.querySelectorAll(".opencode-session-view__request-dock")).toHaveLength(1);
+    expect(container.textContent).not.toContain("first");
+    expect(container.textContent).toContain("Continue?");
+    expect(container.textContent).not.toContain("pending");
   });
 
   it("promotes a held request after descendant discovery confirms its owner", () => {
@@ -155,6 +185,7 @@ describe("RequestDocksController descendant routing", () => {
     option.checked = true;
     custom.value = "Preserve this draft";
     custom.focus();
+    controller.ingestPermissionAsked({ id: "permission-after-question", sessionID: "parent", permission: "bash", patterns: ["later"], metadata: {}, always: [] });
 
     controller.refresh();
 
@@ -162,5 +193,7 @@ describe("RequestDocksController descendant routing", () => {
     expect(option.checked).toBe(true);
     expect(custom.value).toBe("Preserve this draft");
     expect(document.activeElement).toBe(custom);
+    expect(container.textContent).toContain("2 pending");
+    expect(container.textContent).not.toContain("later");
   });
 });

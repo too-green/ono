@@ -256,6 +256,7 @@ export default class OpenCodePlugin extends Plugin {
 
   /** Opens an OpenCode session in a main Obsidian tab; referenced by AgentPanelView. */
   async openSessionTab(sessionId: string, sessionTitle?: string): Promise<void> {
+    await this.ensureSessionAutoApproveDefault(sessionId);
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION).find((leaf) => this.sessionIdFromLeaf(leaf) === sessionId);
     const leaf = existing ?? this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: VIEW_TYPE_OPENCODE_SESSION, state: { sessionId, sessionTitle }, active: true });
@@ -266,6 +267,7 @@ export default class OpenCodePlugin extends Plugin {
   async openNewSessionTab(directory: string): Promise<void> {
     const leaf = this.app.workspace.getLeaf("tab");
     const draftId = crypto.randomUUID();
+    await this.ensureSessionAutoApproveDefault(`draft:${draftId}`);
     await leaf.setViewState({ type: VIEW_TYPE_OPENCODE_SESSION, state: { draftId, draftDirectory: directory }, active: true });
     this.app.workspace.revealLeaf(leaf);
   }
@@ -426,8 +428,13 @@ export default class OpenCodePlugin extends Plugin {
       this.settings.sessionAgentChoices && typeof this.settings.sessionAgentChoices === "object" ? this.settings.sessionAgentChoices : {};
     this.settings.sessionModelChoices =
       this.settings.sessionModelChoices && typeof this.settings.sessionModelChoices === "object" ? this.settings.sessionModelChoices : {};
+    this.settings.defaultSessionAutoApprove = this.settings.defaultSessionAutoApprove === true;
     this.settings.sessionAutoApprove =
       this.settings.sessionAutoApprove && typeof this.settings.sessionAutoApprove === "object" ? this.settings.sessionAutoApprove : {};
+    this.settings.sessionAutoApproveDefaultApplied = this.settings.sessionAutoApproveDefaultApplied && typeof this.settings.sessionAutoApproveDefaultApplied === "object"
+      ? Object.fromEntries(Object.entries(this.settings.sessionAutoApproveDefaultApplied).filter(([, applied]) => applied === true))
+      : {};
+    for (const sessionId of Object.keys(this.settings.sessionAutoApprove)) this.settings.sessionAutoApproveDefaultApplied[sessionId] = true;
     this.settings.sessionMute = this.settings.sessionMute && typeof this.settings.sessionMute === "object" ? this.settings.sessionMute : {};
     this.settings.sessionAttachedFiles =
       this.settings.sessionAttachedFiles && typeof this.settings.sessionAttachedFiles === "object" ? this.settings.sessionAttachedFiles : {};
@@ -545,6 +552,16 @@ export default class OpenCodePlugin extends Plugin {
     await this.permissionCoordinator.reconcile();
   }
 
+  /** Applies the configured auto-accept default once when a session or draft first opens in the plugin. */
+  async ensureSessionAutoApproveDefault(sessionId: string): Promise<void> {
+    if (Object.prototype.hasOwnProperty.call(this.settings.sessionAutoApproveDefaultApplied, sessionId)) return;
+    this.settings.sessionAutoApproveDefaultApplied[sessionId] = true;
+    this.settings.sessionAutoApprove[sessionId] = this.settings.defaultSessionAutoApprove;
+    await this.saveSettings();
+    this.refreshSessionAutoApproveControls();
+    await this.permissionCoordinator.reconcile();
+  }
+
   /** Toggles the effective session policy while removing overrides that equal the inherited value. */
   async toggleSessionAutoApprove(sessionId: string, directory?: string): Promise<void> {
     await this.rememberSessionAutoApprove(sessionId, await this.permissionCoordinator.overrideForToggle(sessionId, directory));
@@ -614,6 +631,7 @@ export default class OpenCodePlugin extends Plugin {
     const agent = this.settings.sessionAgentChoices[draftKey];
     const model = this.settings.sessionModelChoices[draftKey];
     const autoApprove = this.settings.sessionAutoApprove[draftKey];
+    const autoApproveDefaultApplied = this.settings.sessionAutoApproveDefaultApplied[draftKey];
     const muted = this.settings.sessionMute[draftKey];
     const hasMuteOverride = Object.prototype.hasOwnProperty.call(this.settings.sessionMute, draftKey);
     const files = this.settings.sessionAttachedFiles[draftKey];
@@ -621,15 +639,21 @@ export default class OpenCodePlugin extends Plugin {
     if (agent) this.settings.sessionAgentChoices[sessionId] = agent;
     if (model) this.settings.sessionModelChoices[sessionId] = model;
     if (autoApprove !== undefined) this.settings.sessionAutoApprove[sessionId] = autoApprove;
+    if (autoApproveDefaultApplied) this.settings.sessionAutoApproveDefaultApplied[sessionId] = true;
     if (hasMuteOverride) this.settings.sessionMute[sessionId] = muted!;
     if (files) this.settings.sessionAttachedFiles[sessionId] = files;
     delete this.settings.sessionDrafts[draftKey];
     delete this.settings.sessionAgentChoices[draftKey];
     delete this.settings.sessionModelChoices[draftKey];
     delete this.settings.sessionAutoApprove[draftKey];
+    delete this.settings.sessionAutoApproveDefaultApplied[draftKey];
     delete this.settings.sessionMute[draftKey];
     delete this.settings.sessionAttachedFiles[draftKey];
     await this.saveSettings();
+    if (autoApproveDefaultApplied) {
+      this.refreshSessionAutoApproveControls();
+      await this.permissionCoordinator.reconcile();
+    }
   }
 
   /** Opens or focuses the OpenCode agents panel and reveals the focused session's row. */

@@ -80,7 +80,9 @@ export interface OpenCodePluginSettings {
   sessionDrafts: Record<string, string>;
   sessionAgentChoices: Record<string, string>;
   sessionModelChoices: Record<string, { providerID: string; modelID: string; variant?: string }>;
+  defaultSessionAutoApprove: boolean;
   sessionAutoApprove: Record<string, boolean>;
+  sessionAutoApproveDefaultApplied: Record<string, true>;
   sessionMute: Record<string, boolean>;
   sessionAttachedFiles: Record<string, ComposerAttachment[]>;
   sessionUnread: Record<string, boolean>;
@@ -118,7 +120,9 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   sessionDrafts: {},
   sessionAgentChoices: {},
   sessionModelChoices: {},
+  defaultSessionAutoApprove: false,
   sessionAutoApprove: {},
+  sessionAutoApproveDefaultApplied: {},
   sessionMute: {},
   sessionAttachedFiles: {},
   sessionUnread: {},
@@ -216,6 +220,16 @@ export class OpenCodeSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.archiveConfirmation).onChange(async (value) => {
           this.plugin.settings.archiveConfirmation = value;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(this.containerEl)
+      .setName("Default auto-accept")
+      .setDesc("Enable auto-accept when a session is first opened or a new session is created using this plugin.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.defaultSessionAutoApprove).onChange(async (value) => {
+          this.plugin.settings.defaultSessionAutoApprove = value;
           await this.plugin.saveSettings();
         }),
       );

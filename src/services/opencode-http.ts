@@ -1,4 +1,7 @@
 import { requestUrl } from "obsidian";
+import { logger, type LogMethod } from "../logger";
+
+const loggedRequestErrors = new WeakSet<object>();
 
 export interface OpenCodeHttpClientConfig {
   baseUrl: string;
@@ -18,18 +21,18 @@ export class OpenCodeHttpError extends Error {
   }
 }
 
-/** Logs an OpenCode service call failure and returns the fallback value, so views can degrade without hiding 4xx/5xx failures; `scope` is a generic context (directory or session ID) included in the log. */
-export function logServiceError<T>(fallback: T, label: string, scope?: string): (error: unknown) => T {
+/** Records a service fallback without request data and returns the fallback value used by resilient views. */
+export function logServiceError<T>(fallback: T, operation: string): (error: unknown) => T {
   return (error: unknown) => {
-    const detail =
-      error instanceof OpenCodeHttpError
-        ? { status: error.status, body: error.responseText.slice(0, 200) }
-        : error instanceof Error
-          ? { message: error.message, name: error.name }
-          : { message: String(error) };
-    console.warn("[opencode-plugin:view] service call failed", { label, scope, ...detail });
+    if (isLoggedRequestError(error)) logger.debug("view", "using service fallback", { operation, error });
+    else logger.warn("view", "service fallback failed", { operation, error });
     return fallback;
   };
+}
+
+/** Returns whether the shared HTTP boundary already recorded this exact thrown object. */
+export function isLoggedRequestError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && loggedRequestErrors.has(error);
 }
 
 export class OpenCodeHttpClient {
@@ -48,31 +51,37 @@ export class OpenCodeHttpClient {
 
   /** Performs a JSON GET request and returns headers for cursor-based endpoints. */
   async getResponse<T>(path: string, query?: object, signal?: AbortSignal): Promise<{ json: T; headers: Record<string, string> }> {
-    if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
-
-    if (!this.config.fetchImpl) return this.getWithObsidianRequestUrl<T>(path, query);
-
-    return this.getWithFetch<T>(path, query, signal);
+    return this.observeRequest("GET", path, async () => {
+      if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+      if (!this.config.fetchImpl) return this.getWithObsidianRequestUrl<T>(path, query);
+      return this.getWithFetch<T>(path, query, signal);
+    });
   }
 
   /** Performs a JSON POST request; referenced by mutating OpenCode session actions. */
   async post<T>(path: string, payload?: unknown, query?: object, signal?: AbortSignal): Promise<T> {
-    if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
-    if (!this.config.fetchImpl) return this.mutateWithObsidianRequestUrl<T>("POST", path, payload, query);
-    return this.mutateWithFetch<T>("POST", path, payload, query, signal);
+    return this.observeRequest("POST", path, async () => {
+      if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+      if (!this.config.fetchImpl) return this.mutateWithObsidianRequestUrl<T>("POST", path, payload, query);
+      return this.mutateWithFetch<T>("POST", path, payload, query, signal);
+    });
   }
 
   /** Performs a JSON PATCH request; referenced by session rename and archival. */
   async patch<T>(path: string, payload: unknown, query?: object, signal?: AbortSignal): Promise<T> {
-    if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
-    if (!this.config.fetchImpl) return this.mutateWithObsidianRequestUrl<T>("PATCH", path, payload, query);
-    return this.mutateWithFetch<T>("PATCH", path, payload, query, signal);
+    return this.observeRequest("PATCH", path, async () => {
+      if (signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+      if (!this.config.fetchImpl) return this.mutateWithObsidianRequestUrl<T>("PATCH", path, payload, query);
+      return this.mutateWithFetch<T>("PATCH", path, payload, query, signal);
+    });
   }
 
   /** Performs a JSON DELETE request; referenced by session unshare. */
   async delete<T>(path: string, query?: object): Promise<T> {
-    if (!this.config.fetchImpl) return this.deleteWithObsidianRequestUrl<T>(path, query);
-    return this.deleteWithFetch<T>(path, query);
+    return this.observeRequest("DELETE", path, async () => {
+      if (!this.config.fetchImpl) return this.deleteWithObsidianRequestUrl<T>(path, query);
+      return this.deleteWithFetch<T>(path, query);
+    });
   }
 
   /** Creates an absolute server URL with encoded query parameters for GET endpoints. */
@@ -93,6 +102,22 @@ export class OpenCodeHttpClient {
       headers.set("Authorization", `Basic ${btoa(`${username}:${this.config.password}`)}`);
     }
     return headers;
+  }
+
+  /** Times one request and records only its method, route template, duration, status, and error type. */
+  private async observeRequest<T>(method: LogMethod, path: string, request: () => Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      const result = await request();
+      logger.debug("http", "request completed", { method, route: path, durationMs: Date.now() - startedAt });
+      return result;
+    } catch (error) {
+      const context = { method, route: path, durationMs: Date.now() - startedAt, error };
+      if (typeof error === "object" && error !== null) loggedRequestErrors.add(error);
+      if (error instanceof Error && error.name === "AbortError") logger.debug("http", "request aborted", context);
+      else logger.warn("http", "request failed", context);
+      throw error;
+    }
   }
 
   /** Performs GET through Obsidian's network helper to avoid renderer CORS failures. */

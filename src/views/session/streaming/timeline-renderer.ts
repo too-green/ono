@@ -1,10 +1,12 @@
-import { MarkdownRenderer, type App, type Component } from "obsidian";
+import { MarkdownRenderer, Notice, setIcon, type App, type Component } from "obsidian";
 
+import { assistantErrorDiagnostics, assistantErrorDiagnosticsText, assistantErrorMessage, isDisplayableAssistantError } from "../../../services/assistant-error";
 import type { JsonObject, OpenCodeMessageBundle } from "../../../services/opencode-types";
 import { orderedBoundary } from "../../../message-order";
 import { renderContextToolGroup } from "../blocks/context-tool-group";
 import { renderMessageMeta, renderRewindBoundary, type AssistantMetaOptions, type MessageMetaCallbacks, type RewindBoundaryProps } from "../blocks/message-meta";
 import { bindStreamingTextTarget, renderReasoningBlock } from "../blocks/reasoning-block";
+import { taskSessionId } from "../blocks/specialized-tool-renderers";
 import { normalizedToolName, renderToolCall } from "../blocks/tool-renderer";
 import { adoptLazyDetailsBody, blockPartId, type BlockRenderCtx } from "../blocks/tool-primitives";
 import * as jsonHelpers from "../json-helpers";
@@ -12,6 +14,7 @@ import * as messageHelpers from "../message-helpers";
 import type { ImageAttachment } from "../message-helpers";
 import { hashRenderState } from "../render-signature";
 import type { SessionViewModel } from "../session-view-model";
+import { retryCountdownText, type SessionRetryStatus } from "../session-status";
 import type { WorkingAnimation } from "../../../session-state";
 import type { FollowLatestAnchor } from "../scroll-controller";
 import type { ToolDisplaySetting } from "../../../settings";
@@ -67,9 +70,10 @@ export function messageRenderKind(bundle: OpenCodeMessageBundle, showReasoningBl
     return !!jsonHelpers.readString(part, ["text"]);
   });
   const hasCompact = bundle.parts.some((part) => isCompactAssistantPart(part, showReasoningBlocks));
+  const hasError = bundle.info.error !== undefined && bundle.info.error !== null;
   if (hasText && hasCompact) return "assistant-mixed";
   if (hasText) return "assistant-text";
-  if (hasCompact) return "assistant-compact";
+  if (hasCompact || hasError) return "assistant-compact";
   return "none";
 }
 
@@ -203,10 +207,12 @@ export class TimelineRenderer {
       timeline.appendChild(row);
     }
     if (!this.isBindingCurrent(binding)) return visibleMessages.length;
+    const renderedRetry = this.renderSessionRetry(timeline);
+    const renderedSessionError = this.renderTransientSessionError(timeline, visibleMessages);
     const renderedWorkingPlaceholder = this.renderWorkingAssistantPlaceholder(timeline, activeAssistantId);
     renderRewindBoundary(timeline, this.rewindBoundaryProps());
     this.annotateRewindBoundary(timeline);
-    if (visibleMessages.length === 0 && !renderedWorkingPlaceholder && !this.deps.getRevertMessageId()) {
+    if (visibleMessages.length === 0 && !renderedRetry && !renderedSessionError && !renderedWorkingPlaceholder && !this.deps.getRevertMessageId()) {
       timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
     }
     return visibleMessages.length;
@@ -290,6 +296,16 @@ export class TimelineRenderer {
       previous = row;
     }
 
+    const retry = this.reconcileSessionRetry(timeline);
+    if (retry) {
+      if (previous.nextElementSibling !== retry) timeline.insertBefore(retry, previous.nextElementSibling);
+      previous = retry;
+    }
+    const sessionError = this.reconcileTransientSessionError(timeline, visibleMessages);
+    if (sessionError) {
+      if (previous.nextElementSibling !== sessionError) timeline.insertBefore(sessionError, previous.nextElementSibling);
+      previous = sessionError;
+    }
     const placeholder = this.reconcileWorkingPlaceholder(timeline, activeAssistantId);
     if (placeholder) {
       if (previous.nextElementSibling !== placeholder) timeline.insertBefore(placeholder, previous.nextElementSibling);
@@ -301,10 +317,10 @@ export class TimelineRenderer {
       previous = rewind;
     }
     for (const child of Array.from(timeline.children)) {
-      if (child === history || entries.some((entry) => (entry.current ?? entry.next) === child) || child === placeholder || child === rewind) continue;
+      if (child === history || entries.some((entry) => (entry.current ?? entry.next) === child) || child === retry || child === sessionError || child === placeholder || child === rewind) continue;
       child.remove();
     }
-    if (visibleMessages.length === 0 && !placeholder && !rewind) timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
+    if (visibleMessages.length === 0 && !retry && !sessionError && !placeholder && !rewind) timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
     this.deps.restoreFollowLatest(followGeneration);
     this.deps.updateJumpButton();
   }
@@ -335,14 +351,14 @@ export class TimelineRenderer {
     return row;
   }
 
-  /** Includes adjacent-turn, busy, and queued metadata in the visual signature for one message row. */
+  /** Includes message-adjacent state and resolved task children in one row's visual signature. */
   private messageRowSignature(
     bundle: OpenCodeMessageBundle,
     options: MessageRenderOptions,
     assistantOptions?: AssistantMetaOptions,
     queued = false,
   ): string {
-    return hashRenderState(JSON.stringify([bundle, options, assistantOptions, queued]));
+    return hashRenderState(JSON.stringify([bundle, options, assistantOptions, queued, bundle.parts.map((part) => this.taskSessionRenderState(part))]));
   }
 
   /** Derives TUI-parity queued state: a user message trailing the active assistant turn while busy. */
@@ -554,6 +570,7 @@ export class TimelineRenderer {
     const role = messageHelpers.messageRole(bundle);
     if (role === "assistant") {
       await this.renderAssistantParts(container, bundle.parts, bundle.info, messageHelpers.messageId(bundle));
+      if (isDisplayableAssistantError(bundle.info.error)) this.renderAssistantError(container, bundle.info.error, "assistant-error", false);
       if (options.showAssistantMeta) {
         const meta = renderMessageMeta(container, bundle, "assistant", options.assistantTurnText, this.messageMetaCallbacks(), assistantOptions);
         this.annotateBlock(meta, "assistant-meta", [bundle.info, options, assistantOptions]);
@@ -691,7 +708,7 @@ export class TimelineRenderer {
       const firstIndex = container.children.length;
       await renderToolCall(container, part, ctx);
       const block = container.children.item(firstIndex);
-      if (block instanceof HTMLElement) this.annotateBlock(block, this.assistantBlockKey("tool", [part]), part);
+      if (block instanceof HTMLElement) this.annotateBlock(block, this.assistantBlockKey("tool", [part]), [part, this.taskSessionRenderState(part)]);
       markRendered();
     }
 
@@ -700,10 +717,137 @@ export class TimelineRenderer {
     await flushContext();
   }
 
+  /** Renders one native-theme error card for a durable assistant error or transient session event. */
+  private renderAssistantError(container: HTMLElement, error: unknown, key: string, live: boolean): HTMLElement {
+    const message = assistantErrorMessage(error);
+    const card = container.createDiv({ cls: "opencode-session-view__assistant-error", attr: { role: live ? "alert" : "note" } });
+    const icon = card.createSpan({ cls: "opencode-session-view__assistant-error-icon", attr: { "aria-hidden": "true" } });
+    setIcon(icon, "alert-circle");
+    const content = card.createDiv({ cls: "opencode-session-view__assistant-error-content" });
+    content.createDiv({ text: "OpenCode error", cls: "opencode-session-view__assistant-error-title" });
+    content.createDiv({ text: message, cls: "opencode-session-view__assistant-error-message" });
+    const diagnostics = assistantErrorDiagnostics(error);
+    const diagnosticsText = assistantErrorDiagnosticsText(error);
+    if (diagnostics.length > 0) {
+      const details = content.createEl("details", { cls: "opencode-session-view__error-diagnostics" });
+      details.createEl("summary", { text: "Diagnostics" });
+      const rows = details.createDiv({ cls: "opencode-session-view__error-diagnostic-rows" });
+      for (const diagnostic of diagnostics) {
+        const row = rows.createDiv({ cls: "opencode-session-view__error-diagnostic" });
+        row.createSpan({ text: diagnostic.label, cls: "opencode-session-view__error-diagnostic-label" });
+        row.createSpan({ text: diagnostic.value, cls: "opencode-session-view__error-diagnostic-value" });
+      }
+      const copy = details.createEl("button", { text: "Copy diagnostics", cls: "opencode-session-view__error-diagnostic-copy" });
+      copy.addEventListener("click", () => void this.copyErrorDiagnostics(diagnosticsText));
+    }
+    this.annotateBlock(card, key, [message, diagnosticsText]);
+    return card;
+  }
+
+  /** Renders the active v1 retry payload with its provider message, spinner, countdown, and attempt. */
+  private renderSessionRetry(container: HTMLElement): HTMLElement | undefined {
+    const retry = this.deps.model.sessionRetry;
+    if (!retry || this.deps.getRevertMessageId()) return undefined;
+    const card = container.createDiv({ cls: "opencode-session-view__retry-card", attr: { role: "note" } });
+    card.createSpan({ cls: "opencode-session-view__retry-spinner", attr: { "aria-hidden": "true" } });
+    const content = card.createDiv({ cls: "opencode-session-view__retry-content" });
+    const display = this.retryMessageDisplay(retry.message);
+    content.createDiv({ text: display.text, cls: "opencode-session-view__retry-message", attr: display.title ? { title: display.title } : undefined });
+    content.createDiv({
+      text: retryCountdownText(retry),
+      cls: "opencode-session-view__retry-info",
+      attr: { "data-retry-next": String(retry.next), "data-retry-attempt": String(retry.attempt) },
+    });
+    card.dataset.sessionRetrySignature = this.sessionRetrySignature(retry);
+    return card;
+  }
+
+  /** Reconciles the retry card independently so countdown ticks never rebuild message rows. */
+  private reconcileSessionRetry(timeline: HTMLElement): HTMLElement | undefined {
+    const current = timeline.querySelector<HTMLElement>(":scope > .opencode-session-view__retry-card");
+    const retry = this.deps.model.sessionRetry;
+    if (!retry || this.deps.getRevertMessageId()) {
+      current?.remove();
+      return undefined;
+    }
+    const signature = this.sessionRetrySignature(retry);
+    if (current?.dataset.sessionRetrySignature === signature) return current;
+    const scratch = document.createElement("div");
+    const next = this.renderSessionRetry(scratch);
+    current?.remove();
+    return next;
+  }
+
+  /** Truncates retry text to the product-spec limit while retaining the full tooltip. */
+  private retryMessageDisplay(message: string): { text: string; title?: string } {
+    if (message.length <= 80) return { text: message };
+    return { text: `${message.slice(0, 79)}…`, title: message };
+  }
+
+  /** Hashes only retry fields represented by the mounted card. */
+  private sessionRetrySignature(retry: SessionRetryStatus): string {
+    return hashRenderState(JSON.stringify([retry.attempt, retry.message, retry.next]));
+  }
+
+  /** Copies only the sanitized diagnostic summary from an explicit user action. */
+  private async copyErrorDiagnostics(diagnostics: string): Promise<void> {
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(diagnostics);
+      new Notice("Copied OpenCode error diagnostics.");
+    } catch {
+      new Notice("Unable to copy OpenCode error diagnostics.");
+    }
+  }
+
+  /** Appends the event-only fallback unless the latest assistant already persists the same error. */
+  private renderTransientSessionError(container: HTMLElement, messages: OpenCodeMessageBundle[]): HTMLElement | undefined {
+    const state = this.visibleSessionError(messages);
+    if (!state) return undefined;
+    const card = this.renderAssistantError(container, state.error, "session-error", true);
+    card.dataset.sessionErrorSignature = hashRenderState(assistantErrorDiagnosticsText(state.error) || state.message);
+    return card;
+  }
+
+  /** Reconciles the event-only error card independently from keyed message rows. */
+  private reconcileTransientSessionError(timeline: HTMLElement, messages: OpenCodeMessageBundle[]): HTMLElement | undefined {
+    const current = timeline.querySelector<HTMLElement>(":scope > .opencode-session-view__assistant-error[data-session-error-signature]");
+    const state = this.visibleSessionError(messages);
+    if (!state) {
+      current?.remove();
+      return undefined;
+    }
+    const signature = hashRenderState(assistantErrorDiagnosticsText(state.error) || state.message);
+    if (current?.dataset.sessionErrorSignature === signature) return current;
+    const scratch = document.createElement("div");
+    const next = this.renderTransientSessionError(scratch, messages);
+    current?.remove();
+    return next;
+  }
+
+  /** Returns the retained event error when no latest assistant error already renders it. */
+  private visibleSessionError(messages: OpenCodeMessageBundle[]): SessionViewModel["sessionError"] {
+    const state = this.deps.model.sessionError;
+    if (!state || this.deps.model.sessionRetry || this.deps.getRevertMessageId()) return undefined;
+    const latestAssistant = [...messages].reverse().find((bundle) => messageHelpers.messageRole(bundle) === "assistant" && !messageHelpers.isCompactionMessage(bundle));
+    const persistedError = latestAssistant?.info.error;
+    if (isDisplayableAssistantError(persistedError) && assistantErrorMessage(persistedError) === state.message) return undefined;
+    return state;
+  }
+
   /** Assigns stable identity and visual state to a direct message block. */
   private annotateBlock(block: HTMLElement, key: string, state: unknown): void {
     block.dataset.blockKey = key;
     block.dataset.blockSignature = hashRenderState(JSON.stringify(state));
+  }
+
+  /** Returns external child identity that can change a task block without changing its message part. */
+  private taskSessionRenderState(part: JsonObject): [string, string | undefined] | undefined {
+    if (normalizedToolName(part) !== "task") return undefined;
+    const state = jsonHelpers.readObject(part, "state") ?? {};
+    const input = jsonHelpers.readObject(state, "input") ?? {};
+    const sessionId = taskSessionId(input, state);
+    return sessionId ? [sessionId, this.deps.model.descendantSessions.get(sessionId)?.title] : undefined;
   }
 
   /** Builds a stable assistant block key from its first constituent OpenCode part. */
@@ -719,14 +863,19 @@ export class TimelineRenderer {
     }
   }
 
-  /** Updates mounted live duration labels without rebuilding streamed Markdown or tool blocks. */
-  refreshActiveTurnDuration(now = Date.now()): void {
-    if (!this.deps.model.sessionBusy) return;
-    const durations = this.deps.contentEl.querySelectorAll<HTMLElement>(".opencode-session-view__message-meta--working [data-turn-started-at]");
-    for (const duration of Array.from(durations)) {
-      const startedAt = Number(duration.dataset.turnStartedAt);
-      const label = messageHelpers.elapsedDurationLabel(Number.isFinite(startedAt) ? startedAt : undefined, now);
-      if (label) duration.setText(`${duration.dataset.metaPrefix ?? ""}${label}`);
+  /** Updates active-turn duration and retry countdown labels without rebuilding timeline content. */
+  refreshLiveTimelineStatus(now = Date.now()): void {
+    if (this.deps.model.sessionBusy) {
+      const durations = this.deps.contentEl.querySelectorAll<HTMLElement>(".opencode-session-view__message-meta--working [data-turn-started-at]");
+      for (const duration of Array.from(durations)) {
+        const startedAt = Number(duration.dataset.turnStartedAt);
+        const label = messageHelpers.elapsedDurationLabel(Number.isFinite(startedAt) ? startedAt : undefined, now);
+        if (label) duration.setText(`${duration.dataset.metaPrefix ?? ""}${label}`);
+      }
+    }
+    for (const countdown of Array.from(this.deps.contentEl.querySelectorAll<HTMLElement>("[data-retry-next][data-retry-attempt]"))) {
+      const retry: SessionRetryStatus = { message: "", next: Number(countdown.dataset.retryNext), attempt: Number(countdown.dataset.retryAttempt) };
+      countdown.setText(retryCountdownText(retry, now));
     }
   }
 

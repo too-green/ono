@@ -90,11 +90,14 @@ export interface OpenCodePluginSettings {
   notifyOnAttention: boolean;
   notifyOnSessionError: boolean;
   notifyOnTurnComplete: boolean;
+  retryActionLastShown: Record<string, number>;
+  retryActionSuppressed: Record<string, true>;
   workingAnimation: WorkingAnimation;
   folderCollapseDisplay: FolderCollapseDisplay;
   agentPanelSessionSort: AgentPanelSessionSort;
   favoriteModels: Array<{ providerID: string; modelID: string; variant?: string }>;
   customToolDisplays: ToolDisplaySetting[];
+  debugLogging: boolean;
   /** Configured IDE/editor id for the "Open project in IDE" command and menu item. */
   openIde: string;
 }
@@ -130,11 +133,14 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   notifyOnAttention: true,
   notifyOnSessionError: true,
   notifyOnTurnComplete: true,
+  retryActionLastShown: {},
+  retryActionSuppressed: {},
   workingAnimation: DEFAULT_WORKING_ANIMATION,
   folderCollapseDisplay: DEFAULT_FOLDER_COLLAPSE_DISPLAY,
   agentPanelSessionSort: DEFAULT_AGENT_PANEL_SESSION_SORT,
   favoriteModels: [],
   customToolDisplays: [],
+  debugLogging: false,
   openIde: DEFAULT_OPEN_IDE_ID,
 };
 
@@ -159,6 +165,23 @@ export function normalizeAgentPanelSessionSort(value: unknown): AgentPanelSessio
 /** Returns a supported notification delivery mode for persisted settings. */
 export function normalizeNotificationMode(value: unknown): NotificationMode {
   return typeof value === "string" && value in NOTIFICATION_MODE_LABELS ? value as NotificationMode : DEFAULT_NOTIFICATION_MODE;
+}
+
+/** Enables persisted debug logging only for the explicit boolean value used by the settings toggle. */
+export function normalizeDebugLogging(value: unknown): boolean {
+  return value === true;
+}
+
+/** Normalizes persisted retry-action cooldown timestamps. */
+export function normalizeRetryActionLastShown(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]) && entry[1] >= 0));
+}
+
+/** Normalizes sparse permanent suppression flags for retry-action prompts. */
+export function normalizeRetryActionSuppressed(value: unknown): Record<string, true> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, true] => entry[1] === true));
 }
 
 /** Normalizes the optional theme-defined in-progress task marker; empty means highlighted unchecked. */
@@ -296,6 +319,13 @@ export class OpenCodeSettingTab extends PluginSettingTab {
       );
 
     new Setting(this.containerEl)
+      .setName("Reset usage-limit prompts")
+      .setDesc("Show OpenCode usage-limit action prompts again after choosing Don’t show again.")
+      .addButton((button) =>
+        button.setButtonText("Reset").onClick(() => void this.plugin.resetRetryActionPrompts()),
+      );
+
+    new Setting(this.containerEl)
       .setName("Folder collapse indicator")
       .setDesc("Choose how collapsed project and worktree rows are distinguished in the agents panel.")
       .addDropdown((dropdown) => {
@@ -380,6 +410,15 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           ]);
         });
       });
+
+    new Setting(this.containerEl)
+      .setName("Debug logging")
+      .setDesc("Log endpoint templates, timings, statuses, event types, counts, retries, and error classes to the developer console. Prompts, paths, IDs, payloads, headers, credentials, and error messages are excluded.")
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.debugLogging).onChange(async (value) => {
+          await this.plugin.setDebugLogging(value);
+        }),
+      );
 
     new Setting(this.containerEl)
       .setName("Custom tool displays")

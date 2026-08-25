@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import OpenCodePlugin, { LEGACY_DIFF_PANEL_VIEW_TYPE } from "../main.ts";
+import { logger } from "./logger";
 import { DEFAULT_OPENCODE_SETTINGS, type OpenCodePluginSettings } from "./settings";
 import { VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./views/AgentPanelView";
 import { VIEW_TYPE_OPENCODE_SESSION } from "./views/SessionView";
@@ -19,6 +20,11 @@ function pluginSettings(overrides: Partial<OpenCodePluginSettings> = {}): OpenCo
     ...overrides,
   };
 }
+
+afterEach(() => {
+  logger.setDebugEnabled(false);
+  vi.restoreAllMocks();
+});
 
 describe("OpenCodePlugin unload lifecycle", () => {
   it("detaches every plugin view before disposing the service", () => {
@@ -45,6 +51,55 @@ describe("OpenCodePlugin unload lifecycle", () => {
       "dispose-notifications",
       "dispose",
     ]);
+  });
+});
+
+describe("OpenCodePlugin diagnostics settings", () => {
+  it("persists and immediately applies debug logging changes", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const saveSettings = vi.fn(async () => undefined);
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, { settings: pluginSettings(), saveSettings });
+
+    await plugin.setDebugLogging(true);
+
+    expect(plugin.settings.debugLogging).toBe(true);
+    expect(logger.isDebugEnabled()).toBe(true);
+    expect(saveSettings).toHaveBeenCalledOnce();
+    expect(debug).toHaveBeenCalledWith("[opencode-plugin:lifecycle] debug logging enabled");
+  });
+
+  it("keeps the previous runtime setting when persistence fails", async () => {
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      settings: pluginSettings(),
+      saveSettings: vi.fn(async () => { throw new Error("save failed"); }),
+    });
+
+    await expect(plugin.setDebugLogging(true)).rejects.toThrow("save failed");
+
+    expect(plugin.settings.debugLogging).toBe(false);
+    expect(logger.isDebugEnabled()).toBe(false);
+  });
+
+  it("serializes rapid debug logging changes in user order", async () => {
+    let releaseFirstSave: (() => void) | undefined;
+    const saveSettings = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { releaseFirstSave = resolve; }))
+      .mockResolvedValueOnce(undefined);
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, { settings: pluginSettings(), saveSettings });
+    vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    const enable = plugin.setDebugLogging(true);
+    await Promise.resolve();
+    const disable = plugin.setDebugLogging(false);
+    releaseFirstSave?.();
+    await Promise.all([enable, disable]);
+
+    expect(saveSettings).toHaveBeenCalledTimes(2);
+    expect(plugin.settings.debugLogging).toBe(false);
+    expect(logger.isDebugEnabled()).toBe(false);
   });
 });
 

@@ -1,6 +1,7 @@
 import * as http from "http";
 import * as https from "https";
 import type { IncomingMessage, RequestOptions } from "http";
+import { logger } from "../logger";
 import type { OpenCodeHttpClient } from "./opencode-http";
 import type { OpenCodeEvent } from "./opencode-types";
 
@@ -16,6 +17,7 @@ export interface OpenCodeEventHandlers {
 }
 
 const RETRY_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
+const STABLE_CONNECTION_MS = 30_000;
 
 export class OpenCodeEventStream {
   private readonly connections = new Map<string, { abort: AbortController; handlers: Set<OpenCodeEventHandlers>; directory?: string }>();
@@ -59,18 +61,15 @@ export class OpenCodeEventStream {
     let attempt = 0;
     while (!controller.signal.aborted) {
       try {
-        await this.readOnce(key, controller);
-        attempt = 0;
+        const connectedMs = await this.readOnce(key, controller);
+        if (controller.signal.aborted) return;
+        if (connectedMs >= STABLE_CONNECTION_MS) attempt = 0;
+        throw new Error("OpenCode event stream closed");
       } catch (error) {
         if (controller.signal.aborted) return;
-        console.warn("[opencode-plugin:sse] error", {
-          directory: this.connections.get(key)?.directory,
-          error,
-          message: error instanceof Error ? error.message : String(error),
-          name: error instanceof Error ? error.name : undefined,
-        });
-        this.forEachHandler(key, (handler) => handler.onError?.(error));
         const delayMs = RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)] ?? 30000;
+        logger.warn("sse", "connection failed", { attempt: attempt + 1, delayMs, error });
+        this.forEachHandler(key, (handler) => handler.onError?.(error));
         attempt += 1;
         this.forEachHandler(key, (handler) => handler.onReconnect?.(attempt, delayMs));
         await this.sleep(delayMs, controller.signal);
@@ -79,11 +78,13 @@ export class OpenCodeEventStream {
   }
 
   /** Reads and parses one `/event` SSE response from the OpenCode server. */
-  private async readOnce(key: string, controller: AbortController): Promise<void> {
+  private async readOnce(key: string, controller: AbortController): Promise<number> {
     const connection = this.connections.get(key);
     const url = this.http.url("/event", { directory: connection?.directory });
-    console.debug("[opencode-plugin:sse] connecting", { directory: connection?.directory, url });
+    logger.debug("sse", "connecting");
+    const startedAt = Date.now();
     await this.readWithNodeHttp(key, url, controller);
+    return Date.now() - startedAt;
   }
 
   /** Streams SSE over Node HTTP to avoid renderer fetch CORS failures in Obsidian desktop. */
@@ -113,7 +114,7 @@ export class OpenCodeEventStream {
           return;
         }
 
-        console.debug("[opencode-plugin:sse] open", { directory: this.connections.get(key)?.directory, status: statusCode });
+        logger.debug("sse", "connection opened", { status: statusCode });
         this.forEachHandler(key, (handler) => handler.onOpen?.());
         response.setEncoding("utf8");
         response.on("data", (chunk: string) => {
@@ -159,8 +160,16 @@ export class OpenCodeEventStream {
       .map((line) => line.slice(5).trimStart())
       .join("\n");
     if (!data) return;
-    const event = JSON.parse(data) as OpenCodeEvent;
-    if (event.type !== "server.heartbeat") console.debug("[opencode-plugin:sse] event", { directory: this.connections.get(key)?.directory, type: event.type, properties: event.properties });
+    let event: OpenCodeEvent;
+    try {
+      event = JSON.parse(data) as OpenCodeEvent;
+    } catch (error) {
+      logger.warn("sse", "event parse failed", { error });
+      return;
+    }
+    if (logger.isDebugEnabled() && event.type !== "server.heartbeat" && event.type !== "message.part.delta") {
+      logger.debug("sse", "event received", { eventType: event.type });
+    }
     this.forEachHandler(key, (handler) => handler.onEvent(event));
   }
 
@@ -168,17 +177,29 @@ export class OpenCodeEventStream {
   private forEachHandler(key: string, callback: (handler: OpenCodeEventHandlers) => void): void {
     const connection = this.connections.get(key);
     if (!connection) return;
-    for (const handler of [...connection.handlers]) callback(handler);
+    for (const handler of [...connection.handlers]) {
+      try {
+        callback(handler);
+      } catch (error) {
+        logger.error("sse", "subscriber failed", { error });
+      }
+    }
   }
 
   /** Sleeps between reconnect attempts while respecting stream cancellation. */
   private sleep(delayMs: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
-      const timeout = window.setTimeout(resolve, delayMs);
-      signal.addEventListener("abort", () => {
-        window.clearTimeout(timeout);
+      if (signal.aborted) {
         resolve();
-      }, { once: true });
+        return;
+      }
+      const finish = (): void => {
+        globalThis.clearTimeout(timeout);
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const timeout = globalThis.setTimeout(finish, delayMs);
+      signal.addEventListener("abort", finish, { once: true });
     });
   }
 }

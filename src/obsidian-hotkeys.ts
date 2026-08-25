@@ -1,4 +1,5 @@
 import { Platform, type App, type Hotkey, type Modifier } from "obsidian";
+import { logger } from "./logger";
 
 interface InternalCommand {
   id: string;
@@ -23,7 +24,7 @@ export function matchesObsidianCommandHotkey(app: App, commandNames: string[], e
   try {
     return internal.hotkeyManager.getHotkeys(command.id).some((hotkey) => matchesHotkey(hotkey, event));
   } catch (error) {
-    console.warn("[opencode-plugin:hotkeys] unable to read Obsidian command hotkeys", { command: command.id, error });
+    logger.warn("hotkeys", "unable to read Obsidian command hotkeys", { error });
     return false;
   }
 }

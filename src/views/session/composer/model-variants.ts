@@ -1,5 +1,6 @@
 import { Menu, Notice, setIcon } from "obsidian";
 import type OpenCodePlugin from "../../../../main";
+import { logger } from "../../../logger";
 import { ModelSelectionMenu, type FavoriteModelRef, type ModelEntry } from "../../ModelSelectionMenu";
 import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef } from "../../../services/opencode-types";
 import { setProviderIcon } from "../../../utils/provider-icons";
@@ -291,7 +292,7 @@ export class ModelVariantsController {
     try {
       this.deps.model.availableModels = await this.deps.plugin.requireOpenCodeService().listModels(this.deps.model.sessionDirectory ?? this.deps.model.draftDirectory);
     } catch (error) {
-      console.warn("[opencode-plugin:composer] model catalog failed", error);
+      logger.warn("composer", "model catalog failed", { error });
       this.deps.model.availableModels = [];
     }
   }

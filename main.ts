@@ -3,9 +3,12 @@ import {
   DEFAULT_OPENCODE_SETTINGS,
   OpenCodeSettingTab,
   normalizeAgentPanelSessionSort,
+  normalizeDebugLogging,
   normalizeFolderCollapseDisplay,
   normalizeNotificationMode,
   normalizeOpenIde,
+  normalizeRetryActionLastShown,
+  normalizeRetryActionSuppressed,
   normalizeSessionIslandContextLabel,
   normalizeTodoStatusCharacter,
   type ComposerAttachment,
@@ -15,7 +18,7 @@ import { OpenCodeService } from "./src/services/opencode-service";
 import type { OpenCodeEventSubscription } from "./src/services/opencode-events";
 import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./src/services/opencode-types";
 import { SessionNotificationService, isElementVisibleInFocusedWindow, type SessionNotificationTestKind } from "./src/services/session-notifications";
-import { confirmSessionArchive, requestSessionTitle, type SessionArchiveNode } from "./src/session-actions";
+import { confirmSessionArchive, requestRetryAction, requestSessionTitle, type SessionArchiveNode } from "./src/session-actions";
 import { AgentPanelView, VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./src/views/AgentPanelView";
 import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView";
 import { loadFolderSuggestions, NewSessionFolderModal } from "./src/views/NewSessionFolderModal";
@@ -27,6 +30,8 @@ import { muteOverrideForState, resolveSessionNotificationState } from "./src/ses
 import { getIdeOrDefault, launchIde } from "./src/utils/ide-launcher";
 import { nextAvailableForkTitle } from "./src/session-fork";
 import { logServiceError } from "./src/services/opencode-http";
+import { logger } from "./src/logger";
+import { eligibleRetryActionKey, safeRetryActionLink, type SessionRetryAction } from "./src/session-retry-action";
 
 export const LEGACY_DIFF_PANEL_VIEW_TYPE = "opencode-diff-panel";
 
@@ -36,6 +41,8 @@ export default class OpenCodePlugin extends Plugin {
   private archivingSessionIds = new Set<string>();
   private notificationService?: SessionNotificationService;
   private notificationEventSubscriptions = new Map<string, OpenCodeEventSubscription>();
+  private debugLoggingSaveQueue: Promise<void> = Promise.resolve();
+  private retryActionModalOpen = false;
   private readonly sessionHierarchy = new SessionHierarchy({
     getSession: (sessionId, directory) => this.requireOpenCodeService().getSession(sessionId, directory),
   });
@@ -56,6 +63,8 @@ export default class OpenCodePlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.opencode = new OpenCodeService(this.settings.server);
+    logger.setDebugEnabled(this.settings.debugLogging);
+    logger.debug("lifecycle", "loading", { count: this.settings.openedDirectories.length });
     this.notificationService = new SessionNotificationService({
       getPreferences: () => ({
         mode: this.settings.notificationMode,
@@ -176,10 +185,13 @@ export default class OpenCodePlugin extends Plugin {
         return true;
       },
     });
+    logger.debug("lifecycle", "loaded");
   }
 
   /** Detaches plugin-owned views before releasing service resources during unload or reload. */
   onunload(): void {
+    logger.debug("lifecycle", "unloading");
+    logger.setDebugEnabled(false);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_SESSION);
     this.app.workspace.detachLeavesOfType(LEGACY_DIFF_PANEL_VIEW_TYPE);
@@ -281,19 +293,19 @@ export default class OpenCodePlugin extends Plugin {
   /** Forks through v1 and repairs duplicate sibling ordinals without overriding unique server-generated titles. */
   async forkSession(sessionId: string, directory?: string, messageId?: string): Promise<OpenCodeSession> {
     const service = this.requireOpenCodeService();
-    const existingPromise = service.listSessions({ directory, limit: 1_000 }).catch(logServiceError([], "listSessionsForForkTitle", sessionId));
+    const existingPromise = service.listSessions({ directory, limit: 1_000 }).catch(logServiceError([], "listSessionsForForkTitle"));
     const [forked, existing] = await Promise.all([service.forkSession(sessionId, directory, messageId), existingPromise]);
     if (!forked.title) return forked;
     const title = nextAvailableForkTitle(forked.title, existing);
     if (title === forked.title) return forked;
-    return service.updateSession(forked.id, { title }, directory).catch(logServiceError(forked, "normalizeForkTitle", forked.id));
+    return service.updateSession(forked.id, { title }, directory).catch(logServiceError(forked, "normalizeForkTitle"));
   }
 
   /** Forks a session and opens the result in a new session tab; shared by every fork trigger. */
   async forkSessionAndOpen(sessionId: string, directory?: string, messageId?: string): Promise<OpenCodeSession> {
     const forked = await this.forkSession(sessionId, directory, messageId);
     await this.openSessionTab(forked.id, forked.title);
-    await this.refreshAgentPanels({ showLoading: false }).catch(logServiceError(undefined, "refreshAgentPanelsAfterFork", forked.id));
+    await this.refreshAgentPanels({ showLoading: false }).catch((error) => logger.warn("agent-panel", "refresh after fork failed", { error }));
     return forked;
   }
 
@@ -443,9 +455,12 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.notifyOnAttention = this.settings.notifyOnAttention !== false;
     this.settings.notifyOnSessionError = this.settings.notifyOnSessionError !== false;
     this.settings.notifyOnTurnComplete = this.settings.notifyOnTurnComplete !== false;
+    this.settings.retryActionLastShown = normalizeRetryActionLastShown(this.settings.retryActionLastShown);
+    this.settings.retryActionSuppressed = normalizeRetryActionSuppressed(this.settings.retryActionSuppressed);
     this.settings.workingAnimation = normalizeWorkingAnimation(this.settings.workingAnimation);
     this.settings.folderCollapseDisplay = normalizeFolderCollapseDisplay(this.settings.folderCollapseDisplay);
     this.settings.agentPanelSessionSort = normalizeAgentPanelSessionSort(this.settings.agentPanelSessionSort);
+    this.settings.debugLogging = normalizeDebugLogging(this.settings.debugLogging);
     this.settings.customToolDisplays = Array.isArray(this.settings.customToolDisplays)
       ? this.settings.customToolDisplays.flatMap((item) => {
         if (!item || typeof item !== "object") return [];
@@ -464,6 +479,24 @@ export default class OpenCodePlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  /** Persists and immediately applies verbose developer-console diagnostics from the settings tab. */
+  async setDebugLogging(enabled: boolean): Promise<void> {
+    const update = (this.debugLoggingSaveQueue ?? Promise.resolve()).then(async () => {
+      const previous = this.settings.debugLogging;
+      this.settings.debugLogging = enabled;
+      try {
+        await this.saveSettings();
+      } catch (error) {
+        this.settings.debugLogging = previous;
+        throw error;
+      }
+      logger.setDebugEnabled(enabled);
+      logger.debug("lifecycle", "debug logging enabled");
+    });
+    this.debugLoggingSaveQueue = update.catch(() => undefined);
+    await update;
+  }
+
   /** Requests renderer notification permission from an explicit settings interaction. */
   async requestSystemNotificationPermission(): Promise<boolean> {
     return await this.notificationService?.requestSystemPermission() ?? false;
@@ -472,6 +505,36 @@ export default class OpenCodePlugin extends Plugin {
   /** Sends one event-specific dummy notification through the selected delivery mode. */
   async sendTestNotification(kind: SessionNotificationTestKind): Promise<void> {
     await this.notificationService?.sendTestNotification(kind);
+  }
+
+  /** Shows one allowlisted usage-limit action at most once per 24 hours across every session tab. */
+  async maybeShowRetryAction(action: SessionRetryAction): Promise<void> {
+    const now = Date.now();
+    const key = eligibleRetryActionKey(action, this.settings.retryActionLastShown, this.settings.retryActionSuppressed, now);
+    if (!key || this.retryActionModalOpen || document.querySelector(".modal-container")) return;
+    this.settings.retryActionLastShown[key] = now;
+    this.retryActionModalOpen = true;
+    void this.saveSettings().catch((error) => logger.warn("settings", "retry action cooldown save failed", { error }));
+    const link = safeRetryActionLink(action);
+    try {
+      const decision = await requestRetryAction(this.app, action, !!link);
+      if (decision === "suppress") {
+        this.settings.retryActionSuppressed[key] = true;
+        await this.saveSettings().catch((error) => logger.warn("settings", "retry action suppression save failed", { error }));
+      } else if (decision === "open" && link) {
+        window.open(link, "_blank", "noopener,noreferrer");
+      }
+    } finally {
+      this.retryActionModalOpen = false;
+    }
+  }
+
+  /** Clears persisted retry-action cooldown and suppression choices from plugin settings. */
+  async resetRetryActionPrompts(): Promise<void> {
+    this.settings.retryActionLastShown = {};
+    this.settings.retryActionSuppressed = {};
+    await this.saveSettings();
+    new Notice("OpenCode usage-limit prompts reset.");
   }
 
   /** Refreshes every open session after display settings change. */

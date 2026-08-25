@@ -14,6 +14,7 @@
  */
 import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef, OpenCodePermissionRequest, OpenCodeQuestionRequest } from "../../services/opencode-types";
 import type { DiffFileSummary } from "../../diff-utils";
+import type { SessionRetryStatus } from "./session-status";
 
 export interface DescendantSessionInfo {
   title: string;
@@ -21,7 +22,15 @@ export interface DescendantSessionInfo {
   statusType?: string;
 }
 
+export interface SessionErrorState {
+  error: unknown;
+  message: string;
+}
+
 export class SessionViewModel {
+  private descendantSessionRevision = 0;
+  private readonly descendantSessionRevisionById = new Map<string, number>();
+
   // ---- identity
   /** Active session id; undefined while showing a draft or before first load. */
   sessionId?: string;
@@ -65,8 +74,18 @@ export class SessionViewModel {
   // ---- shared status / in-flight
   /** Active session status type string (busy / idle / error / etc.) from session events. */
   sessionStatusType = "idle";
+  /** Monotonic status-event revision that prevents older canonical snapshots from overwriting SSE state. */
+  sessionStatusRevision = 0;
+  /** Full active v1 retry payload used by the inline countdown card. */
+  sessionRetry?: SessionRetryStatus;
   /** True while the server-side run remains active, including silent work and retry backoff. */
   sessionBusy = false;
+  /** Latest non-abort `session.error`, retained for inline UI and error chrome until the next active attempt. */
+  sessionError?: SessionErrorState;
+  /** Current event-stream connectivity for the non-blocking reconnect banner. */
+  connectionState: "connected" | "reconnecting" = "connected";
+  /** True after the bound session is deleted or canonical lookup confirms a 404. */
+  sessionDeleted = false;
   /** Local receipt time of the current turn's first active status; fallback before its user message is available. */
   activeTurnStartedAt?: number;
   /** Local receipt time of the current turn's settling status; fallback until canonical completion metadata arrives. */
@@ -97,6 +116,35 @@ export class SessionViewModel {
   pendingRequestRevision = 0;
   /** Latest request-state revision by request id; referenced by canonical request reconciliation. */
   pendingRequestRevisionById = new Map<string, number>();
+
+  /** Captures the live-descendant revision before `SessionView.fetchCanonicalSession` starts its snapshot. */
+  captureDescendantSessionRevision(): number {
+    return this.descendantSessionRevision;
+  }
+
+  /** Records one streamed child mutation so an older canonical snapshot cannot overwrite it. */
+  recordDescendantSessionMutation(sessionId: string): void {
+    this.descendantSessionRevision += 1;
+    this.descendantSessionRevisionById.set(sessionId, this.descendantSessionRevision);
+  }
+
+  /** Applies a canonical descendant snapshot while preserving streamed mutations received after its baseline. */
+  reconcileDescendantSessions(canonical: Map<string, DescendantSessionInfo>, baselineRevision: number): void {
+    for (const [sessionId, revision] of this.descendantSessionRevisionById) {
+      if (revision <= baselineRevision) continue;
+      const streamed = this.descendantSessions.get(sessionId);
+      if (streamed) canonical.set(sessionId, streamed);
+      else canonical.delete(sessionId);
+    }
+    this.descendantSessions = canonical;
+  }
+
+  /** Clears descendant identity and reconciliation state when `SessionView` changes bindings. */
+  resetDescendantSessions(): void {
+    this.descendantSessions.clear();
+    this.descendantSessionRevision = 0;
+    this.descendantSessionRevisionById.clear();
+  }
 
   /**
    * Stable persistence key for the composer's draft/attachments/mute state.

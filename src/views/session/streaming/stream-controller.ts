@@ -1,4 +1,5 @@
 import { diffFilesFromRecords, type DiffFileSummary } from "../../../diff-utils";
+import { logger } from "../../../logger";
 import type { OpenCodeEventHandlers, OpenCodeEventSubscription } from "../../../services/opencode-events";
 import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeTodo } from "../../../services/opencode-types";
 import * as jsonHelpers from "../json-helpers";
@@ -26,6 +27,9 @@ export interface StreamDeps {
   onMessageRemoved: (messageId: string) => void;
   onStreamOpen: (reconnected: boolean) => void;
   onStatusChange: (status: JsonObject) => void;
+  onSessionError: (error: unknown) => void;
+  onConnectionChange: (connected: boolean) => void;
+  onSessionDeleted: () => void;
   onDescendantsChanged: () => void;
   onPermissionAsked: (request: OpenCodePermissionRequest) => void;
   onPermissionReplied: (requestId: string | undefined) => void;
@@ -69,6 +73,15 @@ export class StreamController {
     this.subscription = this.deps.subscribeToEvents({
       onEvent: (event) => {
         if (this.disposed || version !== this.workVersion) return;
+        if (event.type === "server.connected") {
+          this.deps.onConnectionChange(true);
+          this.scheduleCanonicalSync(0);
+          return;
+        }
+        if (event.type === "server.instance.disposed") {
+          this.deps.onConnectionChange(false);
+          return;
+        }
         if (this.isRequestEvent(event.type)) {
           this.applyEvent(event);
           return;
@@ -81,10 +94,14 @@ export class StreamController {
       },
       onOpen: () => {
         if (this.disposed || version !== this.workVersion) return;
+        this.deps.onConnectionChange(true);
         const reconnected = this.connectionOpened;
         this.connectionOpened = true;
         this.deps.onStreamOpen(reconnected);
         if (this.deps.model.renderedSessionId === this.deps.model.sessionId) this.scheduleCanonicalSync(0);
+      },
+      onError: () => {
+        if (!this.disposed && version === this.workVersion) this.deps.onConnectionChange(false);
       },
     }, directory);
   }
@@ -108,6 +125,7 @@ export class StreamController {
         ...previous,
         statusType: jsonHelpers.readString(status, ["type", "status", "state"]) ?? "idle",
       });
+      this.deps.model.recordDescendantSessionMutation(eventSessionId);
       this.deps.onDescendantsChanged();
       return;
     }
@@ -117,6 +135,7 @@ export class StreamController {
     if (!inTree && !parentInTree) return;
     if (eventSessionId && event.type === "session.deleted") {
       this.deps.model.descendantSessions.delete(eventSessionId);
+      this.deps.model.recordDescendantSessionMutation(eventSessionId);
     } else if (eventSessionId && info) {
       const previous = this.deps.model.descendantSessions.get(eventSessionId);
       this.deps.model.descendantSessions.set(eventSessionId, {
@@ -124,6 +143,7 @@ export class StreamController {
         directory: jsonHelpers.readString(info, ["directory"]) ?? previous?.directory ?? this.deps.model.sessionDirectory,
         statusType: previous?.statusType,
       });
+      this.deps.model.recordDescendantSessionMutation(eventSessionId);
     }
     this.deps.onDescendantsChanged();
     this.scheduleRender();
@@ -166,8 +186,10 @@ export class StreamController {
   private applyEvent(event: OpenCodeEvent): void {
     const properties = event.properties;
     if (!properties) return;
-    console.debug("[opencode-plugin:session-stream] applying", { sessionId: this.deps.model.sessionId, type: event.type, properties });
-    if (this.deps.model.followLatest && (event.type.startsWith("message.") || event.type === "session.updated" || event.type === "session.status")) {
+    if (logger.isDebugEnabled() && event.type !== "message.part.delta") {
+      logger.debug("session-stream", "applying event", { eventType: event.type });
+    }
+    if (this.deps.model.followLatest && (event.type.startsWith("message.") || event.type === "session.updated" || event.type === "session.status" || event.type === "session.error")) {
       this.deps.extendFollowLatest(1600);
     }
 
@@ -243,6 +265,16 @@ export class StreamController {
     if (event.type === "session.status") {
       const status = jsonHelpers.readObject(properties, "status");
       if (status) this.deps.onStatusChange(status);
+      return;
+    }
+    if (event.type === "session.error") {
+      this.deps.onSessionError(properties.error);
+      this.scheduleRender();
+      this.scheduleCanonicalSync(120);
+      return;
+    }
+    if (event.type === "session.deleted") {
+      this.deps.onSessionDeleted();
       return;
     }
     if (event.type === "permission.asked") {
@@ -346,12 +378,14 @@ export class StreamController {
     this.renderPending = false;
     this.renderInFlight = true;
     try {
-      console.debug("[opencode-plugin:session-stream] render", { sessionId: this.deps.model.sessionId, messages: this.deps.model.loadedMessages.length });
+      if (logger.isDebugEnabled()) {
+        logger.debug("session-stream", "rendering timeline", { count: this.deps.model.loadedMessages.length });
+      }
       await this.deps.requestTimelineRender();
       if (this.disposed || version !== this.workVersion) return;
       this.deps.requestComposerProgressRefresh();
     } catch (error) {
-      console.warn("[opencode-plugin:session-stream] render failed", error);
+      logger.warn("session-stream", "timeline render failed", { error });
     } finally {
       this.renderInFlight = false;
       if (!this.disposed && this.renderPending) this.scheduleRender();
@@ -363,7 +397,7 @@ export class StreamController {
     try {
       await this.deps.requestCanonicalSync();
     } catch (error) {
-      console.warn("[opencode-plugin:session-stream] canonical sync request failed", error);
+      logger.warn("session-stream", "canonical sync request failed", { error });
     }
   }
 }

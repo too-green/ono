@@ -1,5 +1,6 @@
 import { MarkdownRenderer, setIcon, type Component } from "obsidian";
 
+import { logger } from "../../../logger";
 import type { JsonObject } from "../../../services/opencode-types";
 import type { ToolDisplaySetting } from "../../../settings";
 import { escapeFence } from "../diff-parsing";
@@ -106,7 +107,7 @@ function hydrateLazyDetailsBody(details: HTMLDetailsElement): void {
       if (lazyDetailsStates.get(details) !== state || state.version !== version || state.body !== body || body.parentElement !== details) return;
       body.replaceChildren(...Array.from(scratch.childNodes));
     })
-    .catch((error) => console.warn("[opencode-plugin:tool-details] render failed", error));
+    .catch((error) => logger.warn("tool-details", "render failed", { error }));
 }
 
 /** Renders a per-block raw-context control and switches between specialized output and the complete source part. */

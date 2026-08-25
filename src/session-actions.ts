@@ -1,4 +1,5 @@
 import { App, Modal, Setting } from "obsidian";
+import type { SessionRetryAction } from "./session-retry-action";
 
 export interface SessionArchiveNode {
   id: string;
@@ -21,6 +22,52 @@ export function confirmSessionArchive(app: App, tree: SessionArchiveNode): Promi
 /** Opens the confirmation for an already-staged v1 session rewind. */
 export function confirmSessionRewind(app: App, messagePreview: string): Promise<boolean> {
   return new Promise((resolve) => new RewindSessionModal(app, messagePreview, resolve).open());
+}
+
+export type RetryActionDecision = "dismiss" | "open" | "suppress";
+
+/** Opens the native usage-limit action dialog surfaced by an allowlisted v1 retry status. */
+export function requestRetryAction(app: App, action: SessionRetryAction, canOpen: boolean): Promise<RetryActionDecision> {
+  return new Promise((resolve) => new RetryActionModal(app, action, canOpen, resolve).open());
+}
+
+class RetryActionModal extends Modal {
+  private settled = false;
+
+  constructor(
+    app: App,
+    private readonly action: SessionRetryAction,
+    private readonly canOpen: boolean,
+    private readonly resolve: (decision: RetryActionDecision) => void,
+  ) {
+    super(app);
+  }
+
+  /** Builds the usage-limit explanation and native action row. */
+  onOpen(): void {
+    this.setTitle(this.action.title);
+    this.contentEl.createEl("p", { text: this.action.message });
+    const buttons = this.contentEl.createDiv({ cls: "modal-button-container" });
+    buttons.createEl("button", { text: "Don’t show again" }).addEventListener("click", () => this.finish("suppress"));
+    const dismiss = buttons.createEl("button", { text: "Not now" });
+    dismiss.addEventListener("click", () => this.finish("dismiss"));
+    if (this.canOpen) buttons.createEl("button", { text: this.action.label, cls: "mod-cta" }).addEventListener("click", () => this.finish("open"));
+    window.setTimeout(() => dismiss.focus(), 0);
+  }
+
+  /** Resolves an outside-click or Escape close as a normal cooldown dismissal. */
+  onClose(): void {
+    this.contentEl.empty();
+    if (!this.settled) this.resolve("dismiss");
+  }
+
+  /** Resolves the selected action once and closes the modal. */
+  private finish(decision: RetryActionDecision): void {
+    if (this.settled) return;
+    this.settled = true;
+    this.resolve(decision);
+    this.close();
+  }
 }
 
 class RenameSessionModal extends Modal {

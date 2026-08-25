@@ -57,6 +57,7 @@ describe("TimelineRenderer DOM", () => {
     vi.spyOn(MarkdownRenderer, "renderMarkdown").mockImplementation(async (markdown, container) => {
       container.textContent = markdown;
     });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn(async () => undefined) } });
   });
 
   afterEach(() => {
@@ -123,6 +124,112 @@ describe("TimelineRenderer DOM", () => {
     expect(timeline.querySelectorAll(".opencode-session-view__message-meta--assistant")).toHaveLength(1);
   });
 
+  it("renders durable assistant errors without duplicating their event fallback", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    model.sessionError = { error: { name: "APIError", data: { message: "Provider unavailable", statusCode: 503, isRetryable: true, responseBody: "private body" } }, message: "Provider unavailable" };
+    const messages = [bundle("a1", "assistant", 1, [], {
+      error: { name: "APIError", data: { message: "Provider unavailable", statusCode: 503, isRetryable: true, responseBody: "private body" } },
+    })];
+
+    const visibleCount = await renderer.renderInto(timeline, messages);
+
+    const cards = timeline.querySelectorAll<HTMLElement>(".opencode-session-view__assistant-error");
+    expect(visibleCount).toBe(1);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.getAttribute("role")).toBe("note");
+    expect(cards[0]?.textContent).toContain("OpenCode error");
+    expect(cards[0]?.textContent).toContain("Provider unavailable");
+    expect(cards[0]?.querySelector(".opencode-session-view__assistant-error-icon")).not.toBeNull();
+    const diagnostics = cards[0]?.querySelector<HTMLDetailsElement>(".opencode-session-view__error-diagnostics")!;
+    expect(diagnostics.open).toBe(false);
+    expect(diagnostics.textContent).toContain("Status code503");
+    expect(diagnostics.textContent).not.toContain("private body");
+    diagnostics.querySelector<HTMLButtonElement>(".opencode-session-view__error-diagnostic-copy")!.click();
+    await vi.waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining("Status code: 503")));
+    expect(timeline.querySelector(".opencode-session-view__empty")).toBeNull();
+  });
+
+  it("replaces an event-only fallback when the durable assistant error arrives", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const assistant = bundle("a1", "assistant", 1, [{ type: "text", text: "Partial response" }]);
+    model.loadedMessages = [assistant];
+    model.sessionError = { error: { name: "APIError", data: { message: "Provider unavailable" } }, message: "Provider unavailable" };
+    await renderer.renderInto(timeline, model.loadedMessages);
+    expect(timeline.querySelectorAll(".opencode-session-view__assistant-error")).toHaveLength(1);
+    expect(timeline.querySelector("[data-session-error-signature]")).not.toBeNull();
+
+    assistant.info.error = { name: "APIError", data: { message: "Provider unavailable" } };
+    await renderer.renderStreaming();
+
+    expect(timeline.querySelectorAll(".opencode-session-view__assistant-error")).toHaveLength(1);
+    expect(timeline.querySelector('[data-message-id="a1"] .opencode-session-view__assistant-error')).not.toBeNull();
+    expect(timeline.querySelector("[data-session-error-signature]")).toBeNull();
+  });
+
+  it("renders event-only errors while keeping aborts as interruption metadata", async () => {
+    const eventOnly = setup();
+    const eventTimeline = eventOnly.contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    eventOnly.model.sessionError = { error: { name: "APIError", data: { message: "Model request failed" } }, message: "Model request failed" };
+    await eventOnly.renderer.renderInto(eventTimeline, []);
+    expect(eventTimeline.querySelector(".opencode-session-view__assistant-error")?.textContent).toContain("Model request failed");
+    expect(eventTimeline.querySelector(".opencode-session-view__assistant-error")?.getAttribute("role")).toBe("alert");
+    expect(eventTimeline.querySelector(".opencode-session-view__empty")).toBeNull();
+
+    const interrupted = setup();
+    const interruptedTimeline = interrupted.contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    await interrupted.renderer.renderInto(interruptedTimeline, [bundle("a1", "assistant", 1, [], {
+      error: { name: "MessageAbortedError", data: { message: "Interrupted" } },
+    })]);
+    expect(interruptedTimeline.querySelector(".opencode-session-view__assistant-error")).toBeNull();
+    expect(interruptedTimeline.querySelector(".opencode-session-view__message-meta--assistant")?.textContent).toContain("Interrupted");
+  });
+
+  it("renders retry status with a truncated tooltip, spinner, attempt, and live countdown", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const message = "A".repeat(100);
+    model.sessionBusy = true;
+    model.sessionRetry = { attempt: 3, message, next: 15_000 };
+    model.sessionError = { error: { name: "APIError", data: { message: "stale terminal error" } }, message: "stale terminal error" };
+    vi.spyOn(Date, "now").mockReturnValue(5_000);
+
+    await renderer.renderInto(timeline, []);
+
+    const card = timeline.querySelector<HTMLElement>(".opencode-session-view__retry-card")!;
+    const displayedMessage = card.querySelector<HTMLElement>(".opencode-session-view__retry-message")!;
+    const info = card.querySelector<HTMLElement>(".opencode-session-view__retry-info")!;
+    expect(displayedMessage.textContent).toHaveLength(80);
+    expect(displayedMessage.textContent?.endsWith("…")).toBe(true);
+    expect(displayedMessage.title).toBe(message);
+    expect(card.querySelector(".opencode-session-view__retry-spinner")).not.toBeNull();
+    expect(info.textContent).toBe("Retrying in 10s (attempt 3)");
+    expect(timeline.querySelector(".opencode-session-view__assistant-error")).toBeNull();
+    expect(timeline.querySelector(".opencode-session-view__empty")).toBeNull();
+
+    renderer.refreshLiveTimelineStatus(16_000);
+    expect(info.textContent).toBe("Retrying (attempt 3)");
+  });
+
+  it("reconciles unchanged retry state in place and removes it when work resumes", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    model.sessionBusy = true;
+    model.sessionRetry = { attempt: 1, message: "Provider unavailable", next: 15_000 };
+    await renderer.renderInto(timeline, []);
+    const card = timeline.querySelector<HTMLElement>(".opencode-session-view__retry-card")!;
+
+    await renderer.renderStreaming();
+    expect(timeline.querySelector(".opencode-session-view__retry-card")).toBe(card);
+
+    model.sessionRetry = undefined;
+    model.sessionBusy = false;
+    await renderer.renderStreaming();
+    expect(timeline.querySelector(".opencode-session-view__retry-card")).toBeNull();
+    expect(timeline.querySelector(".opencode-session-view__empty")).not.toBeNull();
+  });
+
   it("renders a static compaction divider followed by the summary assistant turn", async () => {
     const { contentEl, renderer } = setup();
     const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
@@ -164,7 +271,7 @@ describe("TimelineRenderer DOM", () => {
     expect(meta?.querySelector(".opencode-status-badge--working")?.getAttribute("aria-hidden")).toBe("true");
     expect(actions).toHaveLength(0);
 
-    renderer.refreshActiveTurnDuration(7_500);
+    renderer.refreshLiveTimelineStatus(7_500);
     expect(meta?.textContent).toContain("5.5s");
   });
 
@@ -262,6 +369,49 @@ describe("TimelineRenderer DOM", () => {
     expect(timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__tool")).toBe(tool);
     expect(removals.removedNodes).not.toContain(tool);
     expect(tool.open).toBe(true);
+  });
+
+  it("adds a task-session link when child identity resolves after the unchanged tool part", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const task = { id: "t1", messageID: "a1", type: "tool", tool: "task", state: {
+      status: "running",
+      input: { description: "Inspect rendering", subagent_type: "explorer-terra" },
+      metadata: { sessionId: "child-1" },
+    } };
+    model.loadedMessages = [bundle("a1", "assistant", 2_000, [task])];
+    await renderer.renderInto(timeline, model.loadedMessages);
+    const tool = timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__tool--task")!;
+    expect(tool.querySelector(".opencode-session-view__task-session")).toBeNull();
+
+    model.descendantSessions.set("child-1", { title: "Renderer audit (@explorer-terra subagent)" });
+    await renderer.renderStreaming();
+
+    expect(timeline.querySelector(".opencode-session-view__tool--task")).toBe(tool);
+    expect(tool.querySelector(".opencode-session-view__task-session")?.textContent).toBe("Renderer audit (@explorer-terra subagent)");
+  });
+
+  it("removes and restores a task-session link when canonical child identity changes", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    model.loadedMessages = [bundle("a1", "assistant", 2_000, [{
+      id: "t1",
+      messageID: "a1",
+      type: "tool",
+      tool: "task",
+      state: { status: "running", input: { description: "Inspect rendering" }, metadata: { sessionId: "child-1" } },
+    }])];
+    model.descendantSessions.set("child-1", { title: "Renderer audit" });
+    await renderer.renderInto(timeline, model.loadedMessages);
+    const tool = timeline.querySelector<HTMLDetailsElement>(".opencode-session-view__tool--task")!;
+
+    model.descendantSessions.delete("child-1");
+    await renderer.renderStreaming();
+    expect(tool.querySelector(".opencode-session-view__task-session")).toBeNull();
+
+    model.descendantSessions.set("child-1", { title: "Renderer audit" });
+    await renderer.renderStreaming();
+    expect(tool.querySelector(".opencode-session-view__task-session")?.textContent).toBe("Renderer audit");
   });
 
   it("completes reasoning without remounting its disclosure, icon, or body", async () => {

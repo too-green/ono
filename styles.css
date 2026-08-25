@@ -454,6 +454,7 @@
 @media (prefers-reduced-motion: reduce) {
   .opencode-status-badge--working span,
   .opencode-status-badge--retry,
+  .opencode-session-view__retry-spinner,
   .opencode-session-view__reasoning--streaming .opencode-session-view__reasoning-icon,
   .opencode-session-view__tool--pending > .opencode-session-view__tool-summary .opencode-session-view__tool-icon,
   .opencode-session-view__tool--running > .opencode-session-view__tool-summary .opencode-session-view__tool-icon {
@@ -467,6 +468,27 @@
   flex-direction: column;
   gap: 0;
   padding-bottom: calc(var(--font-text-size) * var(--line-height-normal));
+}
+
+.opencode-session-view__connection-banner {
+  align-items: center;
+  background: var(--background-secondary);
+  border-bottom: var(--border-width) solid var(--background-modifier-border);
+  color: var(--text-muted);
+  display: flex;
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-smaller);
+  gap: var(--size-2-2);
+  padding: var(--size-2-2) var(--size-4-3);
+}
+
+.opencode-session-view__connection-banner-icon {
+  display: inline-flex;
+}
+
+.opencode-session-view__connection-banner-icon svg {
+  height: var(--icon-xs);
+  width: var(--icon-xs);
 }
 
 .opencode-session-view__draft-body {
@@ -2022,6 +2044,118 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
 
 .opencode-session-view__assistant-markdown > :last-child {
   margin-bottom: 0;
+}
+
+.opencode-session-view__assistant-error,
+.opencode-session-view__retry-card {
+  align-items: flex-start;
+  background: var(--background-secondary);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-inline-start: var(--size-2-1) solid var(--text-error);
+  border-radius: var(--radius-m);
+  display: flex;
+  font-family: var(--font-interface);
+  gap: var(--size-4-2);
+  margin: var(--size-4-3) 0;
+  padding: var(--size-4-3);
+}
+
+.opencode-session-view__retry-spinner {
+  animation: opencode-agent-panel-spin 1s linear infinite;
+  border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
+  border-radius: 50%;
+  border-top-color: var(--text-error);
+  flex: 0 0 var(--size-4-4);
+  height: var(--size-4-4);
+  margin-top: var(--size-2-1);
+  width: var(--size-4-4);
+}
+
+.opencode-session-view__retry-content {
+  min-width: 0;
+}
+
+.opencode-session-view__retry-message {
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opencode-session-view__retry-info {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: var(--size-2-1);
+}
+
+.opencode-session-view__assistant-error-icon {
+  color: var(--text-error);
+  display: inline-flex;
+  flex: 0 0 var(--icon-m);
+  margin-top: var(--size-2-1);
+}
+
+.opencode-session-view__assistant-error-icon svg {
+  height: var(--icon-m);
+  width: var(--icon-m);
+}
+
+.opencode-session-view__assistant-error-content {
+  min-width: 0;
+}
+
+.opencode-session-view__assistant-error-title {
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+}
+
+.opencode-session-view__assistant-error-message {
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  margin-top: var(--size-2-1);
+  overflow-wrap: anywhere;
+  user-select: text;
+  white-space: pre-wrap;
+}
+
+.opencode-session-view__error-diagnostics {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: var(--size-4-2);
+}
+
+.opencode-session-view__error-diagnostics > summary {
+  cursor: pointer;
+  width: fit-content;
+}
+
+.opencode-session-view__error-diagnostic-rows {
+  display: grid;
+  gap: var(--size-2-1) var(--size-4-3);
+  grid-template-columns: max-content minmax(0, 1fr);
+  margin-top: var(--size-4-2);
+}
+
+.opencode-session-view__error-diagnostic {
+  display: contents;
+}
+
+.opencode-session-view__error-diagnostic-label {
+  color: var(--text-faint);
+}
+
+.opencode-session-view__error-diagnostic-value {
+  color: var(--text-normal);
+  font-family: var(--font-monospace);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.opencode-session-view__error-diagnostic-copy {
+  margin-top: var(--size-4-2);
 }
 
 .opencode-session-view__part-gap {

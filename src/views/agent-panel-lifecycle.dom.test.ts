@@ -128,6 +128,7 @@ describe("AgentPanelView lifecycle", () => {
     vi.useFakeTimers();
     let onEvent: ((event: { type: string; properties?: Record<string, unknown> }) => void) | undefined;
     let onOpen: (() => void) | undefined;
+    let onError: ((error: unknown) => void) | undefined;
     let updatedAt = 1_000;
     const listSessions = vi.fn(async () => [{
       id: "session-1",
@@ -138,9 +139,10 @@ describe("AgentPanelView lifecycle", () => {
     }]);
     const service = {
       health: vi.fn(async () => undefined),
-      subscribeToEvents: vi.fn((handlers: { onEvent: typeof onEvent; onOpen?: () => void }) => {
+      subscribeToEvents: vi.fn((handlers: { onEvent: typeof onEvent; onOpen?: () => void; onError?: (error: unknown) => void }) => {
         onEvent = handlers.onEvent;
         onOpen = handlers.onOpen;
+        onError = handlers.onError;
         return { close: vi.fn() };
       }),
       listProjects: vi.fn(async () => [{ id: "project", name: "Workspace", worktree: "/workspace", sandboxes: [] }]),
@@ -208,9 +210,23 @@ describe("AgentPanelView lifecycle", () => {
     expect(row.querySelector(".opencode-status-badge--working")).toBeNull();
     expect(listSessions).toHaveBeenCalledTimes(refreshCount);
 
+    onEvent?.({ type: "session.error", properties: { sessionID: "session-1", error: { name: "APIError", data: { message: "Failed" } } } });
+    expect(row.querySelector(".opencode-status-badge--error")).not.toBeNull();
+    onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "idle" } } });
+    expect(row.querySelector(".opencode-status-badge--error")).not.toBeNull();
+    onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "busy" } } });
+    expect(row.querySelector(".opencode-status-badge--error")).toBeNull();
+    expect(row.querySelector(".opencode-status-badge--working")).not.toBeNull();
+
     onOpen?.();
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
     expect(listSessions.mock.calls.length).toBeGreaterThan(refreshCount);
+
+    service.health.mockRejectedValueOnce(new Error("offline"));
+    onError?.(new Error("offline"));
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    expect(view.contentEl.textContent).toContain("opencode server not running");
   });
 });

@@ -34,6 +34,11 @@ describe("messageRenderKind", () => {
     expect(messageRenderKind(bundle("a3", "assistant", 3, [{ type: "text", text: "answer" }, { type: "tool", tool: "read" }]), true)).toBe("assistant-mixed");
   });
 
+  it("keeps error-only and interrupted assistant messages visible", () => {
+    expect(messageRenderKind(bundle("a1", "assistant", 1, [], { error: { name: "APIError" } }), true)).toBe("assistant-compact");
+    expect(messageRenderKind(bundle("a2", "assistant", 2, [], { error: { name: "MessageAbortedError" } }), true)).toBe("assistant-compact");
+  });
+
   it("gates reasoning-only messages on the reasoning setting", () => {
     const reasoning = bundle("a1", "assistant", 1, [{ type: "reasoning", text: "thinking" }]);
     expect(messageRenderKind(reasoning, true)).toBe("assistant-compact");

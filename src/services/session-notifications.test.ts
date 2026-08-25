@@ -135,6 +135,18 @@ describe("SessionNotificationService", () => {
     expect(notifications[0]?.options).toMatchObject({ body: "Provider unavailable" });
   });
 
+  it("suppresses abort errors and the following idle completion notification", async () => {
+    const { service, notifications } = setup();
+    service.handleSessionEvent({ type: "session.status", properties: { sessionID: "session-1", status: { type: "busy" } } });
+    service.handleSessionEvent({
+      type: "session.error",
+      properties: { sessionID: "session-1", error: { name: "MessageAbortedError", data: { message: "Stopped" } } },
+    });
+    service.handleSessionEvent({ type: "session.idle", properties: { sessionID: "session-1" } });
+    await Promise.resolve();
+    expect(notifications).toHaveLength(0);
+  });
+
   it("deduplicates repeated permission events and honors per-session muting", async () => {
     const { service, notifications, setMuted } = setup();
     const request = { id: "permission-1", sessionID: "session-1", permission: "bash", patterns: [], metadata: {}, always: [] };

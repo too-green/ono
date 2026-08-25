@@ -5,6 +5,7 @@ import type { OpenCodeEventSubscription } from "../services/opencode-events";
 import { logServiceError } from "../services/opencode-http";
 import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "../services/opencode-types";
 import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
+import { isAssistantAbortError } from "../services/assistant-error";
 import { hashRenderState } from "./session/render-signature";
 import {
   AGENT_PANEL_SESSION_SORT_LABELS,
@@ -66,6 +67,7 @@ export class AgentPanelView extends ItemView {
   private lastTree: AgentPanelProject[] = [];
   private sessionAncestorMap = new Map<string, string[]>();
   private lastKnownSessionStatuses = new Map<string, string>();
+  private erroredSessionIds = new Set<string>();
   private requestAttentionSessionIds = new Set<string>();
   private sessionParentIds = new Map<string, string>();
   private sessionListCache = new Map<string, OpenCodeSession[]>();
@@ -123,6 +125,7 @@ export class AgentPanelView extends ItemView {
     this.refreshQueued = false;
     this.contentEl.removeEventListener("keydown", this.handleKeydown);
     this.closeEventSubscriptions();
+    this.erroredSessionIds.clear();
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = undefined;
     this.contentEl.removeClass("opencode-sidebar-panel", "opencode-sidebar-panel--agents");
@@ -141,6 +144,7 @@ export class AgentPanelView extends ItemView {
       this.plugin.requireOpenCodeService().subscribeToEvents(
         {
           onOpen: () => this.scheduleRefresh(0),
+          onError: () => this.scheduleRefresh(0),
           onEvent: (event) => {
             if (event.type === "permission.asked" && event.properties) {
               this.plugin.routePermissionRequest(event.properties as OpenCodePermissionRequest, directory);
@@ -207,11 +211,11 @@ export class AgentPanelView extends ItemView {
       const openedDirectories = this.plugin.getOpenedDirectories();
       this.syncEventSubscriptions(openedDirectories);
       const [projects, openedContexts, sessionGroups, statuses, permissionGroups, questionGroups] = await Promise.all([
-        openedDirectories[0] ? service.listProjects(openedDirectories[0]).catch(logServiceError([], "listProjects", openedDirectories[0])) : Promise.resolve([]),
+        openedDirectories[0] ? service.listProjects(openedDirectories[0]).catch(logServiceError([], "listProjects")) : Promise.resolve([]),
         Promise.all(
           openedDirectories.map(async (directory): Promise<OpenedDirectoryContext> => ({
             directory,
-            project: await service.getCurrentProject(directory).catch(logServiceError(undefined, "getCurrentProject", directory)),
+            project: await service.getCurrentProject(directory).catch(logServiceError(undefined, "getCurrentProject")),
           })),
         ),
         Promise.all(openedDirectories.map((directory) => this.listSessions(directory))),
@@ -392,7 +396,7 @@ export class AgentPanelView extends ItemView {
     const fallback = this.permissionRequestCache.get(directory) ?? [];
     const requests = await this.plugin.requireOpenCodeService().listPermissionRequests(directory).catch((error) => {
       this.transientLoadFailure = true;
-      return logServiceError(fallback, "listPermissionRequests", directory)(error);
+      return logServiceError(fallback, "listPermissionRequests")(error);
     });
     this.permissionRequestCache.set(directory, requests);
     return requests;
@@ -403,7 +407,7 @@ export class AgentPanelView extends ItemView {
     const fallback = this.questionRequestCache.get(directory) ?? [];
     const requests = await this.plugin.requireOpenCodeService().listQuestionRequests(directory).catch((error) => {
       this.transientLoadFailure = true;
-      return logServiceError(fallback, "listQuestionRequests", directory)(error);
+      return logServiceError(fallback, "listQuestionRequests")(error);
     });
     this.questionRequestCache.set(directory, requests);
     return requests;
@@ -414,7 +418,7 @@ export class AgentPanelView extends ItemView {
     const fallback = this.sessionListCache.get(directory) ?? [];
     const sessions = await this.plugin.requireOpenCodeService().listSessions({ directory, limit: 100 }).catch((error) => {
       this.transientLoadFailure = true;
-      return logServiceError(fallback, "listSessions", directory)(error);
+      return logServiceError(fallback, "listSessions")(error);
     });
     this.sessionListCache.set(directory, sessions);
     return sessions;
@@ -794,7 +798,18 @@ export class AgentPanelView extends ItemView {
       if (sessionId) this.applyLiveSessionStatus(sessionId, type);
       return;
     }
-    if (event.type === "session.idle" || event.type === "session.error") {
+    if (event.type === "session.error") {
+      const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
+      if (sessionId && !isAssistantAbortError(properties.error)) this.applyLiveSessionStatus(sessionId, "error");
+      return;
+    }
+    if (event.type === "session.deleted") {
+      const info = this.readObject(properties, "info");
+      const sessionId = this.readString(properties, ["sessionID", "sessionId"]) ?? (info ? this.readString(info, ["id"]) : undefined);
+      if (sessionId) this.erroredSessionIds.delete(sessionId);
+      return;
+    }
+    if (event.type === "session.idle") {
       const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
       if (sessionId) this.applyLiveSessionStatus(sessionId, "idle");
     }
@@ -822,6 +837,8 @@ export class AgentPanelView extends ItemView {
   applyLiveSessionStatus(sessionId: string, type: string): void {
     const previous = this.lastKnownSessionStatuses.get(sessionId);
     this.markCompletedSessionUnread(sessionId, previous, type);
+    if (type === "error" || type === "failed") this.erroredSessionIds.add(sessionId);
+    else if (isActiveSessionStatus(type)) this.erroredSessionIds.delete(sessionId);
     if (type === "idle") this.lastKnownSessionStatuses.delete(sessionId);
     else this.lastKnownSessionStatuses.set(sessionId, type);
     const visualStatus = this.visualStatusFor(sessionId, {});
@@ -1072,6 +1089,7 @@ export class AgentPanelView extends ItemView {
   /** Converts raw OpenCode status payloads into the panel's visual states. */
   private visualStatusFor(sessionId: string, statuses: JsonObject, requiresAttention = this.requestAttentionSessionIds.has(sessionId)): SessionVisualStatus {
     if (requiresAttention) return "attention";
+    if (this.erroredSessionIds.has(sessionId)) return "error";
     const status = statuses[sessionId];
     const type = status && typeof status === "object" && !Array.isArray(status) ? this.readString(status as JsonObject, ["type", "status", "state"]) : this.lastKnownSessionStatuses.get(sessionId);
     return visualStatusForSession(type, this.plugin.settings.sessionUnread[sessionId] === true);
@@ -1084,6 +1102,7 @@ export class AgentPanelView extends ItemView {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
       const type = this.readString(value as JsonObject, ["type", "status", "state"]) ?? "idle";
       next.set(sessionId, type);
+      if (isActiveSessionStatus(type)) this.erroredSessionIds.delete(sessionId);
       this.markCompletedSessionUnread(sessionId, this.lastKnownSessionStatuses.get(sessionId), type);
     }
     for (const [sessionId, previous] of this.lastKnownSessionStatuses) {

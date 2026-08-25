@@ -3,9 +3,11 @@ import type OpenCodePlugin from "../../main";
 import { RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
 import { diffFilesFromUnifiedPatch, type DiffFileSummary } from "../diff-utils";
 import { orderedBoundary } from "../message-order";
+import { logger } from "../logger";
 import { confirmSessionRewind } from "../session-actions";
 import { forkBoundaryAfterMessage } from "../session-fork";
-import { logServiceError } from "../services/opencode-http";
+import { isLoggedRequestError, logServiceError, OpenCodeHttpError } from "../services/opencode-http";
+import { assistantErrorMessage, isAssistantAbortError, isDisplayableAssistantError } from "../services/assistant-error";
 import type {
   JsonObject,
   OpenCodeMessageBundle,
@@ -19,6 +21,7 @@ import { paintStatusBadge, renderStatusBadge } from "../status-badge";
 import * as jsonHelpers from "./session/json-helpers";
 import * as messageHelpers from "./session/message-helpers";
 import { SessionViewModel } from "./session/session-view-model";
+import { sessionRetryStatus, sessionRetryStatusEquals } from "./session/session-status";
 import { ScrollController } from "./session/scroll-controller";
 import { RequestDocksController } from "./session/request-docks";
 import { reconcilePendingRequests } from "./session/request-state";
@@ -132,7 +135,7 @@ export class SessionView extends ItemView {
       isAutoApproveInherited: () => this.docks.isAutoApproveInherited(),
       onPromptActivated: () => this.composer.onPromptActivated(),
     });
-    this.registerInterval(window.setInterval(() => this.timeline.refreshActiveTurnDuration(), 1_000));
+    this.registerInterval(window.setInterval(() => this.timeline.refreshLiveTimelineStatus(), 1_000));
     this.stream = new StreamController({
       model: this.model,
       subscribeToEvents: (handlers, directory) => this.plugin.requireOpenCodeService().subscribeToEvents(handlers, directory),
@@ -150,6 +153,9 @@ export class SessionView extends ItemView {
         if (reconnected) this.island.recoverAfterReconnect();
       },
       onStatusChange: (status) => this.applySessionStatus(status, true),
+      onSessionError: (error) => this.applySessionError(error),
+      onConnectionChange: (connected) => this.applyConnectionState(connected),
+      onSessionDeleted: () => this.applySessionDeleted(),
       onDescendantsChanged: () => this.island.refreshState(),
       onPermissionAsked: (request) => this.plugin.routePermissionRequest(request, this.model.sessionDirectory),
       onPermissionReplied: (requestId) => this.plugin.settleSessionRequest(requestId),
@@ -198,7 +204,7 @@ export class SessionView extends ItemView {
       renderModelPill: (container) => this.variants.renderModelPill(container),
       renderThinkingPill: (container) => this.variants.renderThinkingPill(container),
       // Docks surface
-      isComposerBlocked: () => this.docks.isComposerBlocked(),
+      isComposerBlocked: () => this.docks.isComposerBlocked() || this.model.connectionState !== "connected" || this.model.sessionDeleted,
       shouldAutoApprove: () => this.docks.shouldAutoApprove(),
       isAutoApproveInherited: () => this.docks.isAutoApproveInherited(),
       // Scroll surface
@@ -404,7 +410,7 @@ export class SessionView extends ItemView {
     if (initialLoad) this.renderLoading();
     try {
       const session = await this.fetchCanonicalSession(sessionId, bindingVersion, initialLoad);
-      if (!session) return;
+      if (!session || this.model.sessionDeleted) return;
 
       if (initialLoad) {
         await this.renderSession(session, this.model.loadedMessages, { initialLoad });
@@ -416,7 +422,10 @@ export class SessionView extends ItemView {
       }
       if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
     } catch (error) {
-      if (this.isCurrentSessionBinding(sessionId, bindingVersion)) this.renderError(error);
+      if (this.isCurrentSessionBinding(sessionId, bindingVersion)) {
+        if (this.isSessionNotFoundError(error)) this.applySessionDeleted();
+        else this.renderError(error);
+      }
     } finally {
       if (this.isCurrentSessionBinding(sessionId, bindingVersion) && this.loadingSessionId === sessionId) this.loadingSessionId = undefined;
     }
@@ -436,7 +445,12 @@ export class SessionView extends ItemView {
     this.model.rewindInFlight = false;
     this.model.submittingPrompt = submittingPrompt;
     this.model.sessionStatusType = "idle";
+    this.model.sessionStatusRevision = 0;
+    this.model.sessionRetry = undefined;
     this.model.sessionBusy = false;
+    this.model.sessionError = undefined;
+    this.model.connectionState = "connected";
+    this.model.sessionDeleted = false;
     this.model.activeTurnStartedAt = undefined;
     this.model.activeTurnCompletedAt = undefined;
     this.model.loadingOlder = false;
@@ -444,7 +458,7 @@ export class SessionView extends ItemView {
     this.model.pendingQuestions = [];
     this.model.unscopedPendingPermissions = [];
     this.model.unscopedPendingQuestions = [];
-    this.model.descendantSessions.clear();
+    this.model.resetDescendantSessions();
     this.model.pendingRequestRevision = 0;
     this.model.pendingRequestRevisionById.clear();
     this.docks.resetQueue();
@@ -479,13 +493,19 @@ export class SessionView extends ItemView {
       await this.timeline.reconcileAppendOnly(this.model.loadedMessages);
       if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
     } catch (error) {
-      if (this.isCurrentSessionBinding(sessionId, bindingVersion)) console.warn("[opencode-plugin:session-stream] canonical sync failed", error);
+      if (this.isCurrentSessionBinding(sessionId, bindingVersion)) {
+        if (this.isSessionNotFoundError(error)) this.applySessionDeleted();
+        else if (isLoggedRequestError(error)) logger.debug("session-stream", "canonical sync failed", { error });
+        else logger.warn("session-stream", "canonical sync failed", { error });
+      }
     }
   }
 
   /** Fetches and applies the canonical v1 session snapshot shared by refresh and idle sync. */
   private async fetchCanonicalSession(sessionId: string, bindingVersion: number, replaceMessages: boolean): Promise<JsonObject | undefined> {
     const requestVersion = ++this.canonicalRequestVersion;
+    const descendantRevision = this.model.captureDescendantSessionRevision();
+    const sessionStatusRevision = this.model.sessionStatusRevision;
     const isCurrentRequest = (): boolean => requestVersion === this.canonicalRequestVersion && this.isCurrentSessionBinding(sessionId, bindingVersion);
     const service = this.plugin.requireOpenCodeService();
     const previousRewindMessageId = this.revertMessageId();
@@ -504,13 +524,13 @@ export class SessionView extends ItemView {
     const questionFallback = [...this.model.pendingQuestions, ...this.model.unscopedPendingQuestions];
     const [agents, models, commands, config, permissions, questions, statuses, descendants] = await Promise.all([
       service.listAgents(directory),
-      service.listModels(directory).catch(logServiceError([], "listModels", directory)),
-      service.listCommands(directory).catch(logServiceError([], "listCommands", directory)),
-      service.getConfig().catch(logServiceError({}, "getConfig", directory)),
-      service.listPermissionRequests(directory).catch(logServiceError(permissionFallback, "listPermissionRequests", directory)),
-      service.listQuestionRequests(directory).catch(logServiceError(questionFallback, "listQuestionRequests", directory)),
-      service.getSessionStatus().catch(logServiceError({}, "getSessionStatus", directory)),
-      this.loadSessionDescendants(sessionId, directory).catch(logServiceError([], "listSessionDescendants", sessionId)),
+      service.listModels(directory).catch(logServiceError([], "listModels")),
+      service.listCommands(directory).catch(logServiceError([], "listCommands")),
+      service.getConfig().catch(logServiceError({}, "getConfig")),
+      service.listPermissionRequests(directory).catch(logServiceError(permissionFallback, "listPermissionRequests")),
+      service.listQuestionRequests(directory).catch(logServiceError(questionFallback, "listQuestionRequests")),
+      service.getSessionStatus().catch(logServiceError({}, "getSessionStatus")),
+      this.loadSessionDescendants(sessionId, directory).catch(logServiceError([], "listSessionDescendants")),
     ]);
     if (!isCurrentRequest()) return undefined;
 
@@ -521,11 +541,11 @@ export class SessionView extends ItemView {
     this.plugin.cacheSessionHierarchy([session as OpenCodeSession, ...descendants], true);
     await this.plugin.hydrateSessionAutoApproveState(sessionId, directory);
     if (!isCurrentRequest()) return undefined;
-    this.model.descendantSessions = new Map(descendants.map((item) => [item.id, {
+    this.model.reconcileDescendantSessions(new Map(descendants.map((item) => [item.id, {
       title: jsonHelpers.readString(item, ["title", "name", "slug"]) ?? item.id,
       directory: this.sessionDirectoryFromSession(item) ?? directory,
       statusType: jsonHelpers.readString(jsonHelpers.readObject(statuses, item.id) ?? {}, ["type", "status", "state"]) ?? "idle",
-    }]));
+    }])), descendantRevision);
     this.docks.reconcileRequestScope();
     const visibleSessionIds = new Set([sessionId, ...this.model.descendantSessions.keys()]);
     const visiblePermissions = permissions.filter((item) => visibleSessionIds.has(item.sessionID));
@@ -553,7 +573,8 @@ export class SessionView extends ItemView {
     }
     this.model.historyComplete = effectivePage.complete && !this.model.olderCursor;
     this.applyCanonicalSession(session);
-    this.applySessionStatusSnapshot(statuses);
+    this.applySessionStatusSnapshot(statuses, sessionStatusRevision);
+    this.hydrateCanonicalSessionError();
     if (this.descendantDiscoveryIncomplete) {
       this.stream.scheduleCanonicalSync(this.descendantDiscoveryRetryDelay);
       this.descendantDiscoveryRetryDelay = Math.min(this.descendantDiscoveryRetryDelay * 2, 30_000);
@@ -570,7 +591,7 @@ export class SessionView extends ItemView {
     const fallback = this.descendantChildrenCache.get(sessionId) ?? [];
     const children = await this.plugin.requireOpenCodeService().listSessionChildren(sessionId, directory).catch((error) => {
       this.descendantDiscoveryIncomplete = true;
-      return logServiceError(fallback, "listSessionChildren", sessionId)(error);
+      return logServiceError(fallback, "listSessionChildren")(error);
     });
     this.descendantChildrenCache.set(sessionId, children);
     const nested = await Promise.all(children.map((child) => this.loadSessionDescendants(child.id, child.directory ?? directory, visited)));
@@ -600,19 +621,27 @@ export class SessionView extends ItemView {
   }
 
   /** Applies the current session's status from the global v1 status snapshot. */
-  private applySessionStatusSnapshot(snapshot: JsonObject): void {
+  private applySessionStatusSnapshot(snapshot: JsonObject, baselineRevision: number): void {
+    if (this.model.sessionStatusRevision !== baselineRevision) return;
     const status = this.model.sessionId ? jsonHelpers.readObject(snapshot, this.model.sessionId) : undefined;
-    if (status || !isActiveSessionStatus(this.model.sessionStatusType)) this.applySessionStatus(status);
+    this.applySessionStatus(status);
   }
 
   /** Reconciles busy, retry, and idle status events with composer and unread state. */
   private applySessionStatus(status: JsonObject | undefined, fromEvent = false): void {
+    if (fromEvent) this.model.sessionStatusRevision += 1;
     const previousType = this.model.sessionStatusType;
     const nextType = jsonHelpers.readString(status ?? {}, ["type", "status", "state"]) ?? "idle";
+    const nextRetry = sessionRetryStatus(status);
+    const retryChanged = !sessionRetryStatusEquals(this.model.sessionRetry, nextRetry);
     const wasBusy = isActiveSessionStatus(previousType);
     const isBusy = isActiveSessionStatus(nextType);
+    const clearedSessionError = isBusy && this.model.sessionError !== undefined;
+    if (isBusy) this.model.sessionError = undefined;
     this.model.sessionStatusType = nextType;
+    this.model.sessionRetry = nextRetry;
     this.model.sessionBusy = isBusy;
+    if (fromEvent && nextRetry?.action) void this.plugin.maybeShowRetryAction(nextRetry.action);
     if (!wasBusy && isBusy) {
       this.model.activeTurnStartedAt = Date.now();
       this.model.activeTurnCompletedAt = undefined;
@@ -626,14 +655,71 @@ export class SessionView extends ItemView {
     if (wasBusy && !isBusy && this.model.sessionId) this.setSessionUnread(true);
     if (this.model.sessionId) this.plugin.notifySessionStatusChanged(this.model.sessionId, nextType);
     this.refreshSessionStateChrome();
-    if (wasBusy !== isBusy) void this.timeline.renderStreaming().catch((error) => console.warn("[opencode-plugin:session-status] timeline render failed", error));
+    if (wasBusy !== isBusy || retryChanged || clearedSessionError) void this.timeline.renderStreaming().catch((error) => logger.warn("session-status", "timeline render failed", { error }));
     if (wasBusy !== isBusy) this.composer.onSessionStatusChanged();
   }
 
   /** Returns the visual state shared by the native session tab and view header. */
   private sessionVisualStatus(): SessionVisualStatus {
     if (this.model.pendingPermissions.length > 0 || this.model.pendingQuestions.length > 0) return "attention";
+    if (this.model.sessionError) return "error";
     return visualStatusForSession(this.model.sessionStatusType, this.model.sessionId ? this.plugin.settings.sessionUnread[this.model.sessionId] === true : false);
+  }
+
+  /** Retains one non-abort session error for timeline rendering and native error chrome. */
+  private applySessionError(error: unknown): void {
+    if (isAssistantAbortError(error)) return;
+    this.model.sessionError = { error, message: assistantErrorMessage(error) };
+    if (this.model.sessionId) this.plugin.notifySessionStatusChanged(this.model.sessionId, "error");
+    this.refreshSessionStateChrome();
+  }
+
+  /** Restores error chrome from the latest durable assistant error after reload or reconnect. */
+  private hydrateCanonicalSessionError(): void {
+    if (this.model.sessionBusy || this.model.sessionError) return;
+    const latestAssistant = [...this.model.loadedMessages].reverse().find((bundle) => messageHelpers.messageRole(bundle) === "assistant" && !messageHelpers.isCompactionMessage(bundle));
+    const error = latestAssistant?.info.error;
+    if (!isDisplayableAssistantError(error)) return;
+    this.model.sessionError = { error, message: assistantErrorMessage(error) };
+    this.refreshSessionStateChrome();
+  }
+
+  /** Applies event-stream connectivity and updates the mounted banner and composer controls in place. */
+  private applyConnectionState(connected: boolean): void {
+    if (this.model.sessionDeleted) return;
+    const next = connected ? "connected" : "reconnecting";
+    if (this.model.connectionState === next) return;
+    this.model.connectionState = next;
+    this.refreshConnectionBanner();
+    this.composer.onSessionStatusChanged();
+  }
+
+  /** Replaces an actively deleted or canonically missing session without closing its Obsidian tab. */
+  private applySessionDeleted(): void {
+    if (this.model.sessionDeleted) return;
+    this.sessionBindingVersion += 1;
+    this.canonicalRequestVersion += 1;
+    this.loadingSessionId = undefined;
+    this.model.sessionDeleted = true;
+    this.model.connectionState = "connected";
+    this.model.currentSession = undefined;
+    this.model.sessionBusy = false;
+    this.model.loadingOlder = false;
+    this.model.rewindInFlight = false;
+    this.model.submittingPrompt = false;
+    this.model.sessionRetry = undefined;
+    this.model.sessionError = undefined;
+    this.model.pendingPermissions = [];
+    this.model.pendingQuestions = [];
+    this.model.unscopedPendingPermissions = [];
+    this.model.unscopedPendingQuestions = [];
+    this.model.resetDescendantSessions();
+    this.stream.disconnect();
+    this.island.unbind();
+    this.docks.resetQueue();
+    if (this.model.sessionId) this.plugin.notifySessionStatusChanged(this.model.sessionId, "idle");
+    this.refreshSessionStateChrome();
+    this.renderSessionDeleted();
   }
 
   /** Updates the native tab and view-header status treatment after status changes. */
@@ -659,9 +745,9 @@ export class SessionView extends ItemView {
       const service = this.plugin.requireOpenCodeService();
       const [agents, models, commands, config] = await Promise.all([
         service.listAgents(directory),
-        service.listModels(directory).catch(logServiceError([], "listModels", directory)),
-        service.listCommands(directory).catch(logServiceError([], "listCommands", directory)),
-        service.getConfig().catch(logServiceError({}, "getConfig", directory)),
+        service.listModels(directory).catch(logServiceError([], "listModels")),
+        service.listCommands(directory).catch(logServiceError([], "listCommands")),
+        service.getConfig().catch(logServiceError({}, "getConfig")),
       ]);
       if (this.sessionBindingVersion !== bindingVersion || this.model.draftId !== draftId || this.model.sessionId) return;
       this.model.availableAgents = agents;
@@ -704,8 +790,45 @@ export class SessionView extends ItemView {
     retry.addEventListener("click", () => void this.refresh());
   }
 
+  /** Renders the non-destructive terminal state for a session removed by another OpenCode client. */
+  private renderSessionDeleted(): void {
+    this.contentEl.empty();
+    const state = this.contentEl.createDiv({ cls: "opencode-session-view__state" });
+    state.createDiv({ text: "Session no longer exists", cls: "opencode-session-view__state-title" });
+    state.createDiv({ text: "It may have been deleted by another OpenCode client.", cls: "opencode-session-view__state-text" });
+    const close = state.createEl("button", { text: "Close tab", cls: "mod-cta" });
+    close.addEventListener("click", () => this.leaf.detach());
+  }
+
+  /** Inserts or removes the thin reconnect banner without disturbing timeline or composer DOM. */
+  private refreshConnectionBanner(shell = this.contentEl.querySelector<HTMLElement>(".opencode-session-view__shell")): void {
+    if (!shell) return;
+    const current = shell.querySelector<HTMLElement>(":scope > .opencode-session-view__connection-banner");
+    if (this.model.connectionState === "connected" || this.model.sessionDeleted) {
+      current?.remove();
+      return;
+    }
+    if (current) return;
+    const banner = document.createElement("div");
+    banner.className = "opencode-session-view__connection-banner";
+    banner.setAttribute("role", "status");
+    const icon = banner.createSpan({ cls: "opencode-session-view__connection-banner-icon", attr: { "aria-hidden": "true" } });
+    setIcon(icon, "wifi-off");
+    banner.createSpan({ text: "Reconnecting to opencode server…" });
+    shell.insertBefore(banner, shell.querySelector(":scope > .opencode-session-view__timeline"));
+  }
+
+  /** Identifies canonical v1 lookups that prove the bound session was removed. */
+  private isSessionNotFoundError(error: unknown): boolean {
+    return error instanceof OpenCodeHttpError && error.status === 404;
+  }
+
   /** Renders the currently loaded timeline page and composer using Obsidian's MarkdownRenderer. */
   private async renderSession(session: JsonObject, messages: OpenCodeMessageBundle[], options: { initialLoad: boolean }): Promise<void> {
+    if (this.model.sessionDeleted) {
+      this.renderSessionDeleted();
+      return;
+    }
     const sessionId = this.model.sessionId;
     const bindingVersion = this.sessionBindingVersion;
     const previousTop = this.contentEl.scrollTop;
@@ -717,6 +840,7 @@ export class SessionView extends ItemView {
     shell.classList.add("opencode-session-view__shell");
 
     const timeline = shell.createDiv({ cls: "opencode-session-view__timeline" });
+    this.refreshConnectionBanner(shell);
     const visibleMessageCount = await this.timeline.renderInto(timeline, messages);
 
     if (!sessionId || !this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
@@ -760,7 +884,10 @@ export class SessionView extends ItemView {
       if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return;
       await this.scroll.restorePrependAnchor(anchor);
     } catch (error) {
-      if (this.isCurrentSessionBinding(sessionId, bindingVersion)) new Notice(error instanceof Error ? error.message : "Unable to load earlier OpenCode messages.");
+      if (this.isCurrentSessionBinding(sessionId, bindingVersion)) {
+        if (this.isSessionNotFoundError(error)) this.applySessionDeleted();
+        else new Notice(error instanceof Error ? error.message : "Unable to load earlier OpenCode messages.");
+      }
     } finally {
       if (this.isCurrentSessionBinding(sessionId, bindingVersion)) this.model.loadingOlder = false;
     }
@@ -932,7 +1059,7 @@ export class SessionView extends ItemView {
     this.model.currentSession = session;
     this.model.sessionDirectory = this.sessionDirectoryFromSession(session) ?? directory;
     this.model.revertDiffFiles = this.revertDiffFilesFromSession(session);
-    await this.timeline.renderStreaming().catch((error) => console.warn("[opencode-plugin:rewind] timeline render failed", error));
+    await this.timeline.renderStreaming().catch((error) => logger.warn("rewind", "timeline render failed", { error }));
     if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return false;
     this.island.reconcileMessages(this.model.loadedMessages);
     return this.isCurrentSessionBinding(sessionId, bindingVersion);
@@ -947,7 +1074,7 @@ export class SessionView extends ItemView {
     if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return false;
     this.model.currentSession = session;
     this.model.revertDiffFiles = [];
-    await this.timeline.renderStreaming().catch((error) => console.warn("[opencode-plugin:rewind] timeline render failed", error));
+    await this.timeline.renderStreaming().catch((error) => logger.warn("rewind", "timeline render failed", { error }));
     if (!this.isCurrentSessionBinding(sessionId, bindingVersion)) return false;
     this.island.reconcileMessages(this.model.loadedMessages);
     return this.isCurrentSessionBinding(sessionId, bindingVersion);

@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeAgentPanelSessionSort, normalizeFolderCollapseDisplay, normalizeNotificationMode, normalizeSessionIslandContextLabel } from "./settings";
+import {
+  DEFAULT_OPENCODE_SETTINGS,
+  normalizeAgentPanelSessionSort,
+  normalizeDebugLogging,
+  normalizeFolderCollapseDisplay,
+  normalizeNotificationMode,
+  normalizeRetryActionLastShown,
+  normalizeRetryActionSuppressed,
+  normalizeSessionIslandContextLabel,
+} from "./settings";
 
 describe("normalizeSessionIslandContextLabel", () => {
   it("preserves each supported context label", () => {
@@ -50,5 +59,24 @@ describe("normalizeNotificationMode", () => {
     expect(normalizeNotificationMode("none")).toBe("none");
     expect(normalizeNotificationMode("push")).toBe("none");
     expect(normalizeNotificationMode(undefined)).toBe("none");
+  });
+});
+
+describe("normalizeDebugLogging", () => {
+  it("keeps diagnostics opt-in for missing and malformed persisted values", () => {
+    expect(DEFAULT_OPENCODE_SETTINGS.debugLogging).toBe(false);
+    expect(normalizeDebugLogging(true)).toBe(true);
+    expect(normalizeDebugLogging(false)).toBe(false);
+    expect(normalizeDebugLogging("true")).toBe(false);
+    expect(normalizeDebugLogging(undefined)).toBe(false);
+  });
+});
+
+describe("retry action prompt settings", () => {
+  it("keeps only valid cooldown timestamps and sparse suppression flags", () => {
+    expect(normalizeRetryActionLastShown({ valid: 123, negative: -1, text: "4" })).toEqual({ valid: 123 });
+    expect(normalizeRetryActionSuppressed({ hidden: true, false: false, text: "true" })).toEqual({ hidden: true });
+    expect(normalizeRetryActionLastShown(undefined)).toEqual({});
+    expect(normalizeRetryActionSuppressed([])).toEqual({});
   });
 });

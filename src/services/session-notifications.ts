@@ -1,5 +1,7 @@
 import { Notice } from "obsidian";
+import { logger } from "../logger";
 import type { NotificationMode } from "../settings";
+import { assistantErrorMessage, isAssistantAbortError } from "./assistant-error";
 import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./opencode-types";
 
 export type SessionNotificationKind = "attention" | "error" | "turn-complete";
@@ -62,20 +64,6 @@ export function isElementVisibleInFocusedWindow(element: HTMLElement): boolean {
   return rect.right > 0 && rect.bottom > 0 && rect.left < win.innerWidth && rect.top < win.innerHeight;
 }
 
-/** Extracts a concise user-facing message from a v1 `session.error` payload. */
-export function sessionErrorMessage(error: unknown): string {
-  if (!error || typeof error !== "object" || Array.isArray(error)) return "Session stopped with an error.";
-  const value = error as JsonObject;
-  if (value.name === "MessageAbortedError") return "Session was aborted.";
-  const data = value.data;
-  if (data && typeof data === "object" && !Array.isArray(data)) {
-    const message = (data as JsonObject).message;
-    if (typeof message === "string" && message.trim()) return message.trim();
-  }
-  if (typeof value.message === "string" && value.message.trim()) return value.message.trim();
-  return "Session stopped with an error.";
-}
-
 /** Shows a clickable Obsidian Notice using only native Notice content and lifecycle APIs. */
 function showObsidianNotice(message: string, onClick: () => void): CloseableNotification {
   const notice = new Notice(message, NOTICE_DURATION_MS);
@@ -114,7 +102,7 @@ export class SessionNotificationService {
     try {
       return (await NotificationApi.requestPermission()) === "granted";
     } catch (error) {
-      console.warn("[opencode-plugin:notifications] permission request failed", error);
+      logger.warn("notifications", "permission request failed", { error });
       return false;
     }
   }
@@ -158,12 +146,13 @@ export class SessionNotificationService {
     if (event.type === "session.error") {
       if (this.terminalStateBySessionKey.get(sessionKey) === "error") return;
       this.rememberTerminalState(sessionKey, "error");
+      if (isAssistantAbortError(event.properties.error)) return;
       this.queue({
         key: `error:${sessionKey}`,
         kind: "error",
         sessionId,
         directory,
-        body: sessionErrorMessage(event.properties.error),
+        body: assistantErrorMessage(event.properties.error),
       });
       return;
     }
@@ -241,7 +230,7 @@ export class SessionNotificationService {
   /** Runs asynchronous notification preparation without exposing unhandled promise rejections. */
   private queue(content: NotificationContent): void {
     void this.show(content)
-      .catch((error) => console.warn("[opencode-plugin:notifications] delivery failed", error))
+      .catch((error) => logger.warn("notifications", "delivery failed", { error }))
       .finally(() => {
         if (
           content.kind === "attention" &&
@@ -257,8 +246,14 @@ export class SessionNotificationService {
   private async show(content: NotificationContent): Promise<void> {
     if (!this.shouldPrepare(content) || this.deps.isSessionVisible(content.sessionId)) return;
     const lineage = content.kind === "attention"
-      ? await this.deps.getSessionLineage(content.sessionId, content.directory).catch(() => [])
-      : await this.deps.getSession(content.sessionId, content.directory).then((session) => [session]).catch(() => []);
+      ? await this.deps.getSessionLineage(content.sessionId, content.directory).catch((error) => {
+        logger.debug("notifications", "lineage lookup failed", { error });
+        return [];
+      })
+      : await this.deps.getSession(content.sessionId, content.directory).then((session) => [session]).catch((error) => {
+        logger.debug("notifications", "session lookup failed", { error });
+        return [];
+      });
     if (lineage.length === 0 || !this.shouldPrepare(content)) return;
 
     const target = content.kind === "attention"
@@ -327,7 +322,7 @@ export class SessionNotificationService {
           this.trackDelivery(content.key, handle);
           return;
         } catch (error) {
-          console.warn("[opencode-plugin:notifications] system notification failed", error);
+          logger.warn("notifications", "system notification failed", { error });
         }
       }
     }

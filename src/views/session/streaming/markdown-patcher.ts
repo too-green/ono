@@ -1,4 +1,5 @@
 import { MarkdownRenderer, type Component } from "obsidian";
+import { logger } from "../../../logger";
 import type { FollowLatestAnchor } from "../scroll-controller";
 
 interface StreamingMarkdownPatch {
@@ -90,7 +91,7 @@ export class MarkdownPatcher {
       this.deps.restoreFollowLatest(followGeneration);
       this.deps.updateJumpButton();
     } catch (error) {
-      console.warn("[opencode-plugin:session-stream] markdown patch failed", error);
+      logger.warn("session-stream", "markdown patch failed", { error });
     } finally {
       patch.inFlight = false;
       if (this.patches.get(key) !== patch) return;

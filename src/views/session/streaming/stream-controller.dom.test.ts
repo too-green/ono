@@ -2,6 +2,7 @@ import type { OpenCodeEventHandlers } from "../../../services/opencode-events";
 import type { JsonObject, OpenCodeEvent } from "../../../services/opencode-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { logger } from "../../../logger";
 import { SessionViewModel } from "../session-view-model";
 import { eventReferencesSession, StreamController } from "./stream-controller";
 
@@ -36,11 +37,13 @@ describe("StreamController", () => {
     vi.stubGlobal("cancelAnimationFrame", vi.fn((id: number) => {
       frames.delete(id);
     }));
+    logger.setDebugEnabled(false);
     vi.spyOn(console, "debug").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
 
   afterEach(() => {
+    logger.setDebugEnabled(false);
     document.body.replaceChildren();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -73,6 +76,9 @@ describe("StreamController", () => {
       onMessageRemoved: vi.fn(),
       onStreamOpen: vi.fn(),
       onStatusChange: vi.fn(),
+      onSessionError: vi.fn(),
+      onConnectionChange: vi.fn(),
+      onSessionDeleted: vi.fn(),
       onDescendantsChanged: vi.fn(),
       onPermissionAsked: vi.fn(),
       onPermissionReplied: vi.fn(),
@@ -120,6 +126,7 @@ describe("StreamController", () => {
   it("requests canonical sync when an active subscription opens and debounces later requests", () => {
     const { handlers, deps, controller } = setup();
     handlers[0]?.onOpen?.();
+    expect(deps.onConnectionChange).toHaveBeenCalledWith(true);
     vi.runOnlyPendingTimers();
     expect(deps.onStreamOpen).toHaveBeenCalledWith(false);
     expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
@@ -133,6 +140,17 @@ describe("StreamController", () => {
     expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
     vi.advanceTimersByTime(1);
     expect(deps.requestCanonicalSync).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports stream disconnects and server lifecycle events", () => {
+    const { handlers, deps } = setup();
+    handlers[0]?.onError?.(new Error("offline"));
+    expect(deps.onConnectionChange).toHaveBeenCalledWith(false);
+
+    handlers[0]?.onEvent({ type: "server.instance.disposed", properties: {} });
+    expect(deps.onConnectionChange).toHaveBeenLastCalledWith(false);
+    handlers[0]?.onEvent({ type: "server.connected", properties: {} });
+    expect(deps.onConnectionChange).toHaveBeenLastCalledWith(true);
   });
 
   it("upserts, sorts, and removes streamed messages", async () => {
@@ -214,6 +232,11 @@ describe("StreamController", () => {
     expect(deps.onTodosUpdated).toHaveBeenCalledWith([{ content: "Implement", status: "in_progress", priority: "high" }]);
     emit(handlers, "session.status", { sessionID: "s1", status: { type: "busy" } });
     expect(deps.onStatusChange).toHaveBeenCalledWith({ type: "busy" });
+    const retry = { type: "retry", attempt: 2, message: "Rate limited", next: 20_000 };
+    emit(handlers, "session.status", { sessionID: "s1", status: retry });
+    expect(deps.onStatusChange).toHaveBeenLastCalledWith(retry);
+    emit(handlers, "session.deleted", { sessionID: "s1", info: { id: "s1" } });
+    expect(deps.onSessionDeleted).toHaveBeenCalledOnce();
 
     emit(handlers, "permission.asked", { sessionID: "s1", id: "permission-1" });
     emit(handlers, "permission.replied", { sessionID: "s1", requestID: "permission-1" });
@@ -223,6 +246,24 @@ describe("StreamController", () => {
     expect(deps.onPermissionReplied).toHaveBeenCalledWith("permission-1");
     expect(deps.onQuestionAsked).toHaveBeenCalledWith(expect.objectContaining({ id: "question-1" }));
     expect(deps.onQuestionSettled).toHaveBeenCalledWith("question-1");
+  });
+
+  it("surfaces active-session errors and reconciles their durable message state", async () => {
+    const { model, handlers, deps } = setup();
+    const error = { name: "APIError", data: { message: "Provider unavailable" } };
+    model.followLatest = true;
+
+    emit(handlers, "session.error", { sessionID: "s1", error });
+
+    expect(deps.onSessionError).toHaveBeenCalledWith(error);
+    expect(deps.extendFollowLatest).toHaveBeenCalledWith(1600);
+    expect(frames.size).toBe(1);
+    vi.advanceTimersByTime(119);
+    expect(deps.requestCanonicalSync).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
+    runNextFrame();
+    await vi.waitFor(() => expect(deps.requestTimelineRender).toHaveBeenCalledOnce());
   });
 
   it("routes directory request events while ignoring foreign timeline data and refreshing relevant descendants", () => {
@@ -301,8 +342,34 @@ describe("StreamController", () => {
     deps.requestCanonicalSync.mockRejectedValueOnce(new Error("canonical failed"));
     controller.scheduleCanonicalSync(0);
     vi.runAllTimers();
-    await vi.waitFor(() => expect(console.warn).toHaveBeenCalledWith("[opencode-plugin:session-stream] canonical sync request failed", expect.any(Error)));
+    await vi.waitFor(() => expect(console.warn).toHaveBeenCalledWith(
+      "[opencode-plugin:session-stream] canonical sync request failed",
+      { errorName: "Error" },
+    ));
+  });
 
+  it("suppresses token-delta diagnostics even when debug logging is enabled", () => {
+    const debug = vi.spyOn(console, "debug");
+    const { model, handlers, controller } = setup();
+    logger.setDebugEnabled(true);
+    model.loadedMessages = [{
+      info: { id: "m1", sessionID: "s1", role: "assistant" },
+      parts: [{ id: "p1", messageID: "m1", sessionID: "s1", type: "text", text: "" }],
+    }];
+
+    emit(handlers, "message.part.delta", {
+      sessionID: "s1",
+      messageID: "m1",
+      partID: "p1",
+      field: "text",
+      delta: "private token",
+    });
+
+    expect(debug).not.toHaveBeenCalledWith(
+      "[opencode-plugin:session-stream] applying event",
+      expect.anything(),
+    );
+    controller.dispose();
   });
 
   it("cancels subscriptions, timers, frames, and stale handlers on disposal", () => {

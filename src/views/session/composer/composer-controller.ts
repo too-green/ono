@@ -318,7 +318,7 @@ export class ComposerController {
       setIcon(send, this.abortingSession ? "loader-2" : this.pendingInterruptConfirm ? "triangle-alert" : "square");
       const label = this.pendingInterruptConfirm ? "Press Esc again to interrupt" : "Interrupt session";
       send.setAttr("aria-label", label);
-      send.disabled = this.abortingSession;
+      send.disabled = this.deps.isComposerBlocked() || this.abortingSession;
     } else {
       setIcon(send, this.deps.model.submittingPrompt ? "loader-2" : "send");
       send.setAttr("aria-label", `Send prompt (${Platform.isMacOS ? "⌘" : "Ctrl"}+Enter · Shift+Enter for newline)`);

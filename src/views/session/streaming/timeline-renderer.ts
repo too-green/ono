@@ -13,6 +13,7 @@ import * as jsonHelpers from "../json-helpers";
 import * as messageHelpers from "../message-helpers";
 import type { ImageAttachment } from "../message-helpers";
 import { hashRenderState } from "../render-signature";
+import { RenderScopeRegistry } from "./render-scopes";
 import type { SessionViewModel } from "../session-view-model";
 import { retryCountdownText, type SessionRetryStatus } from "../session-status";
 import type { WorkingAnimation } from "../../../session-state";
@@ -182,13 +183,22 @@ export function messageRenderSignature(bundle: OpenCodeMessageBundle): string {
 /** Owns session timeline classification, message rendering, replacement, and append reconciliation. */
 export class TimelineRenderer {
   private readonly openDisclosures = new Set<string>();
+  private readonly scopes: RenderScopeRegistry;
   private reconcileVersion = 0;
 
-  constructor(private readonly deps: TimelineDeps) {}
+  constructor(private readonly deps: TimelineDeps) {
+    this.scopes = new RenderScopeRegistry(deps.component);
+  }
+
+  /** Releases every markdown render scope; called by `SessionView.onClose` before the view unloads. */
+  dispose(): void {
+    this.scopes.releaseAll();
+  }
 
   /** Clears interaction state when `SessionView` binds the renderer to another session. */
   clearDisclosureState(): void {
     this.openDisclosures.clear();
+    this.scopes.releaseAll();
   }
 
   /** Renders history, visible messages, rewind state, and empty state into a shell-owned timeline. */
@@ -218,6 +228,11 @@ export class TimelineRenderer {
     return visibleMessages.length;
   }
 
+  /** Releases scopes belonging to timeline DOM discarded by a shell replacement; called after the new shell mounts. */
+  releaseDetachedScopes(): void {
+    this.scopes.releaseDetached();
+  }
+
   /** Reconciles streamed state while retaining mounted rows, disclosures, and active animation nodes. */
   async renderStreaming(): Promise<void> {
     await this.reconcileTimeline(this.deps.model.loadedMessages);
@@ -232,97 +247,103 @@ export class TimelineRenderer {
   private async reconcileTimeline(messages: OpenCodeMessageBundle[], retryOnStale = true): Promise<void> {
     const reconcileVersion = ++this.reconcileVersion;
     const binding = this.captureBinding();
-    const timeline = this.deps.contentEl.querySelector<HTMLElement>(".opencode-session-view__timeline");
-    if (!timeline) {
-      if (this.deps.model.currentSession) await this.deps.requestShellRender();
-      return;
-    }
-    if (!this.isBindingCurrent(binding)) return;
+    try {
+      const timeline = this.deps.contentEl.querySelector<HTMLElement>(".opencode-session-view__timeline");
+      if (!timeline) {
+        if (this.deps.model.currentSession) await this.deps.requestShellRender();
+        return;
+      }
+      if (!this.isBindingCurrent(binding)) return;
 
-    const visibleMessages = this.visibleMessages(messages);
-    const activeAssistantId = this.activeAssistantMessageId(visibleMessages);
-    const pendingIndex = lastUncompletedAssistantIndex(visibleMessages);
-    const mountedRows = new Map(
-      Array.from(timeline.children)
-        .filter((child): child is HTMLElement => child instanceof HTMLElement && !!child.dataset.messageId)
-        .map((row) => [row.dataset.messageId!, row]),
-    );
-    const entries: Array<{ id: string; signature: string; current?: HTMLElement; next?: HTMLElement }> = [];
-    const followGeneration = this.deps.captureFollowLatest();
+      const visibleMessages = this.visibleMessages(messages);
+      const activeAssistantId = this.activeAssistantMessageId(visibleMessages);
+      const pendingIndex = lastUncompletedAssistantIndex(visibleMessages);
+      const mountedRows = new Map(
+        Array.from(timeline.children)
+          .filter((child): child is HTMLElement => child instanceof HTMLElement && !!child.dataset.messageId)
+          .map((row) => [row.dataset.messageId!, row]),
+      );
+      const entries: Array<{ id: string; signature: string; current?: HTMLElement; next?: HTMLElement }> = [];
+      const followGeneration = this.deps.captureFollowLatest();
 
-    for (let index = 0; index < visibleMessages.length; index += 1) {
-      const message = visibleMessages[index];
-      const id = messageHelpers.messageId(message);
-      const options = messageRenderOptions(visibleMessages, index);
-      const assistantOptions = this.assistantMetaOptions(visibleMessages, index, activeAssistantId);
-      const queued = this.isUserQueued(visibleMessages, index, pendingIndex);
-      const signature = this.messageRowSignature(message, options, assistantOptions, queued);
-      const current = mountedRows.get(id);
-      const next = current?.dataset.messageSignature === signature ? undefined : await this.renderMessageRow(message, options, assistantOptions, queued);
-      if (!this.isBindingCurrent(binding) || reconcileVersion !== this.reconcileVersion || !timeline.isConnected) return;
-      entries.push({ id, signature, current, next });
-    }
+      for (let index = 0; index < visibleMessages.length; index += 1) {
+        const message = visibleMessages[index];
+        const id = messageHelpers.messageId(message);
+        const options = messageRenderOptions(visibleMessages, index);
+        const assistantOptions = this.assistantMetaOptions(visibleMessages, index, activeAssistantId);
+        const queued = this.isUserQueued(visibleMessages, index, pendingIndex);
+        const signature = this.messageRowSignature(message, options, assistantOptions, queued);
+        const current = mountedRows.get(id);
+        const next = current?.dataset.messageSignature === signature ? undefined : await this.renderMessageRow(message, options, assistantOptions, queued);
+        if (!this.isBindingCurrent(binding) || reconcileVersion !== this.reconcileVersion || !timeline.isConnected) return;
+        entries.push({ id, signature, current, next });
+      }
 
-    const latestVisibleMessages = this.visibleMessages(messages);
-    const latestActiveAssistantId = this.activeAssistantMessageId(latestVisibleMessages);
-    const latestPendingIndex = lastUncompletedAssistantIndex(latestVisibleMessages);
-    const staleSnapshot = latestVisibleMessages.length !== entries.length || entries.some((entry, index) => {
-      const message = latestVisibleMessages[index];
-      if (!message || messageHelpers.messageId(message) !== entry.id) return true;
-      return this.messageRowSignature(
-        message,
-        messageRenderOptions(latestVisibleMessages, index),
-        this.assistantMetaOptions(latestVisibleMessages, index, latestActiveAssistantId),
-        this.isUserQueued(latestVisibleMessages, index, latestPendingIndex),
-      ) !== entry.signature;
-    });
-    if (staleSnapshot) {
-      if (retryOnStale) await this.reconcileTimeline(messages, false);
-      return;
-    }
+      const latestVisibleMessages = this.visibleMessages(messages);
+      const latestActiveAssistantId = this.activeAssistantMessageId(latestVisibleMessages);
+      const latestPendingIndex = lastUncompletedAssistantIndex(latestVisibleMessages);
+      const staleSnapshot = latestVisibleMessages.length !== entries.length || entries.some((entry, index) => {
+        const message = latestVisibleMessages[index];
+        if (!message || messageHelpers.messageId(message) !== entry.id) return true;
+        return this.messageRowSignature(
+          message,
+          messageRenderOptions(latestVisibleMessages, index),
+          this.assistantMetaOptions(latestVisibleMessages, index, latestActiveAssistantId),
+          this.isUserQueued(latestVisibleMessages, index, latestPendingIndex),
+        ) !== entry.signature;
+      });
+      if (staleSnapshot) {
+        if (retryOnStale) await this.reconcileTimeline(messages, false);
+        return;
+      }
 
-    const desiredIds = new Set(entries.map((entry) => entry.id));
-    for (const [id, row] of mountedRows) {
-      if (desiredIds.has(id)) continue;
-      this.forgetDisclosureState(row);
-      row.remove();
-    }
-    const history = this.refreshHistoryBoundary(timeline);
-    let previous: Element = history;
-    for (const entry of entries) {
-      const row = entry.current ?? entry.next!;
-      if (entry.current && entry.next) this.reconcileMessageRow(entry.current, entry.next);
-      if (previous.nextElementSibling !== row) timeline.insertBefore(row, previous.nextElementSibling);
-      previous = row;
-    }
+      const desiredIds = new Set(entries.map((entry) => entry.id));
+      for (const [id, row] of mountedRows) {
+        if (desiredIds.has(id)) continue;
+        this.cancelStreamingPatches(row, id);
+        this.forgetDisclosureState(row);
+        row.remove();
+      }
+      const history = this.refreshHistoryBoundary(timeline);
+      let previous: Element = history;
+      for (const entry of entries) {
+        const row = entry.current ?? entry.next!;
+        if (entry.current && entry.next) this.reconcileMessageRow(entry.current, entry.next);
+        if (previous.nextElementSibling !== row) timeline.insertBefore(row, previous.nextElementSibling);
+        previous = row;
+      }
 
-    const retry = this.reconcileSessionRetry(timeline);
-    if (retry) {
-      if (previous.nextElementSibling !== retry) timeline.insertBefore(retry, previous.nextElementSibling);
-      previous = retry;
+      const retry = this.reconcileSessionRetry(timeline);
+      if (retry) {
+        if (previous.nextElementSibling !== retry) timeline.insertBefore(retry, previous.nextElementSibling);
+        previous = retry;
+      }
+      const sessionError = this.reconcileTransientSessionError(timeline, visibleMessages);
+      if (sessionError) {
+        if (previous.nextElementSibling !== sessionError) timeline.insertBefore(sessionError, previous.nextElementSibling);
+        previous = sessionError;
+      }
+      const placeholder = this.reconcileWorkingPlaceholder(timeline, activeAssistantId);
+      if (placeholder) {
+        if (previous.nextElementSibling !== placeholder) timeline.insertBefore(placeholder, previous.nextElementSibling);
+        previous = placeholder;
+      }
+      const rewind = this.refreshRewindBoundary(timeline);
+      if (rewind) {
+        if (previous.nextElementSibling !== rewind) timeline.insertBefore(rewind, previous.nextElementSibling);
+        previous = rewind;
+      }
+      for (const child of Array.from(timeline.children)) {
+        if (child === history || entries.some((entry) => (entry.current ?? entry.next) === child) || child === retry || child === sessionError || child === placeholder || child === rewind) continue;
+        child.remove();
+      }
+      if (visibleMessages.length === 0 && !retry && !sessionError && !placeholder && !rewind) timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
+      this.deps.restoreFollowLatest(followGeneration);
+      this.deps.updateJumpButton();
+    } finally {
+      // Replaced rows, discarded next-generation blocks, and removed content left disconnected markdown behind.
+      this.scopes.releaseDetached();
     }
-    const sessionError = this.reconcileTransientSessionError(timeline, visibleMessages);
-    if (sessionError) {
-      if (previous.nextElementSibling !== sessionError) timeline.insertBefore(sessionError, previous.nextElementSibling);
-      previous = sessionError;
-    }
-    const placeholder = this.reconcileWorkingPlaceholder(timeline, activeAssistantId);
-    if (placeholder) {
-      if (previous.nextElementSibling !== placeholder) timeline.insertBefore(placeholder, previous.nextElementSibling);
-      previous = placeholder;
-    }
-    const rewind = this.refreshRewindBoundary(timeline);
-    if (rewind) {
-      if (previous.nextElementSibling !== rewind) timeline.insertBefore(rewind, previous.nextElementSibling);
-      previous = rewind;
-    }
-    for (const child of Array.from(timeline.children)) {
-      if (child === history || entries.some((entry) => (entry.current ?? entry.next) === child) || child === retry || child === sessionError || child === placeholder || child === rewind) continue;
-      child.remove();
-    }
-    if (visibleMessages.length === 0 && !retry && !sessionError && !placeholder && !rewind) timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
-    this.deps.restoreFollowLatest(followGeneration);
-    this.deps.updateJumpButton();
   }
 
   /** Renders the lazy-history status row at the top of a timeline. */
@@ -411,7 +432,10 @@ export class TimelineRenderer {
         .filter((key): key is string => !!key),
     );
     for (const child of Array.from(current.children)) {
-      if (!retainedChildren.has(child)) this.forgetDisclosureState(child as HTMLElement, nextDisclosureKeys);
+      if (!retainedChildren.has(child)) {
+        this.cancelStreamingPatches(child as HTMLElement, current.dataset.messageId);
+        this.forgetDisclosureState(child as HTMLElement, nextDisclosureKeys);
+      }
     }
     this.syncAttributes(current, next);
     this.commitChildrenInPlace(current, desiredChildren, retainedChildren);
@@ -445,8 +469,7 @@ export class TimelineRenderer {
     this.reconcileAnimatedSummary(currentSummary, nextSummary, ".opencode-session-view__reasoning-icon");
     this.syncAttributes(currentBody, nextBody);
     if (currentBody.innerHTML !== nextBody.innerHTML) {
-      const firstPartId = (nextBody.dataset.partIds ?? nextBody.dataset.partId)?.split(" ")[0];
-      if (messageId && firstPartId) this.deps.cancelStreamingMarkdownPatch(`${messageId}:${firstPartId}:text`);
+      this.cancelStreamingPatches(currentBody, messageId);
       currentBody.replaceChildren(...Array.from(nextBody.childNodes));
     }
     const wasOpen = current.open;
@@ -584,7 +607,9 @@ export class TimelineRenderer {
     this.renderImageAttachments(article, messageHelpers.imageAttachments(bundle));
     if (text.trim()) {
       const body = article.createDiv({ cls: "opencode-session-view__markdown markdown-rendered" });
-      await MarkdownRenderer.renderMarkdown(text, body, this.markdownSourcePath(), this.deps.component);
+      const scopeKey = this.blockScopeKey(messageHelpers.messageId(bundle), "user");
+      await MarkdownRenderer.renderMarkdown(text, body, this.markdownSourcePath(), this.claimBlockScope(scopeKey));
+      this.scopes.bind(scopeKey, body);
     }
     renderMessageMeta(wrapper, bundle, "user", text, this.messageMetaCallbacks(), undefined, queued);
     this.annotateBlock(wrapper, "user-message", [bundle, queued]);
@@ -638,7 +663,9 @@ export class TimelineRenderer {
       const body = container.createDiv({ cls: "opencode-session-view__markdown opencode-session-view__assistant-markdown markdown-preview-view markdown-rendered" });
       bindStreamingTextTarget(body, group);
       this.annotateBlock(body, this.assistantBlockKey("text", group), group);
-      await MarkdownRenderer.renderMarkdown(text, body, this.markdownSourcePath(), this.deps.component);
+      const scopeKey = this.blockScopeKey(messageId, this.assistantBlockKey("text", group));
+      await MarkdownRenderer.renderMarkdown(text, body, this.markdownSourcePath(), this.claimBlockScope(scopeKey));
+      this.scopes.bind(scopeKey, body);
       markRendered();
     };
     const flushContext = async (): Promise<void> => {
@@ -647,10 +674,15 @@ export class TimelineRenderer {
       if (group.length === 0) return;
       insertPendingStepGap();
       const firstIndex = container.children.length;
-      if (group.length === 1) await renderToolCall(container, group[0], ctx);
-      else await renderContextToolGroup(container, group, ctx);
+      const scopeKey = this.blockScopeKey(messageId, this.assistantBlockKey("context", group));
+      const scopedCtx = this.scopedBlockCtx(ctx, scopeKey);
+      if (group.length === 1) await renderToolCall(container, group[0], scopedCtx);
+      else await renderContextToolGroup(container, group, scopedCtx);
       const block = container.children.item(firstIndex);
-      if (block instanceof HTMLElement) this.annotateBlock(block, this.assistantBlockKey("context", group), group);
+      if (block instanceof HTMLElement) {
+        this.annotateBlock(block, this.assistantBlockKey("context", group), group);
+        this.scopes.bind(scopeKey, block);
+      }
       markRendered();
     };
     const flushReasoning = async (): Promise<void> => {
@@ -659,9 +691,13 @@ export class TimelineRenderer {
       if (group.length === 0 || !this.deps.getShowReasoningBlocks()) return;
       insertPendingStepGap();
       const firstIndex = container.children.length;
-      if (await renderReasoningBlock(container, group, info, ctx)) {
+      const scopeKey = this.blockScopeKey(messageId, this.assistantBlockKey("reasoning", group));
+      if (await renderReasoningBlock(container, group, info, this.scopedBlockCtx(ctx, scopeKey))) {
         const block = container.children.item(firstIndex);
-        if (block instanceof HTMLElement) this.annotateBlock(block, this.assistantBlockKey("reasoning", group), [group, info.tokens]);
+        if (block instanceof HTMLElement) {
+          this.annotateBlock(block, this.assistantBlockKey("reasoning", group), [group, info.tokens]);
+          this.scopes.bind(scopeKey, block);
+        }
         markRendered();
       }
     };
@@ -706,9 +742,13 @@ export class TimelineRenderer {
       await flushContext();
       insertPendingStepGap();
       const firstIndex = container.children.length;
-      await renderToolCall(container, part, ctx);
+      const scopeKey = this.blockScopeKey(messageId, this.assistantBlockKey("tool", [part]));
+      await renderToolCall(container, part, this.scopedBlockCtx(ctx, scopeKey));
       const block = container.children.item(firstIndex);
-      if (block instanceof HTMLElement) this.annotateBlock(block, this.assistantBlockKey("tool", [part]), [part, this.taskSessionRenderState(part)]);
+      if (block instanceof HTMLElement) {
+        this.annotateBlock(block, this.assistantBlockKey("tool", [part]), [part, this.taskSessionRenderState(part)]);
+        this.scopes.bind(scopeKey, block);
+      }
       markRendered();
     }
 
@@ -863,6 +903,19 @@ export class TimelineRenderer {
     }
   }
 
+  /** Cancels every streamed-part patch whose mounted target is about to be removed or replaced. */
+  private cancelStreamingPatches(container: HTMLElement, messageId: string | undefined): void {
+    if (!messageId) return;
+    const targets = [
+      ...(container.matches('[data-stream-field="text"]') ? [container] : []),
+      ...Array.from(container.querySelectorAll<HTMLElement>('[data-stream-field="text"]')),
+    ];
+    for (const target of targets) {
+      const partIds = (target.dataset.partIds ?? target.dataset.partId ?? "").split(" ").filter(Boolean);
+      for (const partId of partIds) this.deps.cancelStreamingMarkdownPatch(`${messageId}:${partId}:text`);
+    }
+  }
+
   /** Updates active-turn duration and retry countdown labels without rebuilding timeline content. */
   refreshLiveTimelineStatus(now = Date.now()): void {
     if (this.deps.model.sessionBusy) {
@@ -990,6 +1043,22 @@ export class TimelineRenderer {
       resolveSession: (sessionId) => this.deps.model.descendantSessions.get(sessionId),
       openSession: (sessionId, title) => this.deps.onOpenSession(sessionId, title),
     };
+  }
+
+  /** Builds a globally unique render-scope key for one markdown block inside a message row. */
+  private blockScopeKey(messageId: string | undefined, blockKey: string): string {
+    return `${messageId ?? "message"}:${blockKey}`;
+  }
+
+  /** Claims a fresh lifecycle scope for one keyed markdown block, retiring the previous generation until its DOM is discarded. */
+  private claimBlockScope(key: string): Component {
+    this.scopes.retire(key);
+    return this.scopes.scope(key);
+  }
+
+  /** Derives a block rendering context whose markdown children register on a fresh scoped component instead of the view. */
+  private scopedBlockCtx(ctx: BlockRenderCtx, key: string): BlockRenderCtx {
+    return { ...ctx, component: this.claimBlockScope(key) };
   }
 
   /** Builds message action callbacks without exposing shell/controller references. */

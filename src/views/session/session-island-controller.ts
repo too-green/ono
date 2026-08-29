@@ -1,4 +1,4 @@
-import { MarkdownRenderer, setIcon, type Component } from "obsidian";
+import { Component, MarkdownRenderer, setIcon } from "obsidian";
 
 import {
   diffTotals,
@@ -51,6 +51,8 @@ const LARGE_DIFF_CHANGED_LINES = 500;
 /** Owns the tabbed Prompt, todo, subagent, and diff panels in the sticky bottom dock. */
 export class SessionIslandController {
   private readonly islandId = `opencode-session-island-${crypto.randomUUID()}`;
+  /** Per-tab markdown render scopes so replaced panels unload their MarkdownRenderChildren. */
+  private readonly tabScopes = new Map<SessionIslandTab, Component>();
   private rootEl?: HTMLElement;
   private tabListEl?: HTMLElement;
   private promptPanelEl?: HTMLElement;
@@ -343,6 +345,8 @@ export class SessionIslandController {
     this.promptContentEl = undefined;
     this.detailPanelEl = undefined;
     this.detailContentEl = undefined;
+    for (const scope of this.tabScopes.values()) this.releaseTabScope(scope);
+    this.tabScopes.clear();
   }
 
   /** Updates tab labels and the active panel while leaving the composer and timeline untouched. */
@@ -534,16 +538,25 @@ export class SessionIslandController {
     if (!panel || !tab || tab === "prompt") return;
     const version = ++this.renderVersion;
     const staging = document.createElement("div");
-    if (tab === "todos") await this.renderTodos(staging);
+    // Todos are the only panel rendered through MarkdownRenderer; scope its children off the view.
+    const scope = tab === "todos" ? this.createTabScope() : undefined;
+    if (tab === "todos") await this.renderTodos(staging, scope);
     else if (tab === "subagents") this.renderSubagents(staging);
     else if (tab === "turn") {
       const turn = this.latestTurn();
       this.renderDiffFiles(staging, (turn?.diffs ?? []).map((diff) => ({ ...diff, turns: [{ messageId: turn?.messageId ?? "turn", created: turn?.created ?? 0, diff }] })), "turn");
     }
     else this.renderSessionDiffs(staging);
-    if (version !== this.renderVersion || panel !== this.detailContentEl || tab !== this.activeTab) return;
+    if (version !== this.renderVersion || panel !== this.detailContentEl || tab !== this.activeTab) {
+      if (scope) this.releaseTabScope(scope);
+      return;
+    }
     const restoreNavigationFocus = panel.contains(document.activeElement);
+    const previous = this.tabScopes.get(tab);
     panel.replaceChildren(...Array.from(staging.childNodes));
+    // The committed swap destroyed the previous panel's markdown DOM; release its render scope.
+    if (previous) this.releaseTabScope(previous);
+    if (scope) this.tabScopes.set(tab, scope);
     if (this.animationTab === tab && this.detailPanelEl) {
       this.animatePanel(this.detailPanelEl);
       this.animationTab = undefined;
@@ -554,6 +567,19 @@ export class SessionIslandController {
         if (this.activeTab === tab) this.focusDetailNavigation(tab);
       }, 0);
     }
+  }
+
+  /** Creates a markdown render scope parented to the view for one island panel generation. */
+  private createTabScope(): Component {
+    const scope = new Component();
+    this.deps.component.addChild(scope);
+    return scope;
+  }
+
+  /** Detaches one island panel scope from the view and unloads its render children. */
+  private releaseTabScope(scope: Component): void {
+    this.deps.component.removeChild(scope);
+    scope.unload();
   }
 
   /** Restarts the native-variable roll-up animation for the newly selected panel. */
@@ -627,7 +653,7 @@ export class SessionIslandController {
   }
 
   /** Renders the complete endpoint todo list through Obsidian's MarkdownRenderer. */
-  private async renderTodos(panel: HTMLElement): Promise<void> {
+  private async renderTodos(panel: HTMLElement, scope?: Component): Promise<void> {
     if (!this.todosLoaded) {
       this.renderLoadState(panel, this.todoError ? "Unable to load todos." : "Loading todos…", this.todoError);
       return;
@@ -642,7 +668,7 @@ export class SessionIslandController {
       sessionTodoMarkdown(this.todos, character),
       body,
       `opencode-session/${this.sessionId ?? "session"}.md`,
-      this.deps.component,
+      scope ?? this.deps.component,
     );
     const rows = Array.from(body.querySelectorAll<HTMLElement>("li.task-list-item, li[data-task]"));
     for (const [index, row] of rows.entries()) {

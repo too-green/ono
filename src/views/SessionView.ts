@@ -359,6 +359,7 @@ export class SessionView extends ItemView {
     this.composer.dispose();
     this.island.dispose();
     this.markdownPatcher.dispose();
+    this.timeline.dispose();
     this.nativeTitleEl?.removeEventListener("click", this.handleNativeTitleClick);
     this.nativeTitleEl = undefined;
     this.docks.dispose();
@@ -850,6 +851,9 @@ export class SessionView extends ItemView {
     this.slash.hide();
     this.variants.hideModelMenu();
     this.contentEl.replaceChildren(shell);
+    // The new shell is mounted now: old timeline and streaming targets are finally disconnected.
+    this.timeline.releaseDetachedScopes();
+    this.markdownPatcher.releaseDetached();
     this.refreshSessionStateChrome();
     const bottomDock = shell.createDiv({ cls: "opencode-session-view__bottom-dock" });
     this.docks.mount(bottomDock);

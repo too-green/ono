@@ -1,4 +1,4 @@
-import { MarkdownRenderer, type Component } from "obsidian";
+import { Component, MarkdownRenderer } from "obsidian";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MarkdownPatcher } from "./markdown-patcher";
@@ -45,15 +45,16 @@ describe("MarkdownPatcher", () => {
       return !!anchor;
     });
     const updateJumpButton = vi.fn();
+    const component = new Component();
     const patcher = new MarkdownPatcher({
       contentEl,
-      component: {} as Component,
+      component,
       getSessionId: () => "session-1",
       captureFollowLatest: () => followAnchor,
       restoreFollowLatest,
       updateJumpButton,
     });
-    return { contentEl, target, patcher, followAnchor, scrollToBottom, restoreFollowLatest, updateJumpButton };
+    return { contentEl, target, patcher, component, followAnchor, scrollToBottom, restoreFollowLatest, updateJumpButton };
   }
 
   /** Runs the oldest queued animation frame, matching browser one-shot frame behavior. */
@@ -121,6 +122,32 @@ describe("MarkdownPatcher", () => {
     runNextFrame();
     await vi.waitFor(() => expect(target.textContent).toBe("latest"));
     expect(render).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps only one mounted render scope when grouped part keys patch the same target", async () => {
+    const { patcher, target, component } = setup(false);
+    const addChild = vi.spyOn(component, "addChild");
+    const removeChild = vi.spyOn(component, "removeChild");
+    vi.spyOn(MarkdownRenderer, "renderMarkdown").mockImplementation(async (markdown, container) => {
+      container.textContent = markdown;
+    });
+
+    patcher.queue("message:part-1:text", target, "first");
+    runNextFrame();
+    await vi.waitFor(() => expect(target.textContent).toBe("first"));
+    const firstScope = addChild.mock.calls[0]?.[0];
+
+    patcher.queue("message:part-2:text", target, "second");
+    runNextFrame();
+    await vi.waitFor(() => expect(target.textContent).toBe("second"));
+
+    expect(addChild).toHaveBeenCalledTimes(2);
+    expect(removeChild).toHaveBeenCalledTimes(1);
+    expect(removeChild).toHaveBeenCalledWith(firstScope);
+
+    target.remove();
+    patcher.releaseDetached();
+    expect(removeChild).toHaveBeenCalledTimes(2);
   });
 
   it("cancels queued and in-flight work on disposal", async () => {

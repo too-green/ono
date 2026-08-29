@@ -19,6 +19,12 @@ export class Component {
   register() {
     return () => {};
   }
+  addChild<T>(component: T): T {
+    return component;
+  }
+  removeChild<T>(component: T): T {
+    return component;
+  }
 }
 
 export class App {}

@@ -1,4 +1,4 @@
-import { MarkdownRenderer, type Component } from "obsidian";
+import { Component, MarkdownRenderer } from "obsidian";
 import { logger } from "../../../logger";
 import type { FollowLatestAnchor } from "../scroll-controller";
 
@@ -23,11 +23,14 @@ export interface MarkdownPatcherDeps {
 /** Owns frame-bounded, deduplicated Markdown rendering for active streamed parts. */
 export class MarkdownPatcher {
   private readonly patches = new Map<string, StreamingMarkdownPatch>();
+  /** Current render scope per mounted target; multiple grouped part keys can share one element. */
+  private readonly mountedScopes = new Map<HTMLElement, Component>();
 
   constructor(private readonly deps: MarkdownPatcherDeps) {}
 
   /** Queues the latest Markdown for one streamed part without stacking concurrent renders. */
   queue(key: string, element: HTMLElement, markdown: string): void {
+    this.releaseDetached();
     const existing = this.patches.get(key);
     const patch: StreamingMarkdownPatch = existing ?? { element, markdown, inFlight: false, pending: false };
     patch.element = element;
@@ -48,6 +51,7 @@ export class MarkdownPatcher {
     if (!patch) return;
     if (patch.frame !== undefined) window.cancelAnimationFrame(patch.frame);
     patch.pending = false;
+    this.releaseElementScope(patch.element);
     this.patches.delete(key);
   }
 
@@ -67,6 +71,21 @@ export class MarkdownPatcher {
       patch.pending = false;
     }
     this.patches.clear();
+    for (const scope of this.mountedScopes.values()) this.releaseScopeComponent(scope);
+    this.mountedScopes.clear();
+  }
+
+  /** Releases mounted scopes whose target left the DOM; called after a full shell replacement. */
+  releaseDetached(): void {
+    for (const [key, patch] of [...this.patches]) {
+      if (patch.element.isConnected) continue;
+      if (patch.frame !== undefined) window.cancelAnimationFrame(patch.frame);
+      patch.pending = false;
+      this.patches.delete(key);
+    }
+    for (const element of [...this.mountedScopes.keys()]) {
+      if (!element.isConnected) this.releaseElementScope(element);
+    }
   }
 
   /** Renders one queued patch and schedules the newest value when a delta arrives mid-render. */
@@ -81,22 +100,50 @@ export class MarkdownPatcher {
     const followGeneration = this.deps.captureFollowLatest();
     patch.pending = false;
     patch.inFlight = true;
+    // Render under a dedicated scope: MarkdownRenderer children must never register on the
+    // long-lived view, or every streamed frame leaks a detached MarkdownRenderChild.
+    const scope = new Component();
+    this.deps.component.addChild(scope);
     try {
       const scratch = document.createElement("div");
       scratch.classList.add("markdown-rendered");
-      await MarkdownRenderer.renderMarkdown(markdown, scratch, `opencode-session/${this.deps.getSessionId() ?? "session"}.md`, this.deps.component);
-      if (!element.isConnected || this.patches.get(key) !== patch) return;
-      if (patch.pending && patch.markdown !== markdown) return;
+      await MarkdownRenderer.renderMarkdown(markdown, scratch, `opencode-session/${this.deps.getSessionId() ?? "session"}.md`, scope);
+      if (!element.isConnected || this.patches.get(key) !== patch) {
+        this.releaseScopeComponent(scope);
+        return;
+      }
+      if (patch.pending && patch.markdown !== markdown) {
+        this.releaseScopeComponent(scope);
+        return;
+      }
       element.replaceChildren(...Array.from(scratch.childNodes));
+      const previous = this.mountedScopes.get(element);
+      this.mountedScopes.set(element, scope);
+      // The previous flush's DOM was just destroyed by replaceChildren; unload its render children.
+      if (previous) this.releaseScopeComponent(previous);
       this.deps.restoreFollowLatest(followGeneration);
       this.deps.updateJumpButton();
     } catch (error) {
+      this.releaseScopeComponent(scope);
       logger.warn("session-stream", "markdown patch failed", { error });
     } finally {
       patch.inFlight = false;
       if (this.patches.get(key) !== patch) return;
       if (patch.pending && patch.element.isConnected) this.queue(key, patch.element, patch.markdown);
-      else if (!patch.pending) this.patches.delete(key);
     }
+  }
+
+  /** Drops one mounted target's scope after canonical reconciliation replaces its DOM. */
+  private releaseElementScope(element: HTMLElement): void {
+    const scope = this.mountedScopes.get(element);
+    if (!scope) return;
+    this.mountedScopes.delete(element);
+    this.releaseScopeComponent(scope);
+  }
+
+  /** Detaches a render scope from the view and unloads its children. */
+  private releaseScopeComponent(scope: Component): void {
+    this.deps.component.removeChild(scope);
+    scope.unload();
   }
 }

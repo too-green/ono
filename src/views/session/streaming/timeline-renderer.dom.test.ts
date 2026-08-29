@@ -1,4 +1,4 @@
-import { MarkdownRenderer, type App, type Component } from "obsidian";
+import { Component, MarkdownRenderer, type App } from "obsidian";
 import type { JsonObject, OpenCodeMessageBundle } from "../../../services/opencode-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -78,7 +78,7 @@ describe("TimelineRenderer DOM", () => {
     let revertMessageId: string | undefined;
     const deps = {
       app: {} as App,
-      component: {} as Component,
+      component: new Component(),
       contentEl,
       model,
       getShowReasoningBlocks: vi.fn(() => true),
@@ -309,7 +309,7 @@ describe("TimelineRenderer DOM", () => {
   });
 
   it("preserves the working indicator while streamed assistant content changes", async () => {
-    const { contentEl, model, renderer } = setup();
+    const { contentEl, model, deps, renderer } = setup();
     const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
     const assistant = bundle("a1", "assistant", 2_000, [{ id: "p1", messageID: "a1", type: "text", text: "first" }]);
     model.loadedMessages = [assistant];
@@ -331,6 +331,26 @@ describe("TimelineRenderer DOM", () => {
     expect(removals.removedNodes).not.toContain(meta);
     expect(removals.removedNodes).not.toContain(indicator);
     expect(row.querySelector(".opencode-session-view__assistant-markdown")?.textContent).toBe("second");
+    expect(deps.cancelStreamingMarkdownPatch).toHaveBeenCalledWith("a1:p1:text");
+  });
+
+  it("keeps off-DOM full-render scopes until the new timeline mounts", async () => {
+    const { contentEl, deps, renderer } = setup();
+    const removeChild = vi.spyOn(deps.component, "removeChild");
+    const timeline = document.createElement("div");
+    timeline.classList.add("opencode-session-view__timeline");
+    const messages = [bundle("a1", "assistant", 2_000, [{ id: "p1", messageID: "a1", type: "text", text: "answer" }])];
+
+    await renderer.renderInto(timeline, messages);
+    expect(removeChild).not.toHaveBeenCalled();
+
+    contentEl.appendChild(timeline);
+    renderer.releaseDetachedScopes();
+    expect(removeChild).not.toHaveBeenCalled();
+
+    timeline.remove();
+    renderer.releaseDetachedScopes();
+    expect(removeChild).toHaveBeenCalledTimes(1);
   });
 
   it("preserves expanded disclosures and unchanged tool blocks across streamed updates", async () => {

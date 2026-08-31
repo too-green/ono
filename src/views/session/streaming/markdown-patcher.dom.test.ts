@@ -39,7 +39,7 @@ describe("MarkdownPatcher", () => {
     contentEl.appendChild(target);
     document.body.appendChild(contentEl);
     const scrollToBottom = vi.fn();
-    const followAnchor = followLatest ? { generation: 1, scrollTop: 0, explicit: true } : undefined;
+    const followAnchor = followLatest ? { generation: 1 } : undefined;
     const restoreFollowLatest = vi.fn((anchor: typeof followAnchor) => {
       if (anchor) scrollToBottom(false);
       return !!anchor;

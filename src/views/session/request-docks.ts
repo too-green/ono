@@ -9,7 +9,7 @@ import type { OpenCodePermissionReply, OpenCodePermissionRequest, OpenCodeQuesti
  *
  * `onChanged` is emitted after any dock re-render so the shell can refresh the
  * session status indicator, the composer's disabled state, the composer inset,
- * and (if near bottom) scroll to latest. The controller never reaches into
+ * and (while explicit follow is active) scroll to latest. The controller never reaches into
  * siblings directly.
  */
 export interface RequestDocksDeps {

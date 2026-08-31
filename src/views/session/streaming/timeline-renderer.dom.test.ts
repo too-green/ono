@@ -90,7 +90,7 @@ describe("TimelineRenderer DOM", () => {
       getRevertMessageId: () => revertMessageId,
       requestShellRender: vi.fn(async () => undefined),
       cancelStreamingMarkdownPatch: vi.fn(),
-      captureFollowLatest: vi.fn(() => undefined as { generation: number; scrollTop: number; explicit: boolean } | undefined),
+      captureFollowLatest: vi.fn(() => undefined as { generation: number } | undefined),
       restoreFollowLatest: vi.fn(() => false),
       updateJumpButton: vi.fn(),
       onFork: vi.fn(),
@@ -494,7 +494,7 @@ describe("TimelineRenderer DOM", () => {
     const current = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
     current.textContent = "old";
     model.loadedMessages = [bundle("a1", "assistant", 1, [{ type: "text", text: "new" }])];
-    const followAnchor = { generation: 4, scrollTop: 0, explicit: true };
+    const followAnchor = { generation: 4 };
     deps.captureFollowLatest.mockReturnValue(followAnchor);
 
     await renderer.renderStreaming();
@@ -558,7 +558,7 @@ describe("TimelineRenderer DOM", () => {
     ];
     const previousRow = timeline.createDiv({ cls: "opencode-session-view__message-row", attr: { "data-message-id": "a1" } });
     previousRow.dataset.messageSignature = messageRenderSignature(messages[0]);
-    const followAnchor = { generation: 3, scrollTop: 0, explicit: true };
+    const followAnchor = { generation: 3 };
     deps.captureFollowLatest.mockReturnValue(followAnchor);
 
     await renderer.reconcileAppendOnly(messages);

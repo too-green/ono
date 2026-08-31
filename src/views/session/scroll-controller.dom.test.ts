@@ -121,6 +121,16 @@ describe("ScrollController", () => {
     expect(model.followLatest).toBe(false);
   });
 
+  it("releases follow after a small upward scrollbar movement inside the near-bottom zone", () => {
+    const { contentEl, controller, model } = setup();
+    controller.enableFollowLatest();
+    contentEl.scrollTop = 780;
+
+    contentEl.dispatchEvent(new Event("scroll"));
+
+    expect(model.followLatest).toBe(false);
+  });
+
   it("rejects a stale asynchronous bottom anchor after user interaction", () => {
     const { contentEl, controller } = setup();
     const generation = controller.captureFollowLatest();
@@ -132,14 +142,86 @@ describe("ScrollController", () => {
     expect(contentEl.scrollTop).toBe(300);
   });
 
-  it("restores an unchanged near-bottom anchor after a large content growth", () => {
+  it("does not infer follow intent from an unchanged near-bottom position", () => {
     const { contentEl, controller, setGeometry } = setup();
     const anchor = controller.captureFollowLatest();
     setGeometry(1_400, 200);
 
     controller.restoreFollowLatest(anchor);
 
-    expect(contentEl.scrollTop).toBe(1_200);
+    expect(anchor).toBeUndefined();
+    expect(contentEl.scrollTop).toBe(800);
+  });
+
+  it("keeps a small upward scroll released during later renders", () => {
+    const { contentEl, controller, model, setGeometry } = setup();
+    controller.enableFollowLatest();
+    contentEl.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -20 }));
+    contentEl.scrollTop = 760;
+
+    const anchor = controller.captureFollowLatest();
+    setGeometry(1_100, 200);
+    controller.restoreFollowLatest(anchor);
+
+    expect(model.followLatest).toBe(false);
+    expect(anchor).toBeUndefined();
+    expect(contentEl.scrollTop).toBe(760);
+  });
+
+  it("explicitly resumes follow when jumping to latest", () => {
+    const { contentEl, controller, model } = setup();
+    contentEl.scrollTop = 300;
+    Object.defineProperty(contentEl, "createEl", {
+      configurable: true,
+      value: (tagName: string, options?: { attr?: Record<string, string>; cls?: string }) => {
+        const element = document.createElement(tagName);
+        if (options?.cls) element.className = options.cls;
+        for (const [name, value] of Object.entries(options?.attr ?? {})) element.setAttribute(name, value);
+        Object.defineProperty(element, "toggleClass", { value: (name: string, force: boolean) => element.classList.toggle(name, force) });
+        contentEl.appendChild(element);
+        return element;
+      },
+    });
+    controller.renderJumpToBottomButton();
+
+    contentEl.querySelector<HTMLButtonElement>(".opencode-session-view__jump-bottom")?.click();
+
+    expect(model.followLatest).toBe(true);
+    expect(contentEl.scrollTop).toBe(800);
+  });
+
+  it("resumes follow after deliberate downward navigation reaches the physical bottom", () => {
+    const { contentEl, controller, model } = setup();
+    contentEl.scrollTop = 760;
+    contentEl.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 20 }));
+    contentEl.scrollTop = 800;
+    contentEl.dispatchEvent(new Event("scroll"));
+
+    expect(model.followLatest).toBe(true);
+  });
+
+  it("enables explicit follow when an active session initially opens at the bottom", async () => {
+    const { controller, model, runNextFrame } = setup();
+    model.sessionBusy = true;
+    const restoring = controller.restoreScrollAfterRender(true, 0, undefined, controller.captureInteractionGeneration());
+    runNextFrame();
+
+    await restoring;
+
+    expect(model.followLatest).toBe(true);
+  });
+
+  it("does not enable follow when an active session restores a saved reading position", async () => {
+    const { contentEl, controller, model, plugin, runNextFrame } = setup();
+    plugin.settings.sessionScroll.s1 = { top: 300, atBottom: false };
+    model.sessionBusy = true;
+    const restoring = controller.restoreScrollAfterRender(true, 0, undefined, controller.captureInteractionGeneration());
+    runNextFrame();
+
+    await restoring;
+
+    expect(model.followLatest).toBe(false);
+    expect(contentEl.scrollTop).toBe(300);
   });
 
   it("does not restore a full-shell position after user interaction", async () => {

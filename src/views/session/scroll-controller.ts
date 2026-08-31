@@ -36,11 +36,9 @@ export interface ScrollDeps {
   onUnreadChange: (unread: boolean) => void;
 }
 
-/** Captured bottom-follow intent guarded by user-interaction generation and scroll position. */
+/** Captured explicit bottom-follow intent guarded by user-interaction generation. */
 export interface FollowLatestAnchor {
   generation: number;
-  scrollTop: number;
-  explicit: boolean;
 }
 
 /**
@@ -62,6 +60,7 @@ export class ScrollController {
   private followGeneration = 0;
   private expectedProgrammaticTop?: number;
   private touchStart?: { x: number; y: number };
+  private resumeFollowOnScroll = false;
   private programmaticScrollUntil = 0;
   private scrollSaveTimer?: number;
   private relocationFrame?: number;
@@ -77,7 +76,10 @@ export class ScrollController {
   renderJumpToBottomButton(): void {
     const button = this.deps.contentEl.createEl("button", { attr: { "aria-label": "Jump to latest" }, cls: "opencode-session-view__jump-bottom" });
     setIcon(button, "arrow-down-to-line");
-    button.addEventListener("click", () => this.scrollToBottom(true));
+    button.addEventListener("click", () => {
+      this.enableFollowLatest();
+      this.scrollToBottom(false);
+    });
     this.jumpButton = button;
     this.updateJumpButton();
   }
@@ -87,21 +89,26 @@ export class ScrollController {
     if (this.scrollBound) return;
     this.scrollBound = true;
     const { contentEl, register, model } = this.deps;
+    let previousScrollTop = contentEl.scrollTop;
     register.registerDomEvent(contentEl, "scroll", () => {
       if (this.deps.consumeTabGroupRelocation()) this.handleTabGroupRelocation();
       if (this.relocationPending) return;
       const matchedProgrammaticTarget = this.expectedProgrammaticTop !== undefined && Math.abs(contentEl.scrollTop - this.expectedProgrammaticTop) <= 1;
+      const movedUp = contentEl.scrollTop < previousScrollTop - 1;
+      previousScrollTop = contentEl.scrollTop;
       this.expectedProgrammaticTop = undefined;
       this.updateJumpButton();
       this.scheduleScrollStateSave();
       if (Date.now() > this.programmaticScrollUntil) this.markSessionReadIfAtBottom();
-      if (model.followLatest && !this.isNearBottom() && !matchedProgrammaticTarget) this.disableFollowLatest();
+      if (model.followLatest && movedUp && !matchedProgrammaticTarget) this.disableFollowLatest();
+      if (!model.followLatest && this.resumeFollowOnScroll && this.isAtBottom()) this.enableFollowLatest();
       if (contentEl.scrollTop < LOAD_OLDER_THRESHOLD_PX) this.deps.onNearTop();
     });
     register.registerDomEvent(contentEl, "wheel", (event) => {
       this.cancelTabGroupRelocation();
       this.followGeneration += 1;
       if (event.deltaY < 0) this.disableFollowLatest();
+      else if (event.deltaY > 0) this.resumeFollowOnScroll = true;
     });
     register.registerDomEvent(contentEl, "touchstart", (event) => {
       this.cancelTabGroupRelocation();
@@ -109,9 +116,10 @@ export class ScrollController {
       const touch = event.touches[0];
       this.touchStart = touch ? { x: touch.clientX, y: touch.clientY } : undefined;
     });
-    register.registerDomEvent(contentEl, "pointerdown", () => {
+    register.registerDomEvent(contentEl, "pointerdown", (event) => {
       this.cancelTabGroupRelocation();
       this.followGeneration += 1;
+      this.resumeFollowOnScroll = true;
     });
     register.registerDomEvent(contentEl, "touchmove", (event) => {
       const touch = event.touches[0];
@@ -119,6 +127,7 @@ export class ScrollController {
       const deltaX = touch.clientX - this.touchStart.x;
       const deltaY = touch.clientY - this.touchStart.y;
       if (deltaY > 4 && Math.abs(deltaY) > Math.abs(deltaX)) this.disableFollowLatest();
+      else if (deltaY < -4 && Math.abs(deltaY) > Math.abs(deltaX)) this.resumeFollowOnScroll = true;
     });
     register.registerDomEvent(window, "keydown", (event) => {
       if (!this.deps.isActive()) return;
@@ -126,6 +135,9 @@ export class ScrollController {
       if (event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey)) {
         this.cancelTabGroupRelocation();
         this.disableFollowLatest();
+      } else if (event.key === "ArrowDown" || event.key === "PageDown" || event.key === "End" || event.key === " ") {
+        this.followGeneration += 1;
+        this.resumeFollowOnScroll = true;
       }
     });
   }
@@ -181,7 +193,10 @@ export class ScrollController {
     } else if (initialLoad) {
       const saved = model.sessionId ? plugin.settings.sessionScroll[model.sessionId] : undefined;
       if (saved && !saved.atBottom) contentEl.scrollTop = saved.top;
-      else this.scrollToBottom(false);
+      else {
+        if (model.sessionBusy) this.enableFollowLatest();
+        this.scrollToBottom(false);
+      }
     } else {
       contentEl.scrollTop = previousTop;
     }
@@ -223,9 +238,13 @@ export class ScrollController {
     return el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_THRESHOLD_PX;
   }
 
-  /** Returns true when timeline renders should keep the latest turn visible above the sticky composer. */
+  /**
+   * Returns true only when bottom-follow was explicitly enabled.
+   * Do not infer intent from `isNearBottom()`: an upward user scroll can remain
+   * inside that UI threshold and must not be re-anchored by the next streamed render.
+   */
   shouldFollowLatest(): boolean {
-    return this.deps.model.followLatest || this.isNearBottom();
+    return this.deps.model.followLatest;
   }
 
   /** Captures user-interaction generation for guarding non-follow scroll restoration. */
@@ -238,16 +257,12 @@ export class ScrollController {
     if (!this.shouldFollowLatest()) return undefined;
     return {
       generation: this.followGeneration,
-      scrollTop: this.deps.contentEl.scrollTop,
-      explicit: this.deps.model.followLatest,
     };
   }
 
-  /** Restores a captured bottom anchor only when no user interaction invalidated it. */
+  /** Restores a captured bottom anchor only while explicit follow remains enabled and no user interaction invalidated it. */
   restoreFollowLatest(anchor: FollowLatestAnchor | undefined): boolean {
-    if (!anchor || anchor.generation !== this.followGeneration) return false;
-    const unchangedImplicitAnchor = !anchor.explicit && Math.abs(this.deps.contentEl.scrollTop - anchor.scrollTop) <= 1;
-    if (!(anchor.explicit ? this.deps.model.followLatest : unchangedImplicitAnchor || this.isNearBottom())) return false;
+    if (!anchor || anchor.generation !== this.followGeneration || !this.deps.model.followLatest) return false;
     this.scrollToBottom(false);
     return true;
   }
@@ -256,6 +271,7 @@ export class ScrollController {
   enableFollowLatest(): void {
     this.followGeneration += 1;
     this.deps.model.followLatest = true;
+    this.resumeFollowOnScroll = false;
     if (this.followLatestReleaseTimer) window.clearTimeout(this.followLatestReleaseTimer);
     this.followLatestReleaseTimer = undefined;
     this.extendFollowLatest(8000);
@@ -284,6 +300,7 @@ export class ScrollController {
   disableFollowLatest(): void {
     this.followGeneration += 1;
     this.deps.model.followLatest = false;
+    this.resumeFollowOnScroll = false;
     this.followLatestUntil = 0;
     if (this.followLatestFrame !== undefined) window.cancelAnimationFrame(this.followLatestFrame);
     this.followLatestFrame = undefined;
@@ -414,6 +431,12 @@ export class ScrollController {
   /** Shows the subdued jump button only while the user is reading away from latest. */
   updateJumpButton(): void {
     this.jumpButton?.toggleClass("is-visible", !this.isNearBottom());
+  }
+
+  /** Returns true only at the physical bottom, where deliberate downward navigation may resume follow mode. */
+  private isAtBottom(): boolean {
+    const el = this.deps.contentEl;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
   }
 
   // ---- persistence

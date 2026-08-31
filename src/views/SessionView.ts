@@ -965,11 +965,11 @@ export class SessionView extends ItemView {
     });
   }
 
-  /** Refreshes native status chrome, composer state, and scroll after the docks controller re-renders. */
+  /** Refreshes native status chrome, composer state, and explicit follow position after the docks controller re-renders. */
   private onRequestDocksChanged(): void {
     this.refreshSessionStateChrome();
     this.composer.onDocksChanged();
-    if (this.scroll.isNearBottom()) this.scroll.scrollToBottom(false);
+    if (this.scroll.shouldFollowLatest()) this.scroll.scrollToBottom(false);
   }
 
   /** Receives a globally routed permission request and surfaces it when its owner is in this view's tree. */

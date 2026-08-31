@@ -21,8 +21,11 @@ const STABLE_CONNECTION_MS = 30_000;
 
 export class OpenCodeEventStream {
   private readonly connections = new Map<string, { abort: AbortController; handlers: Set<OpenCodeEventHandlers>; directory?: string }>();
+  private http: OpenCodeHttpClient;
 
-  constructor(private readonly http: OpenCodeHttpClient) {}
+  constructor(http: OpenCodeHttpClient) {
+    this.http = http;
+  }
 
   /** Adds a subscriber to the shared SSE connection used by all plugin views. */
   subscribe(handlers: OpenCodeEventHandlers, directory?: string): OpenCodeEventSubscription {
@@ -47,6 +50,17 @@ export class OpenCodeEventStream {
   close(): void {
     for (const connection of this.connections.values()) connection.handlers.clear();
     for (const key of [...this.connections.keys()]) this.stopConnection(key);
+  }
+
+  /** Re-points the stream at a replacement HTTP client and reconnects without dropping subscribers. */
+  reset(http: OpenCodeHttpClient): void {
+    this.http = http;
+    for (const [key, connection] of this.connections) {
+      connection.abort.abort();
+      const controller = new AbortController();
+      connection.abort = controller;
+      void this.readLoop(key, controller);
+    }
   }
 
   /** Stops the underlying connection without mutating subscriber bookkeeping. */

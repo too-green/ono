@@ -1,11 +1,56 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { requestUrl } from "obsidian";
 
 import { logger } from "../logger";
 import { OpenCodeHttpClient, OpenCodeHttpError } from "./opencode-http";
 
+vi.mock("obsidian", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("obsidian")>();
+  return {
+    ...actual,
+    requestUrl: vi.fn(async () => ({ status: 200, json: { healthy: true, version: "test" }, headers: {}, text: "" })),
+  };
+});
+
 afterEach(() => {
   logger.setDebugEnabled(false);
   vi.restoreAllMocks();
+});
+
+describe("OpenCodeHttpClient basic authentication", () => {
+  it("sends the default-username basic authorization header on fetch requests", async () => {
+    const fetchImpl = vi.fn(async () => new Response("{}", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+    const client = new OpenCodeHttpClient({ baseUrl: "http://127.0.0.1:4096", password: "a-strong-secret", fetchImpl });
+
+    await client.get("/global/health");
+
+    const [, init] = vi.mocked(fetchImpl).mock.calls[0];
+    expect(new Headers(init?.headers).get("Authorization")).toBe(`Basic ${btoa("opencode:a-strong-secret")}`);
+  });
+
+  it("sends the configured username through Obsidian requestUrl when a password is set", async () => {
+    const client = new OpenCodeHttpClient({ baseUrl: "http://127.0.0.1:4096", username: "ahmed", password: "a-strong-secret" });
+
+    await client.get("/global/health");
+
+    expect(vi.mocked(requestUrl).mock.calls[0][0]).toMatchObject({
+      url: "http://127.0.0.1:4096/global/health",
+      method: "GET",
+      headers: { authorization: `Basic ${btoa("ahmed:a-strong-secret")}` },
+    });
+  });
+
+  it("omits the authorization header when no password is configured", async () => {
+    const client = new OpenCodeHttpClient({ baseUrl: "http://127.0.0.1:4096", username: "ahmed" });
+
+    await client.get("/global/health");
+
+    const { headers } = vi.mocked(requestUrl).mock.calls[0][0] as { headers: Record<string, string> };
+    expect(headers.authorization).toBeUndefined();
+  });
 });
 
 describe("OpenCodeHttpClient diagnostics", () => {

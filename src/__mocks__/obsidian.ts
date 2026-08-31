@@ -58,6 +58,13 @@ export class Setting {
   addSearch() { return this; }
   addToggle() { return this; }
   addText() { return this; }
+  addComponent<T>(_callback: (el: HTMLElement) => T): this { return this; }
+}
+
+export class SecretComponent {
+  constructor(_app?: unknown, _containerEl?: unknown) {}
+  setValue(_value: string) { return this; }
+  onChange(_callback: (value: string) => unknown) { return this; }
 }
 
 export class WorkspaceLeaf {}

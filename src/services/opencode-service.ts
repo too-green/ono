@@ -29,11 +29,13 @@ export interface OpenCodeServerConfig {
   baseUrl: string;
   username?: string;
   password?: string;
+  /** Name of the Obsidian secret-storage entry backing `password`; ignored by the HTTP client. */
+  passwordSecretName?: string;
 }
 
 export class OpenCodeService {
-  private readonly http: OpenCodeHttpClient;
   private readonly events: OpenCodeEventStream;
+  private http: OpenCodeHttpClient;
 
   constructor(config: OpenCodeServerConfig) {
     this.http = new OpenCodeHttpClient(config);
@@ -43,6 +45,12 @@ export class OpenCodeService {
   /** Disposes long-lived connections; referenced by the Obsidian plugin unload hook. */
   dispose(): void {
     this.events.close();
+  }
+
+  /** Swaps the server connection and reconnects event subscribers; referenced by plugin.applyServerConfig. */
+  updateConfig(config: OpenCodeServerConfig): void {
+    this.http = new OpenCodeHttpClient(config);
+    this.events.reset(this.http);
   }
 
   /** Reads server health and version from `GET /global/health`. */

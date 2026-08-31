@@ -2816,6 +2816,21 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
   width: var(--icon-s);
 }
 
+/* Inline verdict beside the settings-tab server test button. */
+.opencode-settings__connection-result {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-left: var(--size-4-2);
+}
+
+.opencode-settings__connection-result.is-ok {
+  color: var(--color-green);
+}
+
+.opencode-settings__connection-result.is-error {
+  color: var(--text-error);
+}
+
 .opencode-session-view__empty,
 .opencode-session-view__state {
   color: var(--text-muted);

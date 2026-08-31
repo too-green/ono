@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import OpenCodePlugin, { LEGACY_DIFF_PANEL_VIEW_TYPE } from "../main.ts";
+import { OpenCodeService } from "./services/opencode-service";
+import type { OpenCodeHealth } from "./services/opencode-types";
 import { logger } from "./logger";
 import { DEFAULT_OPENCODE_SETTINGS, type OpenCodePluginSettings } from "./settings";
 import { VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./views/AgentPanelView";
@@ -100,6 +102,115 @@ describe("OpenCodePlugin diagnostics settings", () => {
     expect(saveSettings).toHaveBeenCalledTimes(2);
     expect(plugin.settings.debugLogging).toBe(false);
     expect(logger.isDebugEnabled()).toBe(false);
+  });
+});
+
+describe("OpenCodePlugin server connection settings", () => {
+  it("applies server changes, resolves the named secret, and reconnects the service", async () => {
+    const getSecret = vi.fn(() => "hunter2");
+    const updateConfig = vi.fn();
+    const saveSettings = vi.fn(async () => undefined);
+    const refreshAgentPanels = vi.fn(async () => undefined);
+    const refreshSessionViews = vi.fn(async () => undefined);
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      app: { secretStorage: { getSecret } },
+      settings: pluginSettings(),
+      opencode: { updateConfig },
+      saveSettings,
+      refreshAgentPanels,
+      refreshSessionViews,
+    });
+
+    await plugin.applyServerConfig("http://10.0.0.5:4096/", "  admin ", "  opencode-pw ");
+
+    expect(plugin.settings.server).toEqual({
+      baseUrl: "http://10.0.0.5:4096",
+      username: "admin",
+      passwordSecretName: "opencode-pw",
+      password: "hunter2",
+    });
+    expect(getSecret).toHaveBeenCalledWith("opencode-pw");
+    expect(updateConfig).toHaveBeenCalledWith(plugin.settings.server);
+    expect(saveSettings).toHaveBeenCalledOnce();
+    expect(refreshAgentPanels).toHaveBeenCalledOnce();
+    expect(refreshSessionViews).toHaveBeenCalledOnce();
+  });
+
+  it("clears the resolved password when the secret name is removed", async () => {
+    const getSecret = vi.fn(() => "hunter2");
+    const updateConfig = vi.fn();
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      app: { secretStorage: { getSecret } },
+      settings: pluginSettings({ server: { baseUrl: "http://127.0.0.1:4096", username: "admin", passwordSecretName: "opencode-pw", password: "hunter2" } }),
+      opencode: { updateConfig },
+      saveSettings: vi.fn(async () => undefined),
+      refreshAgentPanels: vi.fn(async () => undefined),
+      refreshSessionViews: vi.fn(async () => undefined),
+    });
+
+    await plugin.applyServerConfig("http://127.0.0.1:4096", "admin", "   ");
+
+    expect(plugin.settings.server).toEqual({ baseUrl: "http://127.0.0.1:4096", username: "admin" });
+    expect(getSecret).not.toHaveBeenCalled();
+    expect(updateConfig).toHaveBeenCalledWith({ baseUrl: "http://127.0.0.1:4096", username: "admin" });
+  });
+
+  it("keeps the secret name but drops the password when the stored secret is missing", async () => {
+    const getSecret = vi.fn(() => null);
+    const updateConfig = vi.fn();
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      app: { secretStorage: { getSecret } },
+      settings: pluginSettings(),
+      opencode: { updateConfig },
+      saveSettings: vi.fn(async () => undefined),
+      refreshAgentPanels: vi.fn(async () => undefined),
+      refreshSessionViews: vi.fn(async () => undefined),
+    });
+
+    await plugin.applyServerConfig("http://127.0.0.1:4096", undefined, "deleted-secret");
+
+    expect(plugin.settings.server).toEqual({ baseUrl: "http://127.0.0.1:4096", passwordSecretName: "deleted-secret" });
+  });
+
+  it("keeps the server password out of the persisted plugin data file", async () => {
+    const saveData = vi.fn(async () => undefined);
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      settings: pluginSettings({ server: { baseUrl: "http://10.0.0.5:4096", username: "admin", passwordSecretName: "opencode-pw", password: "hunter2" } }),
+      saveData,
+    });
+
+    await plugin.saveSettings();
+
+    expect(saveData).toHaveBeenCalledWith(expect.objectContaining({
+      server: { baseUrl: "http://10.0.0.5:4096", username: "admin", passwordSecretName: "opencode-pw" },
+    }));
+    expect(JSON.stringify(saveData.mock.calls)).not.toContain("hunter2");
+  });
+
+  it("probes drafted server values without applying them to plugin settings", async () => {
+    const health = vi.spyOn(OpenCodeService.prototype, "health")
+      .mockResolvedValue({ healthy: true, version: "1.2.3" } as OpenCodeHealth);
+    const settings = pluginSettings();
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, { settings, app: { secretStorage: { getSecret: vi.fn(() => "hunter2") } } });
+
+    const result = await plugin.testServerConnection("http://10.0.0.5:4096", "admin", "opencode-pw");
+
+    expect(result).toEqual({ healthy: true, version: "1.2.3" });
+    expect(health).toHaveBeenCalledOnce();
+    expect(settings.server).toEqual({ baseUrl: "http://127.0.0.1:4096" });
+  });
+
+  it("propagates probe failures after disposing the temporary service", async () => {
+    vi.spyOn(OpenCodeService.prototype, "health").mockRejectedValue(new Error("refused"));
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, { settings: pluginSettings() });
+
+    await expect(plugin.testServerConnection("http://127.0.0.1:4096", undefined, undefined)).rejects.toThrow("refused");
   });
 });
 

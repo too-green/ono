@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_OPENCODE_SETTINGS,
+  DEFAULT_SERVER_BASE_URL,
   normalizeAgentPanelSessionSort,
   normalizeDebugLogging,
   normalizeFolderCollapseDisplay,
   normalizeNotificationMode,
   normalizeRetryActionLastShown,
   normalizeRetryActionSuppressed,
+  normalizeServerBaseUrl,
+  normalizeServerUsername,
   normalizeSessionIslandContextLabel,
 } from "./settings";
 
@@ -69,6 +72,29 @@ describe("normalizeDebugLogging", () => {
     expect(normalizeDebugLogging(false)).toBe(false);
     expect(normalizeDebugLogging("true")).toBe(false);
     expect(normalizeDebugLogging(undefined)).toBe(false);
+  });
+});
+
+describe("normalizeServerBaseUrl", () => {
+  it("keeps valid http and https URLs while trimming whitespace and trailing slashes", () => {
+    expect(normalizeServerBaseUrl("http://10.0.0.5:4096")).toBe("http://10.0.0.5:4096");
+    expect(normalizeServerBaseUrl("  https://opencode.example.com/api/  ")).toBe("https://opencode.example.com/api");
+  });
+
+  it("falls back to the local default for missing, malformed, or non-http values", () => {
+    expect(DEFAULT_OPENCODE_SETTINGS.server.baseUrl).toBe(DEFAULT_SERVER_BASE_URL);
+    expect(normalizeServerBaseUrl("")).toBe(DEFAULT_SERVER_BASE_URL);
+    expect(normalizeServerBaseUrl("not a url")).toBe(DEFAULT_SERVER_BASE_URL);
+    expect(normalizeServerBaseUrl("ftp://127.0.0.1:4096")).toBe(DEFAULT_SERVER_BASE_URL);
+    expect(normalizeServerBaseUrl(undefined)).toBe(DEFAULT_SERVER_BASE_URL);
+  });
+});
+
+describe("normalizeServerUsername", () => {
+  it("trims usernames and drops empty values", () => {
+    expect(normalizeServerUsername("  admin ")).toBe("admin");
+    expect(normalizeServerUsername("   ")).toBeUndefined();
+    expect(normalizeServerUsername(undefined)).toBeUndefined();
   });
 });
 

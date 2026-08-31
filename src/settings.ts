@@ -1,4 +1,4 @@
-import { AbstractInputSuggest, PluginSettingTab, Setting, getIconIds, setIcon, type App } from "obsidian";
+import { AbstractInputSuggest, PluginSettingTab, SecretComponent, Setting, getIconIds, setIcon, type App } from "obsidian";
 import type OpenCodePlugin from "../main";
 import type { SessionNotificationTestKind } from "./services/session-notifications";
 import type { OpenCodeServerConfig } from "./services/opencode-service";
@@ -17,6 +17,8 @@ import {
 } from "./utils/ide-launcher";
 
 export type SessionIslandContextLabel = "percentage" | "tokens";
+
+export const DEFAULT_SERVER_BASE_URL = "http://127.0.0.1:4096";
 
 export const SESSION_ISLAND_CONTEXT_LABELS: Record<SessionIslandContextLabel, string> = {
   tokens: "Token count",
@@ -110,7 +112,7 @@ export interface ToolDisplaySetting {
 
 export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   server: {
-    baseUrl: "http://127.0.0.1:4096",
+    baseUrl: DEFAULT_SERVER_BASE_URL,
   },
   openedDirectories: [],
   groupContextTools: false,
@@ -196,6 +198,27 @@ export function normalizeOpenIde(value: unknown): string {
   return typeof value === "string" && getIdeById(value) ? value : DEFAULT_OPEN_IDE_ID;
 }
 
+/** Returns a parseable http(s) server base URL for persisted settings and the settings tab. */
+export function normalizeServerBaseUrl(value: unknown): string {
+  if (typeof value !== "string") return DEFAULT_SERVER_BASE_URL;
+  const trimmed = value.trim();
+  if (!trimmed) return DEFAULT_SERVER_BASE_URL;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return DEFAULT_SERVER_BASE_URL;
+    return trimmed.replace(/\/+$/, "");
+  } catch {
+    return DEFAULT_SERVER_BASE_URL;
+  }
+}
+
+/** Returns an optional trimmed basic-auth username for persisted settings. */
+export function normalizeServerUsername(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
 class IconSuggest extends AbstractInputSuggest<string> {
   private readonly icons = getIconIds();
 
@@ -224,6 +247,8 @@ export class OpenCodeSettingTab extends PluginSettingTab {
   /** Renders the plugin settings currently exposed by the product specification. */
   display(): void {
     this.containerEl.empty();
+
+    this.renderServerSettings();
 
     new Setting(this.containerEl)
       .setName("Open project in IDE")
@@ -434,6 +459,84 @@ export class OpenCodeSettingTab extends PluginSettingTab {
         this.display();
       }),
     );
+  }
+
+  /** Renders the OpenCode server URL, username, and secret-storage password fields; referenced by display. */
+  private renderServerSettings(): void {
+    new Setting(this.containerEl)
+      .setName("OpenCode server")
+      .setDesc("Connection used by the agents panel, sessions, and notifications.")
+      .setHeading();
+
+    const server = { ...this.plugin.settings.server };
+    const commit = (): void => {
+      void this.plugin.applyServerConfig(server.baseUrl, server.username, server.passwordSecretName);
+    };
+
+    new Setting(this.containerEl)
+      .setName("Server URL")
+      .setDesc(`Base URL of the OpenCode server API. Defaults to ${DEFAULT_SERVER_BASE_URL}. Applied when the field loses focus.`)
+      .addText((text) => {
+        text.setPlaceholder(DEFAULT_SERVER_BASE_URL).setValue(server.baseUrl);
+        text.inputEl.addEventListener("change", () => {
+          server.baseUrl = normalizeServerBaseUrl(text.inputEl.value);
+          text.inputEl.value = server.baseUrl;
+          commit();
+        });
+      });
+
+    new Setting(this.containerEl)
+      .setName("Server username")
+      .setDesc("Optional username for the server's basic authentication. Defaults to \"opencode\" when a password is set.")
+      .addText((text) => {
+        text.setPlaceholder("opencode").setValue(server.username ?? "");
+        text.inputEl.addEventListener("change", () => {
+          server.username = normalizeServerUsername(text.inputEl.value);
+          commit();
+        });
+      });
+
+    // Canonical secret pattern per the Obsidian "Store secrets" guide: SecretComponent
+    // picks or creates a named Keychain secret; settings persist the name and the
+    // plugin resolves the value through SecretStorage at request time.
+    const passwordSetting = new Setting(this.containerEl)
+      .setName("Server password")
+      .setDesc("Named secret in Obsidian's secret storage holding the server's basic-auth password. Pick an existing secret or create a new one.");
+    if (this.app.secretStorage) {
+      passwordSetting.addComponent((el) => new SecretComponent(this.app, el)
+        .setValue(server.passwordSecretName ?? "")
+        .onChange((name) => {
+          server.passwordSecretName = name || undefined;
+          commit();
+        }));
+    } else {
+      passwordSetting.setDesc("Named-secret password storage requires Obsidian 1.11.4 or newer.");
+    }
+
+    const connectionSetting = new Setting(this.containerEl)
+      .setName("Test connection")
+      .setDesc("Check the health of the OpenCode server using the values entered above.");
+    const connectionResult = connectionSetting.controlEl.createSpan({ cls: "opencode-settings__connection-result" });
+    connectionSetting.addButton((button) =>
+      button.setButtonText("Test connection").onClick(() => void this.runServerConnectionTest(server, connectionResult)),
+    );
+  }
+
+  /** Probes the drafted server values and renders an inline verdict beside the test button. */
+  private async runServerConnectionTest(server: OpenCodeServerConfig, resultEl: HTMLElement): Promise<void> {
+    resultEl.removeClass("is-ok", "is-error");
+    resultEl.textContent = "Testing…";
+    try {
+      const health = await this.plugin.testServerConnection(server.baseUrl, server.username, server.passwordSecretName);
+      await this.plugin.applyServerConfig(server.baseUrl, server.username, server.passwordSecretName);
+      resultEl.addClass(health.healthy ? "is-ok" : "is-error");
+      resultEl.textContent = health.healthy
+        ? `Connected — OpenCode ${health.version}`
+        : `Server responded but reports unhealthy (version ${health.version}).`;
+    } catch (error) {
+      resultEl.addClass("is-error");
+      resultEl.textContent = error instanceof Error ? error.message : "Connection failed.";
+    }
   }
 
   /** Renders and persists one user-defined collapsed tool display mapping. */

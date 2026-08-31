@@ -8,6 +8,7 @@ interface EventStreamHarness {
   connections: Map<string, { abort: AbortController; handlers: Set<OpenCodeEventHandlers>; directory?: string }>;
   emitChunk(key: string, chunk: string): void;
   readLoop(key: string, controller: AbortController): Promise<void>;
+  reset(http: OpenCodeHttpClient): void;
   readOnce: ReturnType<typeof vi.fn>;
   sleep: ReturnType<typeof vi.fn>;
 }
@@ -116,5 +117,35 @@ describe("OpenCodeEventStream diagnostics", () => {
     await sleeping;
 
     expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+});
+
+describe("OpenCodeEventStream reset", () => {
+  it("reconnects existing subscribers against a replaced HTTP client without dropping them", async () => {
+    const onEvent = vi.fn();
+    const handlers = new Set<OpenCodeEventHandlers>([{ onEvent }]);
+    const original = new AbortController();
+    const stream = new OpenCodeEventStream({} as OpenCodeHttpClient) as unknown as EventStreamHarness;
+    stream.connections.set("", { abort: original, handlers });
+    stream.readLoop = vi.fn(async () => undefined);
+    const replacement = {} as OpenCodeHttpClient;
+
+    stream.reset(replacement);
+
+    expect(original.signal.aborted).toBe(true);
+    const connection = stream.connections.get("")!;
+    expect(connection.abort).not.toBe(original);
+    expect(connection.handlers).toBe(handlers);
+    expect(stream.readLoop).toHaveBeenCalledWith("", connection.abort);
+  });
+
+  it("keeps empty streams idle until the next subscriber connects", () => {
+    const stream = new OpenCodeEventStream({} as OpenCodeHttpClient) as unknown as EventStreamHarness;
+    stream.readLoop = vi.fn(async () => undefined);
+
+    stream.reset({} as OpenCodeHttpClient);
+
+    expect(stream.readLoop).not.toHaveBeenCalled();
+    expect(stream.connections.size).toBe(0);
   });
 });

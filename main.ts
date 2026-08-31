@@ -9,14 +9,16 @@ import {
   normalizeOpenIde,
   normalizeRetryActionLastShown,
   normalizeRetryActionSuppressed,
+  normalizeServerBaseUrl,
+  normalizeServerUsername,
   normalizeSessionIslandContextLabel,
   normalizeTodoStatusCharacter,
   type ComposerAttachment,
   type OpenCodePluginSettings,
 } from "./src/settings";
-import { OpenCodeService } from "./src/services/opencode-service";
+import { OpenCodeService, type OpenCodeServerConfig } from "./src/services/opencode-service";
 import type { OpenCodeEventSubscription } from "./src/services/opencode-events";
-import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./src/services/opencode-types";
+import type { JsonObject, OpenCodeEvent, OpenCodeHealth, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./src/services/opencode-types";
 import { SessionNotificationService, isElementVisibleInFocusedWindow, type SessionNotificationTestKind } from "./src/services/session-notifications";
 import { confirmSessionArchive, requestRetryAction, requestSessionTitle, type SessionArchiveNode } from "./src/session-actions";
 import { AgentPanelView, VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./src/views/AgentPanelView";
@@ -346,7 +348,7 @@ export default class OpenCodePlugin extends Plugin {
   async requestSessionArchive(sessionId: string, directory?: string): Promise<void> {
     if (this.archivingSessionIds.has(sessionId)) return;
     this.archivingSessionIds.add(sessionId);
-    let archivedCount = 0;
+    const archivedIds = new Set<string>();
     try {
       const tree = await this.loadSessionArchiveTree(sessionId, directory);
       const targets = this.flattenArchiveTargets(tree);
@@ -356,16 +358,25 @@ export default class OpenCodePlugin extends Plugin {
       const archivedAt = Date.now();
       for (const target of targets) {
         await this.requireOpenCodeService().archiveSession(target.id, archivedAt, target.directory);
-        archivedCount += 1;
+        archivedIds.add(target.id);
       }
       await this.refreshAgentPanels({ showLoading: false });
       new Notice(targets.length === 1 ? `Archived ${tree.title}.` : `Archived ${tree.title} and ${targets.length - 1} descendant sessions.`);
     } catch (error) {
-      if (archivedCount > 0) await this.refreshAgentPanels({ showLoading: false });
+      if (archivedIds.size > 0) await this.refreshAgentPanels({ showLoading: false });
       const message = error instanceof Error ? error.message : "Unable to archive OpenCode session.";
-      new Notice(archivedCount > 0 ? `Archived ${archivedCount} descendant sessions before archival stopped: ${message}` : message);
+      new Notice(archivedIds.size > 0 ? `Archived ${archivedIds.size} descendant sessions before archival stopped: ${message}` : message);
     } finally {
+      this.closeSessionTabs(archivedIds);
       this.archivingSessionIds.delete(sessionId);
+    }
+  }
+
+  /** Detaches session tabs whose sessions were archived; referenced by requestSessionArchive. */
+  private closeSessionTabs(sessionIds: ReadonlySet<string>): void {
+    if (sessionIds.size === 0) return;
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
+      if (sessionIds.has(this.sessionIdFromLeaf(leaf) ?? "")) void leaf.detach();
     }
   }
 
@@ -472,11 +483,59 @@ export default class OpenCodePlugin extends Plugin {
         }];
       })
       : [];
+
+    // --- Server connection: URL and username persist in plugin data; the password resolves from a named secret. ---
+    const persistedServer = (this.settings.server && typeof this.settings.server === "object" ? this.settings.server : {}) as Partial<OpenCodeServerConfig>;
+    const passwordSecretName = normalizeServerUsername(persistedServer.passwordSecretName);
+    this.settings.server = {
+      baseUrl: normalizeServerBaseUrl(persistedServer.baseUrl),
+      username: normalizeServerUsername(persistedServer.username),
+      passwordSecretName,
+      password: this.resolveServerPassword(passwordSecretName),
+    };
   }
 
-  /** Writes plugin settings to Obsidian's plugin data file; referenced by opened-directory mutations. */
+  /** Writes plugin settings to Obsidian's plugin data file without the resolved password; referenced by settings mutations. */
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    const { password: _password, ...server } = this.settings.server;
+    await this.saveData({ ...this.settings, server });
+  }
+
+  /** Applies settings-tab server changes, resolves the named secret, and reconnects the service and views. */
+  async applyServerConfig(baseUrl: string, username: string | undefined, passwordSecretName: string | undefined): Promise<void> {
+    const secretName = normalizeServerUsername(passwordSecretName);
+    this.settings.server = {
+      baseUrl: normalizeServerBaseUrl(baseUrl),
+      username: normalizeServerUsername(username),
+      passwordSecretName: secretName,
+      password: this.resolveServerPassword(secretName),
+    };
+    await this.saveSettings();
+    if (this.opencode) this.opencode.updateConfig(this.settings.server);
+    else this.opencode = new OpenCodeService(this.settings.server);
+    await this.refreshAgentPanels();
+    await this.refreshSessionViews();
+  }
+
+  /** Probes drafted server values without applying them; referenced by the settings-tab test button. */
+  async testServerConnection(baseUrl: string, username: string | undefined, passwordSecretName: string | undefined): Promise<OpenCodeHealth> {
+    const probe = new OpenCodeService({
+      baseUrl: normalizeServerBaseUrl(baseUrl),
+      username: normalizeServerUsername(username),
+      password: this.resolveServerPassword(normalizeServerUsername(passwordSecretName)),
+    });
+    try {
+      return await probe.health();
+    } finally {
+      probe.dispose();
+    }
+  }
+
+  /** Resolves the configured secret name to its stored value through Obsidian's secret storage. */
+  private resolveServerPassword(passwordSecretName: string | undefined): string | undefined {
+    if (!passwordSecretName) return undefined;
+    const secret = this.app.secretStorage?.getSecret(passwordSecretName);
+    return typeof secret === "string" && secret ? secret : undefined;
   }
 
   /** Persists and immediately applies verbose developer-console diagnostics from the settings tab. */

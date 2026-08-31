@@ -81,6 +81,9 @@ export class SessionView extends ItemView {
     private readonly plugin: OpenCodePlugin,
   ) {
     super(leaf);
+    // Navigation view (like core web viewer/graph): makes Workspace.getActiveFileView() return null when this
+    // leaf is active, so "Delete current file" and status-bar file stats don't fall back to the last markdown leaf.
+    this.navigation = true;
     this.tabGroupParent = leaf.parent;
     this.scroll = new ScrollController({
       plugin: this.plugin,

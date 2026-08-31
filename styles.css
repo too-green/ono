@@ -206,6 +206,15 @@
   width: var(--icon-l);
 }
 
+/*
+ * Session header title is click-to-rename (contenteditable is applied while editing only).
+ * Mirror Obsidian's native editable-title I-beam cursor outside the editing state too, so
+ * hovering the title hints that it can be renamed just like a file name.
+ */
+.opencode-session-view-container .view-header-title {
+  cursor: text;
+}
+
 .opencode-status-badge--attention {
   color: var(--color-orange);
 }

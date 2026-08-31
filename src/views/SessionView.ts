@@ -39,6 +39,8 @@ export const VIEW_TYPE_OPENCODE_SESSION = "opencode-session";
 
 const INITIAL_MESSAGE_LIMIT = 30;
 const OLDER_MESSAGE_LIMIT = 100;
+/** How long the inline rename error tooltip (native `.tooltip.mod-error`) stays visible before auto-dismissing. */
+const TITLE_ERROR_TOOLTIP_MS = 4_000;
 
 interface SessionViewState {
   sessionId?: string;
@@ -67,6 +69,8 @@ export class SessionView extends ItemView {
   private canonicalRequestVersion = 0;
   private loadingSessionId?: string;
   private nativeTitleEl?: HTMLElement;
+  private titleErrorTooltip?: HTMLElement;
+  private titleErrorTimer?: number;
   private tabGroupParent: WorkspaceLeaf["parent"];
   private descendantChildrenCache = new Map<string, OpenCodeSession[]>();
   private descendantDiscoveryIncomplete = false;
@@ -360,6 +364,7 @@ export class SessionView extends ItemView {
     this.island.dispose();
     this.markdownPatcher.dispose();
     this.timeline.dispose();
+    this.dismissTitleErrorTooltip();
     this.nativeTitleEl?.removeEventListener("click", this.handleNativeTitleClick);
     this.nativeTitleEl = undefined;
     this.docks.dispose();
@@ -1160,7 +1165,8 @@ export class SessionView extends ItemView {
   private handleNativeSessionHotkeys = (event: KeyboardEvent): void => {
     if (!this.model.sessionId || this.app.workspace.activeLeaf !== this.leaf || event.repeat) return;
     const target = event.target instanceof Element ? event.target : undefined;
-    if (target?.closest(".view-header-title-input, .modal")) return;
+    const titleEditor = target?.closest<HTMLElement>(".view-header-title");
+    if (titleEditor?.isContentEditable || target?.closest(".modal")) return;
     if (matchesObsidianCommandHotkey(this.app, RENAME_CURRENT_FILE_COMMANDS, event)) {
       event.preventDefault();
       event.stopPropagation();
@@ -1300,7 +1306,8 @@ export class SessionView extends ItemView {
     const title = this.getDisplayText();
     const leafEl = this.containerEl.closest(".workspace-leaf");
     const currentTitleEl = leafEl?.querySelector<HTMLElement>(".view-header-title");
-    if (currentTitleEl?.querySelector(".view-header-title-input")) {
+    // Defer to an active inline rename so streamed refreshes cannot destroy the caret mid-edit.
+    if (currentTitleEl?.hasAttribute("contenteditable")) {
       this.decorateSessionHeader();
       return;
     }
@@ -1325,51 +1332,135 @@ export class SessionView extends ItemView {
 
   /** Starts inline rename when the native Obsidian title is clicked. */
   private handleNativeTitleClick = (event: MouseEvent): void => {
-    if (!this.nativeTitleEl || event.target instanceof HTMLInputElement) return;
-    this.beginInlineTitleRename(this.nativeTitleEl);
+    if (!this.nativeTitleEl || this.nativeTitleEl.hasAttribute("contenteditable")) return;
+    this.beginInlineTitleRename(this.nativeTitleEl, { x: event.clientX, y: event.clientY });
   };
 
-  /** Replaces a title handle with an inline editor that saves on Enter/blur and cancels on Escape. */
-  private beginInlineTitleRename(container: HTMLElement): void {
-    if (!this.model.sessionId || container.querySelector("input")) return;
+  /**
+   * Turns the native title into a contenteditable editor that mirrors Obsidian's file rename flow:
+   * caret lands where the user clicked, Enter/blur commits through the server, Escape reverts.
+   * Referenced by handleNativeTitleClick and session-view-title.dom.test.ts.
+   */
+  private beginInlineTitleRename(container: HTMLElement, clickPoint?: { x: number; y: number }): void {
+    if (!this.model.sessionId || container.hasAttribute("contenteditable")) return;
     const original = this.getDisplayText();
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "view-header-title-input";
-    input.value = original;
-    container.replaceChildren(input);
-    input.focus();
-    input.select();
+    this.dismissTitleErrorTooltip();
+    container.setAttribute("contenteditable", "true");
+    container.setAttribute("spellcheck", "false");
 
+    // AbortController-scoped listeners so the finished editor can never fire again.
+    const controller = new AbortController();
+    const { signal } = controller;
     let settled = false;
-    const finish = async (save: boolean): Promise<void> => {
+
+    /** Tears the editing state down before applying results so title refreshes are never deferred by a finished edit. */
+    const finish = (save: boolean): void => {
       if (settled) return;
       settled = true;
-      const next = input.value.trim();
-      if (!save || !next || next === original) {
+      controller.abort();
+      container.removeAttribute("contenteditable");
+      container.removeAttribute("spellcheck");
+      container.blur();
+      const next = (container.textContent ?? "").trim();
+      if (!save || !container.isConnected || !next || next === original) {
         this.applySessionTitle(original);
         return;
       }
-      input.disabled = true;
-      try {
-        await this.plugin.renameSession(this.model.sessionId!, next, this.model.sessionDirectory);
-      } catch (error) {
-        this.applySessionTitle(original);
-        new Notice(error instanceof Error ? error.message : "Unable to rename OpenCode session.");
-      }
+      void this.commitSessionTitle(original, next);
     };
-    input.addEventListener("keydown", (event) => {
-      event.stopPropagation();
-      if (event.key === "Enter") {
+
+    container.addEventListener(
+      "keydown",
+      (event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") {
+          event.preventDefault();
+          finish(true);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          finish(false);
+        }
+      },
+      { signal },
+    );
+    // Keep the single-line title plain text, matching Obsidian's plain-text paste handling for native rename.
+    container.addEventListener(
+      "paste",
+      (event) => {
         event.preventDefault();
-        void finish(true);
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        void finish(false);
-      }
-    });
-    input.addEventListener("blur", () => void finish(input.isConnected));
+        const text = event.clipboardData?.getData("text/plain")?.replace(/[\n\r\t]+/g, " ");
+        if (text) document.execCommand("insertText", false, text);
+      },
+      { signal },
+    );
+    container.addEventListener("blur", () => finish(container.isConnected), { signal });
+
+    this.focusTitleEditor(container, clickPoint);
+  }
+
+  /** Focuses the title editor with the caret at the clicked point, or with the whole title selected. */
+  private focusTitleEditor(container: HTMLElement, clickPoint?: { x: number; y: number }): void {
+    container.focus();
+    const selection = window.getSelection();
+    const doc = container.ownerDocument as Document & { caretRangeFromPoint?(x: number, y: number): Range | null };
+    const range = (clickPoint && doc.caretRangeFromPoint?.(clickPoint.x, clickPoint.y)) || null;
+    if (!range) {
+      const fallback = document.createRange();
+      fallback.selectNodeContents(container);
+      selection?.removeAllRanges();
+      selection?.addRange(fallback);
+      return;
+    }
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
+  /** Applies an inline rename through the plugin API; failures revert the title and surface a native error tooltip. */
+  private async commitSessionTitle(original: string, next: string): Promise<void> {
+    try {
+      await this.plugin.renameSession(this.model.sessionId!, next, this.model.sessionDirectory);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to rename OpenCode session.";
+      this.applySessionTitle(original);
+      this.showTitleErrorTooltip(message);
+    }
+  }
+
+  /** Shows Obsidian's native error tooltip under the title; auto-dismisses after TITLE_ERROR_TOOLTIP_MS. */
+  private showTitleErrorTooltip(message: string): void {
+    const title = this.containerEl.closest(".workspace-leaf")?.querySelector<HTMLElement>(".view-header-title");
+    if (!title) return;
+    this.dismissTitleErrorTooltip();
+    const tooltip = document.createElement("div");
+    tooltip.className = "tooltip mod-error mod-wide";
+    tooltip.textContent = message;
+    const arrow = document.createElement("div");
+    arrow.className = "tooltip-arrow";
+    tooltip.appendChild(arrow);
+    document.body.appendChild(tooltip);
+
+    // Native `.tooltip` styling is `position: fixed` + `translateX(-50%)`, so `left` is the horizontal center.
+    const gap = 8;
+    const margin = 12;
+    const rect = title.getBoundingClientRect();
+    const half = tooltip.offsetWidth / 2;
+    const centerX = rect.left + rect.width / 2;
+    const left = Math.min(Math.max(centerX, half + margin), document.documentElement.clientWidth - half - margin);
+    tooltip.style.top = `${rect.bottom + gap}px`;
+    tooltip.style.left = `${left}px`;
+
+    this.titleErrorTooltip = tooltip;
+    this.titleErrorTimer = window.setTimeout(() => this.dismissTitleErrorTooltip(), TITLE_ERROR_TOOLTIP_MS);
+  }
+
+  /** Removes the inline rename error tooltip and its auto-dismiss timer. */
+  private dismissTitleErrorTooltip(): void {
+    if (this.titleErrorTimer !== undefined) {
+      window.clearTimeout(this.titleErrorTimer);
+      this.titleErrorTimer = undefined;
+    }
+    this.titleErrorTooltip?.remove();
+    this.titleErrorTooltip = undefined;
   }
 
   /** Applies the current status to native tab and view-header icons. */

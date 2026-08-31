@@ -113,7 +113,16 @@ export function messageCompletedTime(bundle: OpenCodeMessageBundle): number | un
 export function elapsedDurationLabel(start: number | undefined, end: number | undefined): string | undefined {
   if (start === undefined || end === undefined || end < start) return undefined;
   const seconds = (end - start) / 1000;
-  return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;
+
+  // Sections: sub-minute precision, minutes+seconds, hours+minutes
+  if (seconds < 10) return `${seconds.toFixed(1)}s`;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const totalMinutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  if (totalMinutes < 60) return `${totalMinutes}m ${remainingSeconds}s`;
+  const hours = Math.floor(totalMinutes / 60);
+  const remainingMinutes = totalMinutes % 60;
+  return `${hours}h ${remainingMinutes}m`;
 }
 
 /** Joins reasoning text parts into a single string for the collapsed thought label. */

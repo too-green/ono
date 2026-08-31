@@ -759,6 +759,9 @@ export class SessionView extends ItemView {
       this.model.selectedModel = this.variants.resolveModelForSession({}, this.model.selectedAgent);
       this.model.sessionDirectory = directory;
       this.stream.subscribe(directory);
+      // Background syncs (e.g. another session's request notification) remount the draft shell;
+      // preserve an actively used composer exactly like the bound-session render path.
+      const composerState = this.composer.captureDomState();
       this.contentEl.empty();
       const shell = this.contentEl.createDiv({ cls: "opencode-session-view__shell opencode-session-view__shell--draft" });
       const body = shell.createDiv({ cls: "opencode-session-view__draft-body" });
@@ -766,7 +769,8 @@ export class SessionView extends ItemView {
       const bottomDock = shell.createDiv({ cls: "opencode-session-view__bottom-dock" });
       this.docks.mount(bottomDock);
       const promptPanel = this.island.mount(bottomDock);
-      this.composer.mount(promptPanel, {}, true);
+      this.composer.mount(promptPanel, {}, !composerState);
+      this.composer.restoreDomState(composerState);
       this.refreshLeafTitle();
     } catch (error) {
       if (this.sessionBindingVersion === bindingVersion && this.model.draftId === draftId && !this.model.sessionId) this.renderError(error);

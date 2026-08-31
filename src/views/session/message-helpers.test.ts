@@ -213,6 +213,16 @@ describe("elapsedDurationLabel", () => {
     expect(elapsedDurationLabel(0, 42_000)).toBe("42s");
   });
 
+  it("formats minute-scale durations as minutes and seconds", () => {
+    expect(elapsedDurationLabel(0, 2_500_000)).toBe("41m 40s");
+    expect(elapsedDurationLabel(0, 65_000)).toBe("1m 5s");
+  });
+
+  it("formats hour-scale durations as hours and minutes", () => {
+    expect(elapsedDurationLabel(0, 3_900_000)).toBe("1h 5m");
+    expect(elapsedDurationLabel(0, 7_500_000)).toBe("2h 5m");
+  });
+
   it("returns undefined when either endpoint missing", () => {
     expect(elapsedDurationLabel(0, undefined)).toBeUndefined();
     expect(elapsedDurationLabel(undefined, 100)).toBeUndefined();

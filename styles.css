@@ -505,6 +505,8 @@
   color: var(--text-muted);
   display: flex;
   flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--size-4-5);
   justify-content: center;
   min-height: 240px;
   padding: var(--size-4-8) var(--size-4-4);
@@ -515,6 +517,40 @@
   color: var(--text-normal);
   font-size: var(--font-ui-large);
   font-weight: var(--font-semibold);
+}
+
+.opencode-session-view__draft-context {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-smaller);
+  gap: var(--size-2-2);
+  margin: 0;
+  max-width: 640px;
+  text-align: left;
+  width: 100%;
+}
+
+.opencode-session-view__draft-context-row {
+  display: grid;
+  gap: var(--size-4-3);
+  grid-template-columns: 6rem minmax(0, 1fr);
+}
+
+.opencode-session-view__draft-context-label {
+  color: var(--text-faint);
+  font-weight: var(--font-medium);
+}
+
+.opencode-session-view__draft-context-value {
+  color: var(--text-muted);
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.opencode-session-view__draft-context-value.is-path {
+  font-family: var(--font-monospace);
 }
 
 .opencode-session-view__bottom-dock {

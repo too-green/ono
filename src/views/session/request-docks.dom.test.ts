@@ -59,6 +59,14 @@ function setup(autoApproveSessions: string[] = []) {
   return { model, plugin, service, controller, container, requestCanonicalSync };
 }
 
+/** Clicks one visible request-dock action by its label. */
+function clickAction(container: HTMLElement, text: string): void {
+  const button = Array.from(container.querySelectorAll<HTMLButtonElement>(".opencode-session-view__request-actions button"))
+    .find((candidate) => candidate.textContent === text);
+  if (!button) throw new Error(`Missing request action: ${text}`);
+  button.click();
+}
+
 describe("RequestDocksController descendant routing", () => {
   beforeEach(() => installObsidianDomMethods());
 
@@ -131,6 +139,51 @@ describe("RequestDocksController descendant routing", () => {
     expect(container.textContent).not.toContain("first");
     expect(container.textContent).toContain("Continue?");
     expect(container.textContent).not.toContain("pending");
+  });
+
+  it("shows a batched question request one step at a time and submits all answers", async () => {
+    const { controller, plugin, service, container } = setup();
+    controller.ingestQuestionAsked({
+      id: "question-batch",
+      sessionID: "parent",
+      questions: [
+        {
+          header: "Approach",
+          question: "How should this continue?",
+          multiple: false,
+          custom: false,
+          options: [{ label: "Carefully", description: "Keep state" }],
+        },
+        {
+          header: "Details",
+          question: "What else should be considered?",
+          multiple: false,
+          custom: true,
+          options: [],
+        },
+      ],
+    });
+
+    expect(container.textContent).toContain("Approach (1 of 2)");
+    expect(container.textContent).toContain("How should this continue?");
+    expect(container.textContent).not.toContain("What else should be considered?");
+    container.querySelector<HTMLInputElement>(".opencode-session-view__question-option input")!.checked = true;
+    clickAction(container, "Next");
+
+    expect(container.textContent).not.toContain("How should this continue?");
+    expect(container.textContent).toContain("Details (2 of 2)");
+    expect(container.textContent).toContain("What else should be considered?");
+    clickAction(container, "Previous");
+    expect(container.querySelector<HTMLInputElement>(".opencode-session-view__question-option input")!.checked).toBe(true);
+    clickAction(container, "Next");
+
+    container.querySelector<HTMLInputElement>(".opencode-session-view__question-custom")!.value = "Preserve focus";
+    clickAction(container, "Answer");
+
+    await vi.waitFor(() => {
+      expect(service.replyQuestion).toHaveBeenCalledWith("question-batch", [["Carefully"], ["Preserve focus"]], "/work");
+    });
+    expect(plugin.settleSessionRequest).toHaveBeenCalledWith("question-batch");
   });
 
   it("promotes a held request after descendant discovery confirms its owner", () => {

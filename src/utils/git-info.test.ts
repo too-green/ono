@@ -21,6 +21,30 @@ describe("readGitInfo", () => {
     expect(readGitInfo(dir)).toEqual({ branch: "feature/loop" });
   });
 
+  it("reads a GitHub repository identity from the origin remote", () => {
+    const dir = tempDir();
+    fs.mkdirSync(path.join(dir, ".git"));
+    fs.writeFileSync(path.join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.writeFileSync(path.join(dir, ".git", "config"), '[remote "origin"]\n\turl = git@github.com:openchamber/openchamber.git\n');
+
+    expect(readGitInfo(dir)).toEqual({ branch: "main", githubRepository: "openchamber/openchamber" });
+  });
+
+  it("falls back to another GitHub remote when origin is not GitHub", () => {
+    const dir = tempDir();
+    fs.mkdirSync(path.join(dir, ".git"));
+    fs.writeFileSync(path.join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.writeFileSync(path.join(dir, ".git", "config"), [
+      '[remote "upstream"]',
+      "\turl = https://github.com/anomalyco/opencode.git",
+      '[remote "origin"]',
+      "\turl = https://example.com/local.git",
+      "",
+    ].join("\n"));
+
+    expect(readGitInfo(dir)).toEqual({ branch: "main", githubRepository: "anomalyco/opencode" });
+  });
+
   it("reports a short sha with detached=true for a detached HEAD", () => {
     const dir = tempDir();
     fs.mkdirSync(path.join(dir, ".git"));
@@ -34,8 +58,9 @@ describe("readGitInfo", () => {
     const gitDir = path.join(main, ".git", "worktrees", "feature");
     fs.mkdirSync(gitDir, { recursive: true });
     fs.writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/feature\n");
+    fs.writeFileSync(path.join(main, ".git", "config"), '[remote "origin"]\n\turl = https://github.com/owner/repository.git\n');
     fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${gitDir}\n`);
-    expect(readGitInfo(worktree)).toEqual({ branch: "feature", worktreeOf: main });
+    expect(readGitInfo(worktree)).toEqual({ branch: "feature", githubRepository: "owner/repository", worktreeOf: main });
   });
 
   it("resolves a relative gitdir pointer against the worktree directory", () => {

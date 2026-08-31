@@ -23,6 +23,17 @@ type PendingSessionRequest =
   | { kind: "permission"; request: OpenCodePermissionRequest }
   | { kind: "question"; request: OpenCodeQuestionRequest };
 
+interface QuestionAnswerDraft {
+  selectedOptions: string[];
+  custom: string;
+}
+
+interface QuestionRequestProgress {
+  signature: string;
+  activeIndex: number;
+  drafts: QuestionAnswerDraft[];
+}
+
 /**
  * Owns the permission and question request docks above the composer.
  *
@@ -39,6 +50,7 @@ export class RequestDocksController {
   private activeRequestId?: string;
   private nextRequestOrder = 0;
   private readonly requestOrderById = new Map<string, number>();
+  private readonly questionProgressById = new Map<string, QuestionRequestProgress>();
 
   constructor(private readonly deps: RequestDocksDeps) {}
 
@@ -60,6 +72,7 @@ export class RequestDocksController {
   resetQueue(): void {
     this.activeRequestId = undefined;
     this.requestOrderById.clear();
+    this.questionProgressById.clear();
     this.nextRequestOrder = 0;
   }
 
@@ -205,6 +218,7 @@ export class RequestDocksController {
     model.unscopedPendingPermissions = model.unscopedPendingPermissions.filter((item) => item.id !== requestId);
     model.unscopedPendingQuestions = model.unscopedPendingQuestions.filter((item) => item.id !== requestId);
     this.requestOrderById.delete(requestId);
+    this.questionProgressById.delete(requestId);
     if (this.activeRequestId === requestId) this.activeRequestId = undefined;
     this.recordRequestMutation(requestId);
   }
@@ -233,6 +247,7 @@ export class RequestDocksController {
   /** Renders only the active permission or question while retaining the rest as a queue. */
   private renderRequestDocks(container: HTMLElement): void {
     const requests = this.pendingRequestsInQueueOrder();
+    this.pruneQuestionProgress(requests);
     container.toggleClass("is-empty", requests.length === 0);
     if (requests.length === 0) {
       this.activeRequestId = undefined;
@@ -288,7 +303,12 @@ export class RequestDocksController {
   }
 
   /** Assigns stable request identity and a render signature excluding transient form state. */
-  private annotateRequestDock(dock: HTMLElement, kind: "permission" | "question", request: OpenCodePermissionRequest | OpenCodeQuestionRequest): void {
+  private annotateRequestDock(
+    dock: HTMLElement,
+    kind: "permission" | "question",
+    request: OpenCodePermissionRequest | OpenCodeQuestionRequest,
+    interactionState?: unknown,
+  ): void {
     dock.dataset.requestKey = `${kind}:${request.id}`;
     const ownerTitle = request.sessionID === this.deps.model.sessionId
       ? undefined
@@ -296,7 +316,7 @@ export class RequestDocksController {
     const visibleState = kind === "permission"
       ? [(request as OpenCodePermissionRequest).permission, (request as OpenCodePermissionRequest).patterns]
       : (request as OpenCodeQuestionRequest).questions;
-    dock.dataset.requestSignature = hashRenderState(JSON.stringify([kind, request.sessionID, visibleState, ownerTitle]));
+    dock.dataset.requestSignature = hashRenderState(JSON.stringify([kind, request.sessionID, visibleState, ownerTitle, interactionState]));
   }
 
   /** Excludes centrally evaluating, auto-responding, and stale settled permission snapshots. */
@@ -335,10 +355,13 @@ export class RequestDocksController {
     this.renderRequestButton(actions, "Allow once", "mod-cta", responding, () => void this.replyPermission(request, "once"));
   }
 
-  /** Renders one question request, supporting single-select, multi-select, and custom answers. */
+  /** Renders one question from a batched request while retaining answers collected on other steps. */
   private renderQuestionDock(container: HTMLElement, request: OpenCodeQuestionRequest, pendingCount: number): void {
+    const progress = this.questionProgress(request);
+    const questionIndex = progress.activeIndex;
+    const question = request.questions[questionIndex];
     const dock = container.createDiv({ cls: "opencode-session-view__request-dock opencode-session-view__request-dock--question" });
-    this.annotateRequestDock(dock, "question", request);
+    this.annotateRequestDock(dock, "question", request, questionIndex);
     const header = dock.createDiv({ cls: "opencode-session-view__request-header" });
     header.createDiv({
       text: this.requestTitle("Question from OpenCode", pendingCount),
@@ -346,31 +369,98 @@ export class RequestDocksController {
     });
     this.renderRequestOwner(header, request.sessionID);
     const form = dock.createDiv({ cls: "opencode-session-view__question-form" });
-    const answerControls: Array<() => string[]> = [];
+    let readDraft: (() => QuestionAnswerDraft) | undefined;
 
-    request.questions.forEach((question, index) => {
+    if (!question) {
+      form.createDiv({ text: "OpenCode did not provide question details.", cls: "opencode-session-view__question-text" });
+    } else {
+      const draft = progress.drafts[questionIndex]!;
       const block = form.createDiv({ cls: "opencode-session-view__question-block" });
-      block.createDiv({ text: question.header || `Question ${index + 1}`, cls: "opencode-session-view__question-header" });
+      block.createDiv({ text: this.questionStepTitle(question.header, questionIndex, request.questions.length), cls: "opencode-session-view__question-header" });
       block.createDiv({ text: question.question, cls: "opencode-session-view__question-text" });
       const options = block.createDiv({ cls: "opencode-session-view__question-options" });
       const inputs: HTMLInputElement[] = [];
       for (const option of question.options ?? []) {
         const label = options.createEl("label", { cls: "opencode-session-view__question-option" });
-        const input = label.createEl("input", { type: question.multiple ? "checkbox" : "radio", attr: { name: `${request.id}-${index}` } });
+        const input = label.createEl("input", { type: question.multiple ? "checkbox" : "radio", attr: { name: `${request.id}-${questionIndex}` } });
         input.value = option.label;
+        input.checked = draft.selectedOptions.includes(option.label);
         inputs.push(input);
         const text = label.createSpan({ cls: "opencode-session-view__question-option-text" });
         text.createSpan({ text: option.label, cls: "opencode-session-view__question-option-label" });
         if (option.description) text.createSpan({ text: option.description, cls: "opencode-session-view__question-option-description" });
       }
       const custom = question.custom === false ? undefined : block.createEl("input", { cls: "opencode-session-view__question-custom", attr: { type: "text", placeholder: "Custom answer…" } });
-      answerControls.push(() => [...inputs.filter((input) => input.checked).map((input) => input.value), custom?.value.trim()].filter((item): item is string => !!item));
-    });
+      if (custom) custom.value = draft.custom;
+      readDraft = () => ({
+        selectedOptions: inputs.filter((input) => input.checked).map((input) => input.value),
+        custom: custom?.value.trim() ?? "",
+      });
+    }
 
     const actions = dock.createDiv({ cls: "opencode-session-view__request-actions" });
     const responding = this.deps.plugin.isSessionRequestResponding(request.id);
     this.renderRequestButton(actions, "Reject", "", responding, () => void this.rejectQuestion(request));
-    this.renderRequestButton(actions, "Answer", "mod-cta", responding, () => void this.replyQuestion(request, answerControls.map((readAnswer) => readAnswer())));
+    if (!readDraft) {
+      this.renderRequestButton(actions, "Answer", "mod-cta", responding, () => void this.replyQuestion(request, []));
+      return;
+    }
+    if (questionIndex > 0) {
+      this.renderRequestButton(actions, "Previous", "", responding, () => this.navigateQuestion(progress, readDraft, questionIndex - 1, false));
+    }
+    if (questionIndex < request.questions.length - 1) {
+      this.renderRequestButton(actions, "Next", "mod-cta", responding, () => this.navigateQuestion(progress, readDraft, questionIndex + 1, true));
+      return;
+    }
+    this.renderRequestButton(actions, "Answer", "mod-cta", responding, () => {
+      progress.drafts[questionIndex] = readDraft();
+      void this.replyQuestion(request, progress.drafts.map((draft) => this.questionAnswer(draft)));
+    });
+  }
+
+  /** Returns or initializes local navigation and answer state for one question request. */
+  private questionProgress(request: OpenCodeQuestionRequest): QuestionRequestProgress {
+    const signature = hashRenderState(JSON.stringify(request.questions));
+    const existing = this.questionProgressById.get(request.id);
+    if (existing?.signature === signature) return existing;
+    const progress: QuestionRequestProgress = {
+      signature,
+      activeIndex: 0,
+      drafts: request.questions.map(() => ({ selectedOptions: [], custom: "" })),
+    };
+    this.questionProgressById.set(request.id, progress);
+    return progress;
+  }
+
+  /** Removes draft state after its question request leaves the shared pending queue. */
+  private pruneQuestionProgress(requests: PendingSessionRequest[]): void {
+    const pendingQuestionIds = new Set(requests.filter((item) => item.kind === "question").map((item) => item.request.id));
+    for (const requestId of this.questionProgressById.keys()) {
+      if (!pendingQuestionIds.has(requestId)) this.questionProgressById.delete(requestId);
+    }
+  }
+
+  /** Formats the visible question's label with batch progress when more steps remain. */
+  private questionStepTitle(header: string, questionIndex: number, questionCount: number): string {
+    if (questionCount <= 1) return header || "Question 1";
+    return header ? `${header} (${questionIndex + 1} of ${questionCount})` : `Question ${questionIndex + 1} of ${questionCount}`;
+  }
+
+  /** Saves the current draft and moves backward or forward within a question batch. */
+  private navigateQuestion(progress: QuestionRequestProgress, readDraft: () => QuestionAnswerDraft, nextIndex: number, requireAnswer: boolean): void {
+    const draft = readDraft();
+    if (requireAnswer && this.questionAnswer(draft).length === 0) {
+      new Notice("Answer this question before continuing.");
+      return;
+    }
+    progress.drafts[progress.activeIndex] = draft;
+    progress.activeIndex = nextIndex;
+    this.refresh();
+  }
+
+  /** Converts the richer UI draft into the ordered answer array required by OpenCode. */
+  private questionAnswer(draft: QuestionAnswerDraft): OpenCodeQuestionAnswer {
+    return [...draft.selectedOptions, draft.custom].filter((item) => !!item);
   }
 
   /** Adds a compact queue count without rendering the waiting request dialogs. */

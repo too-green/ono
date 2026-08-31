@@ -4,6 +4,7 @@ import { SessionView } from "./SessionView";
 import { SessionViewModel } from "./session/session-view-model";
 import { ComposerController, type ComposerDeps } from "./session/composer/composer-controller";
 import type OpenCodePlugin from "../../main";
+import * as gitInfo from "../utils/git-info";
 
 type DomOptions = { text?: string; cls?: string; attr?: Record<string, string> };
 
@@ -51,6 +52,7 @@ function setup(): DraftViewHarness {
     listModels: vi.fn(async () => []),
     listCommands: vi.fn(async () => []),
     getConfig: vi.fn(async () => ({})),
+    getCurrentProject: vi.fn(async () => ({ id: "project-1", worktree: "/workspace", vcs: "git" })),
   };
   const plugin = {
     settings,
@@ -140,6 +142,27 @@ describe("SessionView draft composer stability", () => {
     expect(remounted.selectionEnd).toBe(9);
     expect(remounted.selectionDirection).toBe("backward");
     expect(document.activeElement).toBe(remounted);
+  });
+
+  it("shows the target directory and GitHub context before the session starts", async () => {
+    vi.spyOn(gitInfo, "readGitInfo").mockReturnValue({
+      branch: "feature/new-session-context",
+      githubRepository: "owner/obsidian-opencode-plugin",
+    });
+    const view = setup();
+
+    await view.renderDraftSession();
+
+    const rows = new Map(Array.from(view.contentEl.querySelectorAll<HTMLElement>(".opencode-session-view__draft-context-row"), (row) => [
+      row.querySelector("dt")?.textContent,
+      row.querySelector("dd")?.textContent,
+    ]));
+    expect(rows).toEqual(new Map([
+      ["Directory", "/workspace"],
+      ["Repository", "owner/obsidian-opencode-plugin"],
+      ["Branch", "feature/new-session-context"],
+    ]));
+    expect(view.contentEl.querySelector(".opencode-session-view__draft-context-value.is-path")?.getAttribute("title")).toBe("/workspace");
   });
 
   it("focuses the draft composer only on the first mount", async () => {

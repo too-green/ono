@@ -34,6 +34,7 @@ import { StreamController } from "./session/streaming/stream-controller";
 import { TimelineRenderer } from "./session/streaming/timeline-renderer";
 import { SessionIslandController } from "./session/session-island-controller";
 import { getIdeOrDefault } from "../utils/ide-launcher";
+import { readGitInfo, type GitInfo } from "../utils/git-info";
 
 export const VIEW_TYPE_OPENCODE_SESSION = "opencode-session";
 
@@ -752,11 +753,12 @@ export class SessionView extends ItemView {
     try {
       this.composer.persistDraft();
       const service = this.plugin.requireOpenCodeService();
-      const [agents, models, commands, config] = await Promise.all([
+      const [agents, models, commands, config, project] = await Promise.all([
         service.listAgents(directory),
         service.listModels(directory).catch(logServiceError([], "listModels")),
         service.listCommands(directory).catch(logServiceError([], "listCommands")),
         service.getConfig().catch(logServiceError({}, "getConfig")),
+        service.getCurrentProject(directory).catch(logServiceError(undefined, "getCurrentProject")),
       ]);
       if (this.sessionBindingVersion !== bindingVersion || this.model.draftId !== draftId || this.model.sessionId) return;
       this.model.availableAgents = agents;
@@ -774,6 +776,7 @@ export class SessionView extends ItemView {
       const shell = this.contentEl.createDiv({ cls: "opencode-session-view__shell opencode-session-view__shell--draft" });
       const body = shell.createDiv({ cls: "opencode-session-view__draft-body" });
       body.createDiv({ text: "What would you like to work on?", cls: "opencode-session-view__draft-title" });
+      this.renderDraftContext(body, directory, readGitInfo(project?.worktree ?? directory));
       const bottomDock = shell.createDiv({ cls: "opencode-session-view__bottom-dock" });
       this.docks.mount(bottomDock);
       const promptPanel = this.island.mount(bottomDock);
@@ -782,6 +785,25 @@ export class SessionView extends ItemView {
       this.refreshLeafTitle();
     } catch (error) {
       if (this.sessionBindingVersion === bindingVersion && this.model.draftId === draftId && !this.model.sessionId) this.renderError(error);
+    }
+  }
+
+  /** Renders the working directory and available GitHub context in the new-session empty state. */
+  private renderDraftContext(container: HTMLElement, directory: string, git: GitInfo | undefined): void {
+    const rows = [
+      { label: "Directory", value: directory, path: true },
+      { label: "Repository", value: git?.githubRepository },
+      { label: git?.detached ? "Detached at" : "Branch", value: git?.branch },
+    ].filter((row): row is { label: string; value: string; path?: boolean } => !!row.value);
+    const context = container.createEl("dl", { cls: "opencode-session-view__draft-context" });
+    for (const row of rows) {
+      const item = context.createDiv({ cls: "opencode-session-view__draft-context-row" });
+      item.createEl("dt", { text: row.label, cls: "opencode-session-view__draft-context-label" });
+      item.createEl("dd", {
+        text: row.value,
+        cls: `opencode-session-view__draft-context-value${row.path ? " is-path" : ""}`,
+        attr: row.path ? { title: row.value } : undefined,
+      });
     }
   }
 

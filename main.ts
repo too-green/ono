@@ -1,6 +1,7 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import {
   DEFAULT_OPENCODE_SETTINGS,
+  OPENCODE_DATA_SCHEMA_VERSION,
   OpenCodeSettingTab,
   normalizeAgentPanelSessionSort,
   normalizeDebugLogging,
@@ -12,9 +13,12 @@ import {
   normalizeServerBaseUrl,
   normalizeServerUsername,
   normalizeSessionIslandContextLabel,
+  normalizePersistedSessionStates,
   normalizeTodoStatusCharacter,
   type ComposerAttachment,
+  type OpenCodePluginData,
   type OpenCodePluginSettings,
+  type PersistedSessionState,
 } from "./src/settings";
 import { OpenCodeService, type OpenCodeServerConfig } from "./src/services/opencode-service";
 import type { OpenCodeEventSubscription } from "./src/services/opencode-events";
@@ -31,7 +35,7 @@ import { SessionHierarchy } from "./src/session-hierarchy";
 import { muteOverrideForState, resolveSessionNotificationState } from "./src/session-notification-state";
 import { getIdeOrDefault, launchIde } from "./src/utils/ide-launcher";
 import { nextAvailableForkTitle } from "./src/session-fork";
-import { logServiceError } from "./src/services/opencode-http";
+import { logServiceError, OpenCodeHttpError } from "./src/services/opencode-http";
 import { logger } from "./src/logger";
 import { eligibleRetryActionKey, safeRetryActionLink, type SessionRetryAction } from "./src/session-retry-action";
 
@@ -44,12 +48,21 @@ export default class OpenCodePlugin extends Plugin {
   private notificationService?: SessionNotificationService;
   private notificationEventSubscriptions = new Map<string, OpenCodeEventSubscription>();
   private debugLoggingSaveQueue: Promise<void> = Promise.resolve();
+  private settingsSaveQueue: Promise<void> = Promise.resolve();
+  private sessionStatePruneQueue: Promise<void> = Promise.resolve();
+  private sessionStatePruneTimer?: number;
+  private pendingDraftPrune = false;
   private retryActionModalOpen = false;
+  private layoutReady = false;
+  private unloading = false;
+  private forgottenSessionIds = new Set<string>();
+  private retiredDraftIds = new Set<string>();
+  private sessionState: Pick<OpenCodePluginData, "sessions" | "drafts"> = { sessions: {}, drafts: {} };
   private readonly sessionHierarchy = new SessionHierarchy({
     getSession: (sessionId, directory) => this.requireOpenCodeService().getSession(sessionId, directory),
   });
   private permissionCoordinator = new PermissionCoordinator({
-    getSettings: () => this.settings.sessionAutoApprove,
+    getSettings: () => this.sessionAutoApproveOverrides(),
     getService: () => this.requireOpenCodeService(),
     hierarchy: this.sessionHierarchy,
     onSurface: (request, directory) => this.surfacePermissionRequest(request, directory),
@@ -63,6 +76,8 @@ export default class OpenCodePlugin extends Plugin {
 
   /** Initializes plugin settings and the OpenCode API service used by future UI views. */
   async onload(): Promise<void> {
+    this.layoutReady = false;
+    this.unloading = false;
     await this.loadSettings();
     this.opencode = new OpenCodeService(this.settings.server);
     logger.setDebugEnabled(this.settings.debugLogging);
@@ -85,7 +100,11 @@ export default class OpenCodePlugin extends Plugin {
     this.registerView(VIEW_TYPE_OPENCODE_AGENT_PANEL, (leaf) => new AgentPanelView(leaf, this));
     this.registerView(VIEW_TYPE_OPENCODE_SESSION, (leaf) => new SessionView(leaf, this));
     this.addSettingTab(new OpenCodeSettingTab(this.app, this));
-    this.app.workspace.onLayoutReady(() => this.app.workspace.detachLeavesOfType(LEGACY_DIFF_PANEL_VIEW_TYPE));
+    this.app.workspace.onLayoutReady(() => {
+      this.layoutReady = true;
+      this.app.workspace.detachLeavesOfType(LEGACY_DIFF_PANEL_VIEW_TYPE);
+      this.scheduleSessionStatePrune(0, true);
+    });
 
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
@@ -193,6 +212,9 @@ export default class OpenCodePlugin extends Plugin {
   /** Detaches plugin-owned views before releasing service resources during unload or reload. */
   onunload(): void {
     logger.debug("lifecycle", "unloading");
+    this.unloading = true;
+    if (this.sessionStatePruneTimer !== undefined) window.clearTimeout(this.sessionStatePruneTimer);
+    this.sessionStatePruneTimer = undefined;
     logger.setDebugEnabled(false);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_SESSION);
@@ -219,6 +241,7 @@ export default class OpenCodePlugin extends Plugin {
     for (const directory of directories) {
       if (this.notificationEventSubscriptions.has(directory)) continue;
       const subscription = this.requireOpenCodeService().subscribeToEvents({
+        onOpen: () => this.reconcileSessionStateAfterReconnect(),
         onEvent: (event) => this.handleNotificationEvent(event, directory),
       }, directory);
       this.notificationEventSubscriptions.set(directory, subscription);
@@ -234,6 +257,14 @@ export default class OpenCodePlugin extends Plugin {
   /** Centrally routes request and lifecycle events needed even when no plugin view is mounted. */
   private handleNotificationEvent(event: OpenCodeEvent, directory: string): void {
     const properties = event.properties;
+    const info = properties?.info;
+    const session = info && typeof info === "object" && !Array.isArray(info) ? info as JsonObject : undefined;
+    const sessionId = session ? this.readEventString(session, ["id"]) : properties ? this.readEventString(properties, ["sessionID", "sessionId"]) : undefined;
+    const time = session?.time;
+    const archived = time && typeof time === "object" && !Array.isArray(time) && typeof (time as JsonObject).archived === "number";
+    if (sessionId && (event.type === "session.deleted" || (event.type === "session.updated" && archived))) {
+      void this.forgetSessionState([sessionId]).catch((error) => logger.warn("settings", "session lifecycle cleanup failed", { error }));
+    }
     if (event.type === "permission.asked" && properties) {
       this.routePermissionRequest(properties as OpenCodePermissionRequest, directory);
     } else if (event.type === "question.asked" && properties) {
@@ -367,6 +398,11 @@ export default class OpenCodePlugin extends Plugin {
       const message = error instanceof Error ? error.message : "Unable to archive OpenCode session.";
       new Notice(archivedIds.size > 0 ? `Archived ${archivedIds.size} descendant sessions before archival stopped: ${message}` : message);
     } finally {
+      try {
+        await this.forgetSessionState(archivedIds);
+      } catch (error) {
+        logger.warn("settings", "archived session cleanup failed", { error });
+      }
       this.closeSessionTabs(archivedIds);
       this.archivingSessionIds.delete(sessionId);
     }
@@ -437,7 +473,16 @@ export default class OpenCodePlugin extends Plugin {
 
   /** Loads persisted settings, falling back to localhost:4096 for external OpenCode servers. */
   private async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_OPENCODE_SETTINGS, await this.loadData());
+    const rawData = await this.loadData() as unknown;
+    const data = rawData && typeof rawData === "object" && !Array.isArray(rawData) && (rawData as Record<string, unknown>).schemaVersion === OPENCODE_DATA_SCHEMA_VERSION
+      ? rawData as Partial<OpenCodePluginData>
+      : undefined;
+    const preferences = data?.preferences && typeof data.preferences === "object" ? data.preferences : {};
+    this.settings = Object.assign({}, DEFAULT_OPENCODE_SETTINGS, preferences);
+    this.sessionState = {
+      sessions: normalizePersistedSessionStates(data?.sessions),
+      drafts: normalizePersistedSessionStates(data?.drafts),
+    };
     this.settings.openedDirectories = Array.isArray(this.settings.openedDirectories) ? this.settings.openedDirectories : [];
     this.settings.groupContextTools = this.settings.groupContextTools === true;
     this.settings.showReasoningBlocks = this.settings.showReasoningBlocks !== false;
@@ -445,23 +490,7 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.todoInProgressStatusCharacter = normalizeTodoStatusCharacter(this.settings.todoInProgressStatusCharacter);
     this.settings.openIde = normalizeOpenIde(this.settings.openIde);
     this.settings.archiveConfirmation = this.settings.archiveConfirmation !== false;
-    this.settings.sessionScroll = this.settings.sessionScroll && typeof this.settings.sessionScroll === "object" ? this.settings.sessionScroll : {};
-    this.settings.sessionDrafts = this.settings.sessionDrafts && typeof this.settings.sessionDrafts === "object" ? this.settings.sessionDrafts : {};
-    this.settings.sessionAgentChoices =
-      this.settings.sessionAgentChoices && typeof this.settings.sessionAgentChoices === "object" ? this.settings.sessionAgentChoices : {};
-    this.settings.sessionModelChoices =
-      this.settings.sessionModelChoices && typeof this.settings.sessionModelChoices === "object" ? this.settings.sessionModelChoices : {};
     this.settings.defaultSessionAutoApprove = this.settings.defaultSessionAutoApprove === true;
-    this.settings.sessionAutoApprove =
-      this.settings.sessionAutoApprove && typeof this.settings.sessionAutoApprove === "object" ? this.settings.sessionAutoApprove : {};
-    this.settings.sessionAutoApproveDefaultApplied = this.settings.sessionAutoApproveDefaultApplied && typeof this.settings.sessionAutoApproveDefaultApplied === "object"
-      ? Object.fromEntries(Object.entries(this.settings.sessionAutoApproveDefaultApplied).filter(([, applied]) => applied === true))
-      : {};
-    for (const sessionId of Object.keys(this.settings.sessionAutoApprove)) this.settings.sessionAutoApproveDefaultApplied[sessionId] = true;
-    this.settings.sessionMute = this.settings.sessionMute && typeof this.settings.sessionMute === "object" ? this.settings.sessionMute : {};
-    this.settings.sessionAttachedFiles =
-      this.settings.sessionAttachedFiles && typeof this.settings.sessionAttachedFiles === "object" ? this.settings.sessionAttachedFiles : {};
-    this.settings.sessionUnread = this.settings.sessionUnread && typeof this.settings.sessionUnread === "object" ? this.settings.sessionUnread : {};
     this.settings.notificationMode = normalizeNotificationMode(this.settings.notificationMode);
     this.settings.notifyOnAttention = this.settings.notifyOnAttention !== false;
     this.settings.notifyOnSessionError = this.settings.notifyOnSessionError !== false;
@@ -493,19 +522,33 @@ export default class OpenCodePlugin extends Plugin {
       passwordSecretName,
       password: this.resolveServerPassword(passwordSecretName),
     };
+    if (!data) await this.saveSettings();
   }
 
   /** Writes plugin settings to Obsidian's plugin data file without the resolved password; referenced by settings mutations. */
   async saveSettings(): Promise<void> {
     const { password: _password, ...server } = this.settings.server;
-    await this.saveData({ ...this.settings, server });
+    const data = JSON.parse(JSON.stringify({
+      schemaVersion: OPENCODE_DATA_SCHEMA_VERSION,
+      preferences: { ...this.settings, server },
+      sessions: this.sessionState.sessions,
+      drafts: this.sessionState.drafts,
+    })) as OpenCodePluginData;
+    const save = (this.settingsSaveQueue ?? Promise.resolve()).then(() => this.saveData(data));
+    this.settingsSaveQueue = save.catch(() => undefined);
+    await save;
   }
 
   /** Applies settings-tab server changes, resolves the named secret, and reconnects the service and views. */
   async applyServerConfig(baseUrl: string, username: string | undefined, passwordSecretName: string | undefined): Promise<void> {
     const secretName = normalizeServerUsername(passwordSecretName);
+    const normalizedBaseUrl = normalizeServerBaseUrl(baseUrl);
+    if (this.settings.server.baseUrl !== normalizedBaseUrl) {
+      if (this.sessionState) this.sessionState.sessions = {};
+      this.forgottenSessionIds?.clear();
+    }
     this.settings.server = {
-      baseUrl: normalizeServerBaseUrl(baseUrl),
+      baseUrl: normalizedBaseUrl,
       username: normalizeServerUsername(username),
       passwordSecretName: secretName,
       password: this.resolveServerPassword(secretName),
@@ -638,48 +681,175 @@ export default class OpenCodePlugin extends Plugin {
     return [...tree.children.flatMap((child) => this.flattenArchiveTargets(child)), ...(tree.archived ? [] : [tree])];
   }
 
-  /** Persists lightweight per-session scroll state; referenced by SessionView scroll listeners. */
-  async rememberSessionScroll(sessionId: string, state: { top: number; atBottom: boolean }): Promise<void> {
-    this.settings.sessionScroll[sessionId] = state;
+  /** Resolves a storage key to its server-session or client-draft state collection. */
+  private sessionStateAddress(sessionId: string): { states: Record<string, PersistedSessionState>; id: string } {
+    if (sessionId.startsWith("draft:")) return { states: this.sessionState.drafts, id: sessionId.slice("draft:".length) };
+    return { states: this.sessionState.sessions, id: sessionId };
+  }
+
+  /** Returns persisted local state for a server session or client-only draft. */
+  private readSessionState(sessionId: string): PersistedSessionState | undefined {
+    const { states, id } = this.sessionStateAddress(sessionId);
+    return states[id];
+  }
+
+  /** Mutates, compacts, and persists one server-session or client-draft record. */
+  private async mutateSessionState(sessionId: string, mutate: (state: PersistedSessionState) => void): Promise<void> {
+    const draftId = sessionId.startsWith("draft:") ? sessionId.slice("draft:".length) : undefined;
+    if (draftId ? this.retiredDraftIds?.has(draftId) : this.forgottenSessionIds?.has(sessionId)) return;
+    const { states, id } = this.sessionStateAddress(sessionId);
+    const existing = states[id];
+    const state: PersistedSessionState = {
+      ...existing,
+      composer: existing?.composer ? { ...existing.composer } : undefined,
+    };
+    mutate(state);
+    if (state.composer && Object.keys(state.composer).length === 0) delete state.composer;
+    if (Object.keys(state).length === 0) delete states[id];
+    else states[id] = state;
     await this.saveSettings();
+  }
+
+  /** Builds the explicit boolean override map consumed by permission inheritance. */
+  private sessionAutoApproveOverrides(): Record<string, boolean> {
+    const overrides: Record<string, boolean> = {};
+    for (const [sessionId, state] of Object.entries(this.sessionState.sessions)) {
+      if (typeof state.autoApprove === "boolean") overrides[sessionId] = state.autoApprove;
+    }
+    for (const [draftId, state] of Object.entries(this.sessionState.drafts)) {
+      if (typeof state.autoApprove === "boolean") overrides[`draft:${draftId}`] = state.autoApprove;
+    }
+    return overrides;
+  }
+
+  /** Removes all local state owned by archived or deleted server sessions. */
+  async forgetSessionState(sessionIds: Iterable<string>): Promise<void> {
+    let changed = false;
+    const forgottenSessionIds = this.forgottenSessionIds ??= new Set<string>();
+    for (const sessionId of sessionIds) {
+      forgottenSessionIds.add(sessionId);
+      if (!Object.prototype.hasOwnProperty.call(this.sessionState.sessions, sessionId)) continue;
+      delete this.sessionState.sessions[sessionId];
+      changed = true;
+    }
+    if (changed) await this.saveSettings();
+  }
+
+  /** Removes an abandoned client-only draft after its tab closes. */
+  async discardSessionDraft(draftId: string): Promise<void> {
+    (this.retiredDraftIds ??= new Set<string>()).add(draftId);
+    if (!Object.prototype.hasOwnProperty.call(this.sessionState.drafts, draftId)) return;
+    delete this.sessionState.drafts[draftId];
+    await this.saveSettings();
+  }
+
+  /** Returns whether view closure is caused by plugin unload rather than an abandoned tab. */
+  isUnloadingSessionViews(): boolean {
+    return this.unloading;
+  }
+
+  /** Returns whether a live server session may still persist unsent composer state. */
+  shouldPersistSessionState(sessionId: string): boolean {
+    return !this.forgottenSessionIds?.has(sessionId);
+  }
+
+  /** Schedules server-session reconciliation after any directory stream reconnects. */
+  reconcileSessionStateAfterReconnect(): void {
+    if (this.layoutReady) this.scheduleSessionStatePrune();
+  }
+
+  /** Debounces canonical cleanup after layout readiness and SSE reconnects. */
+  private scheduleSessionStatePrune(delay = 250, includeDrafts = false): void {
+    this.pendingDraftPrune ||= includeDrafts;
+    if (this.sessionStatePruneTimer !== undefined) window.clearTimeout(this.sessionStatePruneTimer);
+    this.sessionStatePruneTimer = window.setTimeout(() => {
+      this.sessionStatePruneTimer = undefined;
+      const pruneDrafts = this.pendingDraftPrune;
+      this.pendingDraftPrune = false;
+      this.sessionStatePruneQueue = (this.sessionStatePruneQueue ?? Promise.resolve())
+        .then(() => this.pruneStaleSessionState(pruneDrafts))
+        .catch((error) => logger.warn("settings", "session state cleanup failed", { error }));
+    }, delay);
+  }
+
+  /** Reconciles persisted records against canonical sessions and optionally restored draft tabs. */
+  private async pruneStaleSessionState(includeDrafts = true): Promise<void> {
+    let changed = false;
+    if (includeDrafts) {
+      const activeDraftIds = new Set(this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION).flatMap((leaf) => {
+        const draftId = leaf.getViewState().state?.draftId;
+        return typeof draftId === "string" ? [draftId] : [];
+      }));
+      for (const draftId of Object.keys(this.sessionState.drafts)) {
+        if (activeDraftIds.has(draftId)) continue;
+        (this.retiredDraftIds ??= new Set<string>()).add(draftId);
+        delete this.sessionState.drafts[draftId];
+        changed = true;
+      }
+    }
+
+    const sessionIds = Object.keys(this.sessionState.sessions);
+    for (let index = 0; index < sessionIds.length; index += 20) {
+      const staleIds = await Promise.all(sessionIds.slice(index, index + 20).map(async (sessionId) => {
+        try {
+          const session = await this.requireOpenCodeService().getSession(sessionId);
+          return typeof session.time?.archived === "number" ? sessionId : undefined;
+        } catch (error) {
+          return error instanceof OpenCodeHttpError && error.status === 404 ? sessionId : undefined;
+        }
+      }));
+      for (const sessionId of staleIds) {
+        if (!sessionId) continue;
+        (this.forgottenSessionIds ??= new Set<string>()).add(sessionId);
+        delete this.sessionState.sessions[sessionId];
+        changed = true;
+      }
+    }
+    if (changed) await this.saveSettings();
   }
 
   /** Persists the unsent composer text for a session; referenced by SessionView input events. */
   async rememberSessionDraft(sessionId: string, draft: string): Promise<void> {
-    if (draft.trim()) this.settings.sessionDrafts[sessionId] = draft;
-    else delete this.settings.sessionDrafts[sessionId];
-    await this.saveSettings();
+    await this.mutateSessionState(sessionId, (state) => {
+      const composer = { ...state.composer };
+      if (draft.trim()) composer.text = draft;
+      else delete composer.text;
+      state.composer = Object.keys(composer).length > 0 ? composer : undefined;
+    });
   }
 
-  /** Persists the selected composer agent for a session; referenced by SessionView agent menu. */
-  async rememberSessionAgentChoice(sessionId: string, agent: string): Promise<void> {
-    if (agent) this.settings.sessionAgentChoices[sessionId] = agent;
-    else delete this.settings.sessionAgentChoices[sessionId];
-    await this.saveSettings();
+  /** Returns unsent composer text for a server session or client-only draft. */
+  getSessionDraft(sessionId: string): string {
+    return this.readSessionState(sessionId)?.composer?.text ?? "";
   }
 
-  /** Persists the selected composer model for a session; referenced by SessionView model and variant pills. */
-  async rememberSessionModelChoice(sessionId: string, model: { providerID: string; modelID: string; variant?: string } | undefined): Promise<void> {
-    if (model) this.settings.sessionModelChoices[sessionId] = model;
-    else delete this.settings.sessionModelChoices[sessionId];
-    await this.saveSettings();
+  /** Returns persisted composer attachments for a server session or client-only draft. */
+  getSessionAttachedFiles(sessionId: string): ComposerAttachment[] {
+    return this.readSessionState(sessionId)?.composer?.attachments ?? [];
+  }
+
+  /** Removes composer text and attachments together after a successful submission. */
+  async clearSessionComposer(sessionId: string): Promise<void> {
+    await this.mutateSessionState(sessionId, (state) => {
+      delete state.composer;
+    });
   }
 
   /** Persists one explicit auto-approve override; `undefined` restores ancestry inheritance. */
   async rememberSessionAutoApprove(sessionId: string, enabled: boolean | undefined): Promise<void> {
-    if (enabled === undefined) delete this.settings.sessionAutoApprove[sessionId];
-    else this.settings.sessionAutoApprove[sessionId] = enabled;
-    await this.saveSettings();
+    await this.mutateSessionState(sessionId, (state) => {
+      state.autoApprove = enabled ?? "inherit";
+    });
     this.refreshSessionAutoApproveControls();
     await this.permissionCoordinator.reconcile();
   }
 
   /** Applies the configured auto-accept default once when a session or draft first opens in the plugin. */
   async ensureSessionAutoApproveDefault(sessionId: string): Promise<void> {
-    if (Object.prototype.hasOwnProperty.call(this.settings.sessionAutoApproveDefaultApplied, sessionId)) return;
-    this.settings.sessionAutoApproveDefaultApplied[sessionId] = true;
-    this.settings.sessionAutoApprove[sessionId] = this.settings.defaultSessionAutoApprove;
-    await this.saveSettings();
+    if (this.readSessionState(sessionId)?.autoApprove !== undefined) return;
+    await this.mutateSessionState(sessionId, (state) => {
+      state.autoApprove = this.settings.defaultSessionAutoApprove;
+    });
     this.refreshSessionAutoApproveControls();
     await this.permissionCoordinator.reconcile();
   }
@@ -707,28 +877,44 @@ export default class OpenCodePlugin extends Plugin {
   /** Persists one sparse per-session notification override from a session surface. */
   async rememberSessionMute(sessionId: string, muted: boolean, isSubagent: boolean): Promise<void> {
     const override = muteOverrideForState(muted, isSubagent);
-    if (override === undefined) delete this.settings.sessionMute[sessionId];
-    else this.settings.sessionMute[sessionId] = override;
-    await this.saveSettings();
+    await this.mutateSessionState(sessionId, (state) => {
+      if (override === undefined) delete state.muted;
+      else state.muted = override;
+    });
   }
 
   /** Returns the effective root-enabled/subagent-muted state for canonical session metadata. */
   getSessionNotificationState(session: OpenCodeSession): ReturnType<typeof resolveSessionNotificationState> {
-    return resolveSessionNotificationState(this.settings.sessionMute, session);
+    const override = this.readSessionState(session.id)?.muted;
+    return resolveSessionNotificationState(override === undefined ? {} : { [session.id]: override }, session);
+  }
+
+  /** Returns a sparse local mute override for a server session or client-only draft. */
+  getSessionMuteOverride(sessionId: string): boolean | undefined {
+    return this.readSessionState(sessionId)?.muted;
   }
 
   /** Persists whether a session has completed activity the user has not read yet. */
   async rememberSessionUnread(sessionId: string, unread: boolean): Promise<void> {
-    if (unread) this.settings.sessionUnread[sessionId] = true;
-    else delete this.settings.sessionUnread[sessionId];
-    await this.saveSettings();
+    await this.mutateSessionState(sessionId, (state) => {
+      if (unread) state.unread = true;
+      else delete state.unread;
+    });
+  }
+
+  /** Returns whether a session has completed activity the user has not read. */
+  isSessionUnread(sessionId: string): boolean {
+    return this.sessionState.sessions[sessionId]?.unread === true;
   }
 
   /** Persists selected file paths and pasted images for an unsent composer draft. */
   async rememberSessionAttachedFiles(sessionId: string, files: ComposerAttachment[]): Promise<void> {
-    if (files.length > 0) this.settings.sessionAttachedFiles[sessionId] = [...files];
-    else delete this.settings.sessionAttachedFiles[sessionId];
-    await this.saveSettings();
+    await this.mutateSessionState(sessionId, (state) => {
+      const composer = { ...state.composer };
+      if (files.length > 0) composer.attachments = [...files];
+      else delete composer.attachments;
+      state.composer = Object.keys(composer).length > 0 ? composer : undefined;
+    });
   }
 
   /** Toggles a model (+optional variant) in the global favorites list; referenced by ModelSelectionMenu. */
@@ -749,30 +935,19 @@ export default class OpenCodePlugin extends Plugin {
 
   /** Moves local composer state from a draft key to its newly created server session. */
   async promoteSessionDraft(draftKey: string, sessionId: string): Promise<void> {
-    const draft = this.settings.sessionDrafts[draftKey];
-    const agent = this.settings.sessionAgentChoices[draftKey];
-    const model = this.settings.sessionModelChoices[draftKey];
-    const autoApprove = this.settings.sessionAutoApprove[draftKey];
-    const autoApproveDefaultApplied = this.settings.sessionAutoApproveDefaultApplied[draftKey];
-    const muted = this.settings.sessionMute[draftKey];
-    const hasMuteOverride = Object.prototype.hasOwnProperty.call(this.settings.sessionMute, draftKey);
-    const files = this.settings.sessionAttachedFiles[draftKey];
-    if (draft) this.settings.sessionDrafts[sessionId] = draft;
-    if (agent) this.settings.sessionAgentChoices[sessionId] = agent;
-    if (model) this.settings.sessionModelChoices[sessionId] = model;
-    if (autoApprove !== undefined) this.settings.sessionAutoApprove[sessionId] = autoApprove;
-    if (autoApproveDefaultApplied) this.settings.sessionAutoApproveDefaultApplied[sessionId] = true;
-    if (hasMuteOverride) this.settings.sessionMute[sessionId] = muted!;
-    if (files) this.settings.sessionAttachedFiles[sessionId] = files;
-    delete this.settings.sessionDrafts[draftKey];
-    delete this.settings.sessionAgentChoices[draftKey];
-    delete this.settings.sessionModelChoices[draftKey];
-    delete this.settings.sessionAutoApprove[draftKey];
-    delete this.settings.sessionAutoApproveDefaultApplied[draftKey];
-    delete this.settings.sessionMute[draftKey];
-    delete this.settings.sessionAttachedFiles[draftKey];
+    const draftId = draftKey.startsWith("draft:") ? draftKey.slice("draft:".length) : draftKey;
+    (this.retiredDraftIds ??= new Set<string>()).add(draftId);
+    const draft = this.sessionState.drafts[draftId];
+    if (!draft) return;
+    const existing = this.sessionState.sessions[sessionId];
+    this.sessionState.sessions[sessionId] = {
+      ...existing,
+      ...draft,
+      composer: existing?.composer || draft.composer ? { ...existing?.composer, ...draft.composer } : undefined,
+    };
+    delete this.sessionState.drafts[draftId];
     await this.saveSettings();
-    if (autoApproveDefaultApplied) {
+    if (draft.autoApprove !== undefined) {
       this.refreshSessionAutoApproveControls();
       await this.permissionCoordinator.reconcile();
     }

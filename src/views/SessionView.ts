@@ -158,7 +158,10 @@ export class SessionView extends ItemView {
       onMessageChanged: (message) => this.island.reconcileMessages([message]),
       onMessageRemoved: (messageId) => this.island.removeMessage(messageId),
       onStreamOpen: (reconnected) => {
-        if (reconnected) this.island.recoverAfterReconnect();
+        if (reconnected) {
+          this.island.recoverAfterReconnect();
+          this.plugin.reconcileSessionStateAfterReconnect();
+        }
       },
       onStatusChange: (status) => this.applySessionStatus(status, true),
       onSessionError: (error) => this.applySessionError(error),
@@ -356,7 +359,12 @@ export class SessionView extends ItemView {
 
   /** Releases event streams and timers when the tab closes. */
   async onClose(): Promise<void> {
-    this.composer.persistDraft();
+    const abandonedDraftId = !this.model.sessionId && this.model.draftId && !this.plugin.isUnloadingSessionViews() ? this.model.draftId : undefined;
+    if (abandonedDraftId) {
+      await this.plugin.discardSessionDraft(abandonedDraftId).catch((error) => logger.warn("settings", "draft cleanup failed", { error }));
+    } else if (!this.model.sessionId || this.plugin.shouldPersistSessionState(this.model.sessionId)) {
+      this.composer.persistDraft();
+    }
     this.sessionBindingVersion += 1;
     this.loadingSessionId = undefined;
     this.stream.dispose();
@@ -454,6 +462,7 @@ export class SessionView extends ItemView {
     this.model.revertDiffFiles = [];
     this.model.rewindInFlight = false;
     this.model.submittingPrompt = submittingPrompt;
+    if (!submittingPrompt) this.model.composerSelectionDirty = false;
     this.model.sessionStatusType = "idle";
     this.model.sessionStatusRevision = 0;
     this.model.sessionRetry = undefined;
@@ -616,8 +625,19 @@ export class SessionView extends ItemView {
     this.model.sessionTitle = this.sessionTitleFromSession(session);
     this.model.sessionDirectory = this.sessionDirectoryFromSession(session);
     this.stream.subscribe(this.model.sessionDirectory);
-    this.model.selectedAgent = this.variants.resolveAgentForSession(session);
-    this.model.selectedModel = this.variants.resolveModelForSession(session, this.model.selectedAgent);
+    const canonicalAgent = this.variants.resolveAgentForSession(session);
+    const canonicalModel = this.variants.resolveModelForSession(session, canonicalAgent);
+    const canonicalVariant = canonicalModel?.variant === "default" ? undefined : canonicalModel?.variant;
+    const selectedVariant = this.model.selectedModel?.variant === "default" ? undefined : this.model.selectedModel?.variant;
+    const selectionIsCanonical = canonicalAgent === this.model.selectedAgent
+      && canonicalModel?.providerID === this.model.selectedModel?.providerID
+      && canonicalModel?.modelID === this.model.selectedModel?.modelID
+      && canonicalVariant === selectedVariant;
+    if (!this.model.composerSelectionDirty || selectionIsCanonical) {
+      this.model.selectedAgent = canonicalAgent;
+      this.model.selectedModel = canonicalModel;
+      this.model.composerSelectionDirty = false;
+    }
     this.model.renderedSessionId = this.model.sessionId;
     if (this.model.sessionId) this.island.bind(this.model.sessionId, this.model.sessionDirectory, this.model.loadedMessages);
     this.refreshLeafTitle();
@@ -626,6 +646,10 @@ export class SessionView extends ItemView {
 
   /** Applies streamed session identity updates through the same chrome boundary as canonical refreshes. */
   private applySessionUpdate(session: JsonObject): void {
+    const time = jsonHelpers.readObject(session, "time");
+    if (this.model.sessionId && typeof time?.archived === "number") {
+      void this.plugin.forgetSessionState([this.model.sessionId]).catch((error) => logger.warn("settings", "archived session cleanup failed", { error }));
+    }
     this.canonicalRequestVersion += 1;
     this.applyCanonicalSession(session);
   }
@@ -673,7 +697,7 @@ export class SessionView extends ItemView {
   private sessionVisualStatus(): SessionVisualStatus {
     if (this.model.pendingPermissions.length > 0 || this.model.pendingQuestions.length > 0) return "attention";
     if (this.model.sessionError) return "error";
-    return visualStatusForSession(this.model.sessionStatusType, this.model.sessionId ? this.plugin.settings.sessionUnread[this.model.sessionId] === true : false);
+    return visualStatusForSession(this.model.sessionStatusType, this.model.sessionId ? this.plugin.isSessionUnread(this.model.sessionId) : false);
   }
 
   /** Retains one non-abort session error for timeline rendering and native error chrome. */
@@ -727,7 +751,10 @@ export class SessionView extends ItemView {
     this.stream.disconnect();
     this.island.unbind();
     this.docks.resetQueue();
-    if (this.model.sessionId) this.plugin.notifySessionStatusChanged(this.model.sessionId, "idle");
+    if (this.model.sessionId) {
+      void this.plugin.forgetSessionState([this.model.sessionId]).catch((error) => logger.warn("settings", "deleted session cleanup failed", { error }));
+      this.plugin.notifySessionStatusChanged(this.model.sessionId, "idle");
+    }
     this.refreshSessionStateChrome();
     this.renderSessionDeleted();
   }
@@ -765,8 +792,10 @@ export class SessionView extends ItemView {
       this.model.availableModels = models;
       this.model.availableCommands = commands;
       this.model.serverConfig = config;
-      this.model.selectedAgent = this.variants.resolveAgentForSession({});
-      this.model.selectedModel = this.variants.resolveModelForSession({}, this.model.selectedAgent);
+      if (!this.model.composerSelectionDirty) {
+        this.model.selectedAgent = this.variants.resolveAgentForSession({});
+        this.model.selectedModel = this.variants.resolveModelForSession({}, this.model.selectedAgent);
+      }
       this.model.sessionDirectory = directory;
       this.stream.subscribe(directory);
       // Background syncs (e.g. another session's request notification) remount the draft shell;
@@ -980,7 +1009,7 @@ export class SessionView extends ItemView {
 
   /** Persists the current session's unread completion marker and refreshes visible sidebar rows. */
   private setSessionUnread(unread: boolean): void {
-    if (!this.model.sessionId || (this.plugin.settings.sessionUnread[this.model.sessionId] === true) === unread) return;
+    if (!this.model.sessionId || this.plugin.isSessionUnread(this.model.sessionId) === unread) return;
     void this.plugin.rememberSessionUnread(this.model.sessionId, unread).then(() => {
       this.refreshSessionStateChrome();
       void this.plugin.refreshAgentPanels({ showLoading: false });
@@ -1254,7 +1283,7 @@ export class SessionView extends ItemView {
     if (this.model.currentSession && this.model.sessionId === key) {
       return this.plugin.getSessionNotificationState(this.model.currentSession as OpenCodeSession).muted;
     }
-    return this.plugin.settings.sessionMute[key] === true;
+    return this.plugin.getSessionMuteOverride(key) === true;
   }
 
   /** Returns whether the bound server session is a child/subagent session. */

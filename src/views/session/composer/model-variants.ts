@@ -5,7 +5,7 @@ import { ModelSelectionMenu, type FavoriteModelRef, type ModelEntry } from "../.
 import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef } from "../../../services/opencode-types";
 import { setProviderIcon } from "../../../utils/provider-icons";
 import type { SessionViewModel } from "../session-view-model";
-import { latestUserAgent } from "../message-helpers";
+import { latestUserAgent, latestUserModel } from "../message-helpers";
 import { readObject, readString } from "../json-helpers";
 
 // ---- pure helpers (exported for unit testing)
@@ -146,32 +146,32 @@ export function nextAgentName(names: string[], current: string | undefined): str
   return names[(index + 1) % names.length];
 }
 
-/** Determines the composer agent from persisted choice, session state, or the latest user message. */
+/** Determines the composer agent from canonical session state or the latest user message. */
 export function composerAgentFromState(
   agents: JsonObject[],
   session: JsonObject,
-  keyChoice: string | undefined,
   messages: OpenCodeMessageBundle[],
 ): string | undefined {
-  const requested = keyChoice ?? readString(session, ["agent"]) ?? latestUserAgent(messages);
+  const requested = readString(session, ["agent"]) ?? latestUserAgent(messages);
   const visible = visibleAgents(agents);
   if (requested && visible.some((item) => agentName(item) === requested)) return requested;
   return agentName(visible[0] ?? {});
 }
 
-/** Determines the composer model from persisted choice, session state, agent default, or first available model. */
+/** Determines the composer model from canonical session/message state, agent default, or first available model. */
 export function composerModelFromState(
   models: JsonObject[],
   agents: JsonObject[],
   session: JsonObject,
-  keyChoice: OpenCodeModelRef | undefined,
+  messages: OpenCodeMessageBundle[],
   selectedAgent?: string,
 ): OpenCodeModelRef | undefined {
-  if (keyChoice?.providerID && keyChoice.modelID) return keyChoice;
   const sessionModel = readObject(session, "model");
   const sessionProvider = sessionModel ? readString(sessionModel, ["providerID", "providerId"]) : undefined;
   const sessionModelID = sessionModel ? readString(sessionModel, ["modelID", "modelId", "id"]) : undefined;
   if (sessionProvider && sessionModelID) return { providerID: sessionProvider, modelID: sessionModelID, variant: sessionModel ? readString(sessionModel, ["variant"]) : undefined };
+  const messageModel = latestUserModel(messages);
+  if (messageModel) return messageModel;
   const agent = selectedAgent ?? readString(session, ["agent"]);
   return modelForAgent(agents, agent) ?? availableModelRefs(models)[0];
 }
@@ -208,18 +208,14 @@ export class ModelVariantsController {
 
   // ---- resolution helpers used by the shell when hydrating a session
 
-  /** Determines the current composer agent from persisted choice, session state, or latest user message. */
+  /** Determines the current composer agent from canonical session state or latest user message. */
   resolveAgentForSession(session: JsonObject): string | undefined {
-    const key = this.deps.model.composerStorageKey;
-    const keyChoice = key ? this.deps.plugin.settings.sessionAgentChoices[key] : undefined;
-    return composerAgentFromState(this.deps.model.availableAgents, session, keyChoice, this.deps.model.loadedMessages);
+    return composerAgentFromState(this.deps.model.availableAgents, session, this.deps.model.loadedMessages);
   }
 
-  /** Determines the composer model from persisted choice, session state, agent default, or first available model. */
+  /** Determines the composer model from canonical session/message state, agent default, or first available model. */
   resolveModelForSession(session: JsonObject, agentNameValue: string | undefined): OpenCodeModelRef | undefined {
-    const key = this.deps.model.composerStorageKey;
-    const keyChoice = key ? this.deps.plugin.settings.sessionModelChoices[key] : undefined;
-    return composerModelFromState(this.deps.model.availableModels, this.deps.model.availableAgents, session, keyChoice, agentNameValue);
+    return composerModelFromState(this.deps.model.availableModels, this.deps.model.availableAgents, session, this.deps.model.loadedMessages, agentNameValue);
   }
 
   // ---- rendering (called by renderComposer)
@@ -297,23 +293,23 @@ export class ModelVariantsController {
     }
   }
 
-  /** Updates the composer agent choice and persists it for this session; the next send carries it via the per-prompt `agent` field. */
+  /** Updates the in-memory composer agent; the next send makes it canonical session state. */
   async chooseComposerAgent(agent: string): Promise<void> {
     const composerKey = this.deps.model.composerStorageKey;
     if (!composerKey) return;
     this.deps.model.selectedAgent = agent;
     this.deps.model.selectedModel = modelForAgent(this.deps.model.availableAgents, agent) ?? this.deps.model.selectedModel;
-    await this.deps.plugin.rememberSessionAgentChoice(composerKey, agent);
+    this.deps.model.composerSelectionDirty = true;
     if (this.deps.model.currentSession) this.deps.model.currentSession = { ...this.deps.model.currentSession, agent };
     await this.deps.requestRefresh();
   }
 
-  /** Updates the composer model/variant; the next send carries it via the per-prompt `model` field. */
+  /** Updates the in-memory model/variant; the next send makes it canonical session state. */
   async chooseComposerModel(model: OpenCodeModelRef): Promise<void> {
     const composerKey = this.deps.model.composerStorageKey;
     if (!composerKey) return;
     this.deps.model.selectedModel = model;
-    await this.deps.plugin.rememberSessionModelChoice(composerKey, model);
+    this.deps.model.composerSelectionDirty = true;
     if (this.deps.model.currentSession) this.deps.model.currentSession = { ...this.deps.model.currentSession, model: { providerID: model.providerID, id: model.modelID, variant: model.variant } };
     await this.deps.requestRefresh();
   }

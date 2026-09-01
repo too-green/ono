@@ -70,6 +70,8 @@ export class SessionViewModel {
   selectedAgent?: string;
   /** Currently selected composer model reference. */
   selectedModel?: OpenCodeModelRef;
+  /** Keeps an unsent in-memory agent/model selection across streamed refreshes. */
+  composerSelectionDirty = false;
 
   // ---- shared status / in-flight
   /** Active session status type string (busy / idle / error / etc.) from session events. */

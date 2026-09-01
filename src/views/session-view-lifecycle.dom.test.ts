@@ -20,6 +20,7 @@ function installObsidianDomMethods(): void {
     createSpan: { configurable: true, value: function (this: HTMLElement, options?: DomOptions) { return create.call(this, "span", options); } },
     createEl: { configurable: true, value: function (this: HTMLElement, tag: string, options?: DomOptions) { return create.call(this, tag, options); } },
     empty: { configurable: true, value: function (this: HTMLElement) { this.replaceChildren(); } },
+    removeClass: { configurable: true, value: function (this: HTMLElement, ...classes: string[]) { this.classList.remove(...classes); } },
   });
 }
 
@@ -34,7 +35,7 @@ interface LifecycleHarness {
   timeline: { clearDisclosureState: ReturnType<typeof vi.fn> };
   scroll: { clearJumpButtonReference: ReturnType<typeof vi.fn>; disableFollowLatest: ReturnType<typeof vi.fn> };
   descendantChildrenCache: Map<string, unknown>;
-  plugin: { notifySessionStatusChanged: ReturnType<typeof vi.fn> };
+  plugin: { forgetSessionState: ReturnType<typeof vi.fn>; notifySessionStatusChanged: ReturnType<typeof vi.fn> };
   refreshSessionStateChrome: ReturnType<typeof vi.fn>;
   sessionBindingVersion: number;
   canonicalRequestVersion: number;
@@ -61,7 +62,7 @@ function setup(): LifecycleHarness {
     timeline: { clearDisclosureState: vi.fn() },
     scroll: { clearJumpButtonReference: vi.fn(), disableFollowLatest: vi.fn() },
     descendantChildrenCache: new Map(),
-    plugin: { notifySessionStatusChanged: vi.fn() },
+    plugin: { forgetSessionState: vi.fn(async () => undefined), notifySessionStatusChanged: vi.fn() },
     refreshSessionStateChrome: vi.fn(),
     sessionBindingVersion: 4,
     canonicalRequestVersion: 7,
@@ -106,6 +107,7 @@ describe("SessionView connection lifecycle", () => {
     expect(view.contentEl.textContent).toContain("Session no longer exists");
     expect(view.stream.disconnect).toHaveBeenCalledOnce();
     expect(view.island.unbind).toHaveBeenCalledOnce();
+    expect(view.plugin.forgetSessionState).toHaveBeenCalledWith(["session-1"]);
 
     view.contentEl.querySelector<HTMLButtonElement>("button")!.click();
     expect(view.leaf.detach).toHaveBeenCalledOnce();
@@ -116,5 +118,38 @@ describe("SessionView connection lifecycle", () => {
     view.model.submittingPrompt = true;
     view.resetTimelineState({ preserveSubmission: true });
     expect(view.model.submittingPrompt).toBe(true);
+  });
+
+  it("does not recreate composer state when a forgotten server-session tab closes", async () => {
+    const persistDraft = vi.fn();
+    const dispose = vi.fn();
+    const model = new SessionViewModel();
+    model.sessionId = "archived";
+    const view = Object.create(SessionView.prototype) as unknown as { onClose(): Promise<void> };
+    Object.assign(view, {
+      model,
+      plugin: {
+        isUnloadingSessionViews: () => false,
+        shouldPersistSessionState: () => false,
+      },
+      composer: { persistDraft, dispose },
+      stream: { dispose },
+      scroll: { dispose },
+      variants: { dispose },
+      slash: { dispose },
+      island: { dispose },
+      markdownPatcher: { dispose },
+      timeline: { dispose },
+      docks: { dispose },
+      contentEl: document.createElement("div"),
+      containerEl: document.createElement("div"),
+      dismissTitleErrorTooltip: vi.fn(),
+      clearSessionHeaderDecoration: vi.fn(),
+      sessionBindingVersion: 0,
+    });
+
+    await view.onClose();
+
+    expect(persistDraft).not.toHaveBeenCalled();
   });
 });

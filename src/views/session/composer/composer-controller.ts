@@ -142,7 +142,7 @@ export class ComposerController {
       cls: "opencode-session-view__composer-input",
       attr: { placeholder: "type message, @ to include files, / for commands", rows: "1" },
     });
-    textarea.value = this.deps.plugin.settings.sessionDrafts[composerKey] ?? "";
+    textarea.value = this.deps.plugin.getSessionDraft(composerKey);
     textarea.disabled = this.deps.isComposerBlocked();
     this.composerTextarea = textarea;
     this.resizeComposerInput(textarea);
@@ -366,7 +366,7 @@ export class ComposerController {
 
   /** Renders image previews and non-image file chips above the composer textarea. */
   private renderAttachmentChips(container: HTMLElement, composerKey: string): void {
-    const files = this.deps.plugin.settings.sessionAttachedFiles[composerKey] ?? [];
+    const files = this.deps.plugin.getSessionAttachedFiles(composerKey);
     if (files.length === 0) return;
     const attachments = files.map((file) => ({ file, image: this.composerImagePreview(file) }));
     this.renderComposerImagePreviews(container, attachments.flatMap(({ file, image }) => image ? [{ file, image }] : []));
@@ -495,7 +495,7 @@ export class ComposerController {
 
   /** Merges pasted images into the captured draft and refreshes its mounted chips. */
   private async rememberPastedImages(composerKey: string, images: ComposerImageAttachment[]): Promise<void> {
-    const existing = this.deps.plugin.settings.sessionAttachedFiles[composerKey] ?? [];
+    const existing = this.deps.plugin.getSessionAttachedFiles(composerKey);
     const existingUrls = new Set(existing.flatMap((file) => typeof file === "string" ? [] : [file.url]));
     const additions = images.filter((image) => {
       if (existingUrls.has(image.url)) return false;
@@ -521,7 +521,7 @@ export class ComposerController {
         ? await dialog.showOpenDialog(electron.remote.getCurrentWindow(), options)
         : await dialog.showOpenDialog(options);
       if (result.canceled || result.filePaths.length === 0) return;
-      const existing = this.deps.plugin.settings.sessionAttachedFiles[composerKey] ?? [];
+      const existing = this.deps.plugin.getSessionAttachedFiles(composerKey);
       await this.deps.plugin.rememberSessionAttachedFiles(composerKey, [...new Set([...existing, ...result.filePaths])]);
       await this.refresh();
     } catch (error) {
@@ -533,7 +533,7 @@ export class ComposerController {
   private async removeComposerAttachment(file: ComposerAttachment): Promise<void> {
     const composerKey = this.deps.model.composerStorageKey;
     if (!composerKey) return;
-    const files = (this.deps.plugin.settings.sessionAttachedFiles[composerKey] ?? []).filter((item) => item !== file);
+    const files = this.deps.plugin.getSessionAttachedFiles(composerKey).filter((item) => item !== file);
     await this.deps.plugin.rememberSessionAttachedFiles(composerKey, files);
     await this.refresh();
   }
@@ -689,8 +689,7 @@ export class ComposerController {
         this.resizeComposerInput(this.composerTextarea);
         this.updateInsetSoon();
       }
-      await this.deps.plugin.rememberSessionDraft(targetSessionId, "");
-      await this.deps.plugin.rememberSessionAttachedFiles(targetSessionId, []);
+      await this.deps.plugin.clearSessionComposer(targetSessionId);
       if (isSubmissionBound()) {
         model.submittingPrompt = false;
         await this.refresh();
@@ -722,7 +721,7 @@ export class ComposerController {
 
   /** Converts selected composer attachment paths to prompt file parts. */
   private composerFileParts(key: string): Array<{ type: "file"; url: string; filename: string; mime: string }> {
-    return (this.deps.plugin.settings.sessionAttachedFiles[key] ?? []).map((file) => typeof file === "string"
+    return this.deps.plugin.getSessionAttachedFiles(key).map((file) => typeof file === "string"
       ? {
         type: "file" as const,
         url: pathToFileURL(file).href,

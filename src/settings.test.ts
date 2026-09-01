@@ -7,12 +7,42 @@ import {
   normalizeDebugLogging,
   normalizeFolderCollapseDisplay,
   normalizeNotificationMode,
+  normalizePersistedSessionStates,
   normalizeRetryActionLastShown,
   normalizeRetryActionSuppressed,
   normalizeServerBaseUrl,
   normalizeServerUsername,
   normalizeSessionIslandContextLabel,
 } from "./settings";
+
+describe("normalizePersistedSessionStates", () => {
+  it("keeps only compact supported session-owned state", () => {
+    expect(normalizePersistedSessionStates({
+      session: {
+        composer: {
+          text: "unsent",
+          attachments: ["/tmp/context.md", { filename: "image.png", mime: "image/png", url: "data:image/png;base64,AQID" }, { invalid: true }],
+        },
+        autoApprove: "inherit",
+        muted: false,
+        unread: true,
+        scroll: { top: 100 },
+        model: { providerID: "unused", modelID: "unused" },
+      },
+      empty: { composer: { text: "  ", attachments: [] }, unread: false },
+    })).toEqual({
+      session: {
+        composer: {
+          text: "unsent",
+          attachments: ["/tmp/context.md", { filename: "image.png", mime: "image/png", url: "data:image/png;base64,AQID" }],
+        },
+        autoApprove: "inherit",
+        muted: false,
+        unread: true,
+      },
+    });
+  });
+});
 
 describe("normalizeSessionIslandContextLabel", () => {
   it("preserves each supported context label", () => {

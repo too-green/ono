@@ -165,13 +165,15 @@ describe("agents-panel row components", () => {
       listQuestionRequests: vi.fn(async () => []),
     };
     const plugin = {
-      settings: { sessionMute: {}, sessionUnread: {}, workingAnimation: "pulse", folderCollapseDisplay: "inset" },
+      settings: { workingAnimation: "pulse", folderCollapseDisplay: "inset" },
       getOpenedDirectories: () => ["/workspace"],
       getActiveSessionId: () => undefined,
       requireOpenCodeService: () => service,
       cacheSessionHierarchy: vi.fn(),
       routePermissionRequest: vi.fn(),
       shouldSuppressPermissionRequest: vi.fn(() => false),
+      getSessionNotificationState: vi.fn(() => ({ muted: false, isSubagent: false })),
+      isSessionUnread: vi.fn(() => false),
       openSessionTab,
     } as unknown as OpenCodePlugin;
     const customSession = {

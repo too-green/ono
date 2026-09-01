@@ -86,13 +86,15 @@ describe("AgentPanelView lifecycle", () => {
       listQuestionRequests: vi.fn(async () => []),
     };
     const plugin = {
-      settings: { sessionMute: {}, sessionUnread: {}, sessionAutoApprove: {}, workingAnimation: "pulse", folderCollapseDisplay: "inset" },
+      settings: { workingAnimation: "pulse", folderCollapseDisplay: "inset" },
       getOpenedDirectories: () => ["/workspace"],
       getActiveSessionId: () => undefined,
       requireOpenCodeService: () => service,
       cacheSessionHierarchy: vi.fn(),
       routePermissionRequest: vi.fn(),
       shouldSuppressPermissionRequest: vi.fn(() => false),
+      getSessionNotificationState: vi.fn(() => ({ muted: false, isSubagent: false })),
+      isSessionUnread: vi.fn(() => false),
       openDirectoryWithPicker: vi.fn(),
       openSessionTab,
       openNewSessionTab,
@@ -155,9 +157,6 @@ describe("AgentPanelView lifecycle", () => {
     const plugin = {
       settings: {
         agentPanelSessionSort: "created-desc",
-        sessionMute: {},
-        sessionUnread: {},
-        sessionAutoApprove: {},
         workingAnimation: "pulse",
         folderCollapseDisplay: "inset",
       },
@@ -168,6 +167,8 @@ describe("AgentPanelView lifecycle", () => {
       routePermissionRequest: vi.fn(),
       settleSessionRequest: vi.fn(),
       shouldSuppressPermissionRequest: vi.fn(() => false),
+      getSessionNotificationState: vi.fn(() => ({ muted: false, isSubagent: false })),
+      isSessionUnread: vi.fn(() => false),
       openDirectoryWithPicker: vi.fn(),
       openNewSessionTab: vi.fn(async () => undefined),
       rememberSessionUnread: vi.fn(async () => undefined),

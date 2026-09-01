@@ -46,8 +46,7 @@ describe("ScrollController", () => {
     const model = new SessionViewModel();
     model.sessionId = "s1";
     const plugin = {
-      settings: { sessionScroll: {}, sessionUnread: {} },
-      rememberSessionScroll: vi.fn(async () => undefined),
+      isSessionUnread: vi.fn(() => false),
     } as unknown as OpenCodePlugin;
     let tabGroupRelocated = false;
     const onNearTop = vi.fn();
@@ -211,19 +210,6 @@ describe("ScrollController", () => {
     expect(model.followLatest).toBe(true);
   });
 
-  it("does not enable follow when an active session restores a saved reading position", async () => {
-    const { contentEl, controller, model, plugin, runNextFrame } = setup();
-    plugin.settings.sessionScroll.s1 = { top: 300, atBottom: false };
-    model.sessionBusy = true;
-    const restoring = controller.restoreScrollAfterRender(true, 0, undefined, controller.captureInteractionGeneration());
-    runNextFrame();
-
-    await restoring;
-
-    expect(model.followLatest).toBe(false);
-    expect(contentEl.scrollTop).toBe(300);
-  });
-
   it("does not restore a full-shell position after user interaction", async () => {
     const { contentEl, controller, runNextFrame } = setup();
     const anchor = controller.captureFollowLatest();
@@ -239,28 +225,25 @@ describe("ScrollController", () => {
   });
 
   it("replaces a relocation-induced top reset with bottom state without loading older messages", () => {
-    const { contentEl, onNearTop, plugin, triggerTabGroupRelocation } = setup();
+    const { contentEl, onNearTop, triggerTabGroupRelocation } = setup();
     triggerTabGroupRelocation();
     contentEl.scrollTop = 0;
 
     contentEl.dispatchEvent(new Event("scroll"));
 
     expect(onNearTop).not.toHaveBeenCalled();
-    expect(plugin.rememberSessionScroll).not.toHaveBeenCalled();
     expect(contentEl.scrollTop).toBe(800);
   });
 
   it("preserves scroll when Obsidian relocates a tab without resetting it", () => {
-    const { contentEl, controller, plugin, runNextFrame, triggerTabGroupRelocation } = setup();
+    const { contentEl, runNextFrame, triggerTabGroupRelocation } = setup();
     contentEl.scrollTop = 350;
     triggerTabGroupRelocation();
 
     contentEl.dispatchEvent(new Event("scroll"));
     for (let frame = 0; frame < 4; frame += 1) runNextFrame();
-    controller.persistScrollState();
 
     expect(contentEl.scrollTop).toBe(350);
-    expect(plugin.rememberSessionScroll).toHaveBeenCalledWith("s1", { top: 350, atBottom: false });
   });
 
   it("catches a top reset that lands after the first relocation frame", () => {
@@ -290,15 +273,6 @@ describe("ScrollController", () => {
 
     expect(contentEl.scrollTop).toBe(0);
     expect(onNearTop).toHaveBeenCalledOnce();
-  });
-
-  it("does not persist transient geometry from a detached tab group", () => {
-    const { contentEl, controller, plugin } = setup();
-    contentEl.remove();
-
-    controller.persistScrollState();
-
-    expect(plugin.rememberSessionScroll).not.toHaveBeenCalled();
   });
 
   it("waits for a relocated tab group to regain measurable geometry", () => {

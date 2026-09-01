@@ -9,7 +9,7 @@ interface StatusHarness {
   composer: { onSessionStatusChanged: ReturnType<typeof vi.fn> };
   stream: { scheduleCanonicalSync: ReturnType<typeof vi.fn> };
   scroll: { releaseFollowLatestAfterIdle: ReturnType<typeof vi.fn> };
-  plugin: { settings: { sessionUnread: Record<string, boolean> }; notifySessionStatusChanged: ReturnType<typeof vi.fn>; maybeShowRetryAction: ReturnType<typeof vi.fn> };
+  plugin: { isSessionUnread: ReturnType<typeof vi.fn>; notifySessionStatusChanged: ReturnType<typeof vi.fn>; maybeShowRetryAction: ReturnType<typeof vi.fn> };
   refreshSessionStateChrome: ReturnType<typeof vi.fn>;
   setSessionUnread: ReturnType<typeof vi.fn>;
   applySessionStatus(status: Record<string, unknown> | undefined, fromEvent?: boolean): void;
@@ -32,7 +32,7 @@ function setup(): StatusHarness {
     composer: { onSessionStatusChanged: vi.fn() },
     stream: { scheduleCanonicalSync: vi.fn() },
     scroll: { releaseFollowLatestAfterIdle: vi.fn() },
-    plugin: { settings: { sessionUnread: {} }, notifySessionStatusChanged: vi.fn(), maybeShowRetryAction: vi.fn(async () => undefined) },
+    plugin: { isSessionUnread: vi.fn(() => false), notifySessionStatusChanged: vi.fn(), maybeShowRetryAction: vi.fn(async () => undefined) },
     refreshSessionStateChrome: vi.fn(),
     setSessionUnread: vi.fn(),
   });

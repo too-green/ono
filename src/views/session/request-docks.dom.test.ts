@@ -37,7 +37,6 @@ function setup(autoApproveSessions: string[] = []) {
     rejectQuestion: vi.fn(async () => true),
   };
   const plugin = {
-    settings: { sessionAutoApprove: Object.fromEntries(autoApproveSessions.map((sessionId) => [sessionId, true])) },
     openSessionTab: vi.fn(async () => undefined),
     requireOpenCodeService: vi.fn(() => service),
     isSessionRequestResponding: vi.fn(() => false),

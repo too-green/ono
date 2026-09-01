@@ -36,20 +36,26 @@ function setup(options: { busy?: boolean } = {}) {
   model.sessionBusy = options.busy ?? false;
   const settings = {
     interruptConfirmSeconds: 3,
-    sessionAttachedFiles: {} as Record<string, ComposerAttachment[]>,
-    sessionDrafts: {} as Record<string, string>,
   };
+  const composerState: Record<string, { text?: string; attachments?: ComposerAttachment[] }> = {};
   const service = { sendPromptAsync: vi.fn(async (_sessionId: string, _input: unknown, _directory?: string) => undefined) };
   const plugin = {
     settings,
+    getSessionDraft: vi.fn((key: string) => composerState[key]?.text ?? ""),
+    getSessionAttachedFiles: vi.fn((key: string) => composerState[key]?.attachments ?? []),
     rememberSessionDraft: vi.fn(async (key: string, value: string) => {
-      if (value.trim()) settings.sessionDrafts[key] = value;
-      else delete settings.sessionDrafts[key];
+      const state = composerState[key] ?? {};
+      if (value.trim()) state.text = value;
+      else delete state.text;
+      composerState[key] = state;
     }),
     rememberSessionAttachedFiles: vi.fn(async (key: string, files: ComposerAttachment[]) => {
-      if (files.length > 0) settings.sessionAttachedFiles[key] = [...files];
-      else delete settings.sessionAttachedFiles[key];
+      const state = composerState[key] ?? {};
+      if (files.length > 0) state.attachments = [...files];
+      else delete state.attachments;
+      composerState[key] = state;
     }),
+    clearSessionComposer: vi.fn(async (key: string) => { delete composerState[key]; }),
     requireOpenCodeService: vi.fn(() => service),
   } as unknown as OpenCodePlugin;
   const contentEl = document.body.createDiv();
@@ -79,7 +85,7 @@ function setup(options: { busy?: boolean } = {}) {
   };
   const controller = new ComposerController(deps);
   controller.mount(contentEl, {}, false);
-  return { contentEl, controller, deps, model, service, settings };
+  return { contentEl, controller, deps, model, service, settings, composerState };
 }
 
 describe("ComposerController input stability", () => {
@@ -159,7 +165,7 @@ describe("ComposerController input stability", () => {
   });
 
   it("pastes an image as a v1 file part and sends it with the prompt", async () => {
-    const { contentEl, service, settings } = setup();
+    const { contentEl, service, composerState } = setup();
     const textarea = contentEl.querySelector<HTMLTextAreaElement>("textarea")!;
     const image = new File([new Uint8Array([1, 2, 3])], "screenshot.png", { type: "image/png" });
     const paste = new Event("paste", { bubbles: true, cancelable: true });
@@ -173,7 +179,7 @@ describe("ComposerController input stability", () => {
 
     textarea.dispatchEvent(paste);
     expect(paste.defaultPrevented).toBe(true);
-    await vi.waitFor(() => expect(settings.sessionAttachedFiles["session-1"]).toHaveLength(1));
+    await vi.waitFor(() => expect(composerState["session-1"]?.attachments).toHaveLength(1));
     const preview = contentEl.querySelector<HTMLButtonElement>(".opencode-session-view__composer-attachment-preview")!;
     expect(preview.textContent).toContain("screenshot.png");
     expect(preview.querySelector("img")?.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
@@ -193,6 +199,7 @@ describe("ComposerController input stability", () => {
         { type: "file", filename: "screenshot.png", mime: "image/png", url: expect.stringMatching(/^data:image\/png;base64,/) },
       ],
     });
+    await vi.waitFor(() => expect(composerState["session-1"]).toBeUndefined());
   });
 
   it("leaves plain-text paste to the native textarea", () => {
@@ -209,7 +216,7 @@ describe("ComposerController input stability", () => {
   });
 
   it("uses Electron's native image for image-only clipboard content", async () => {
-    const { contentEl, settings } = setup();
+    const { contentEl, composerState } = setup();
     vi.stubGlobal("require", vi.fn(() => ({
       clipboard: {
         readImage: () => ({ isEmpty: () => false, toDataURL: () => "data:image/png;base64,AQID" }),
@@ -223,8 +230,8 @@ describe("ComposerController input stability", () => {
 
     textarea.dispatchEvent(paste);
 
-    await vi.waitFor(() => expect(settings.sessionAttachedFiles["session-1"]).toHaveLength(1));
-    expect(settings.sessionAttachedFiles["session-1"]?.[0]).toMatchObject({ mime: "image/png", url: "data:image/png;base64,AQID" });
+    await vi.waitFor(() => expect(composerState["session-1"]?.attachments).toHaveLength(1));
+    expect(composerState["session-1"]?.attachments?.[0]).toMatchObject({ mime: "image/png", url: "data:image/png;base64,AQID" });
   });
 
   it("focuses the textarea after the Session Island reopens Prompt", async () => {

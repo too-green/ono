@@ -42,8 +42,8 @@ export interface FollowLatestAnchor {
 }
 
 /**
- * Owns scroll position, follow-latest state machine, jump-to-bottom button,
- * per-session scroll persistence, and backward-pagination edge detection.
+ * Owns in-memory scroll position, follow-latest state, the jump button, and
+ * backward-pagination edge detection.
  *
  * Controller-private state (timers, rAF handles, jump-button DOM ref) lives here
  * and never leaks into `SessionViewModel`. Shared state (`model.followLatest`)
@@ -62,7 +62,6 @@ export class ScrollController {
   private touchStart?: { x: number; y: number };
   private resumeFollowOnScroll = false;
   private programmaticScrollUntil = 0;
-  private scrollSaveTimer?: number;
   private relocationFrame?: number;
   private relocationPending = false;
   private relocationObserver?: MutationObserver;
@@ -84,7 +83,7 @@ export class ScrollController {
     this.updateJumpButton();
   }
 
-  /** Registers one scroll listener on the Obsidian view root for pagination, state persistence, and jump button visibility. */
+  /** Registers one scroll listener on the Obsidian view root for pagination and jump-button visibility. */
   bindScrollListener(): void {
     if (this.scrollBound) return;
     this.scrollBound = true;
@@ -98,7 +97,6 @@ export class ScrollController {
       previousScrollTop = contentEl.scrollTop;
       this.expectedProgrammaticTop = undefined;
       this.updateJumpButton();
-      this.scheduleScrollStateSave();
       if (Date.now() > this.programmaticScrollUntil) this.markSessionReadIfAtBottom();
       if (model.followLatest && movedUp && !matchedProgrammaticTarget) this.disableFollowLatest();
       if (!model.followLatest && this.resumeFollowOnScroll && this.isAtBottom()) this.enableFollowLatest();
@@ -156,7 +154,7 @@ export class ScrollController {
     this.relocationObserver.observe(this.deps.relocationRootEl, { childList: true, subtree: true });
   }
 
-  /** Clears timers, cancels rAF handles, and persists final scroll position; called by `SessionView.onClose`. */
+  /** Clears timers and cancels relocation/follow handles; called by `SessionView.onClose`. */
   dispose(): void {
     this.relocationObserver?.disconnect();
     this.relocationObserver = undefined;
@@ -164,13 +162,10 @@ export class ScrollController {
     if (this.followLatestFrame !== undefined) window.cancelAnimationFrame(this.followLatestFrame);
     if (this.relocationFrame !== undefined) window.cancelAnimationFrame(this.relocationFrame);
     if (this.followLatestReleaseTimer) window.clearTimeout(this.followLatestReleaseTimer);
-    if (this.scrollSaveTimer) window.clearTimeout(this.scrollSaveTimer);
     this.followLatestFrame = undefined;
     this.relocationFrame = undefined;
     this.relocationPending = false;
     this.followLatestReleaseTimer = undefined;
-    this.scrollSaveTimer = undefined;
-    this.persistScrollState();
   }
 
   // ---- scroll restoration
@@ -183,7 +178,7 @@ export class ScrollController {
     interactionGeneration: number,
   ): Promise<void> {
     await this.nextFrame();
-    const { contentEl, model, plugin } = this.deps;
+    const { contentEl, model } = this.deps;
     if (interactionGeneration !== this.followGeneration) {
       this.updateJumpButton();
       return;
@@ -191,12 +186,8 @@ export class ScrollController {
     if (this.restoreFollowLatest(followAnchor)) {
       // `restoreFollowLatest` performs the guarded write.
     } else if (initialLoad) {
-      const saved = model.sessionId ? plugin.settings.sessionScroll[model.sessionId] : undefined;
-      if (saved && !saved.atBottom) contentEl.scrollTop = saved.top;
-      else {
-        if (model.sessionBusy) this.enableFollowLatest();
-        this.scrollToBottom(false);
-      }
+      if (model.sessionBusy) this.enableFollowLatest();
+      this.scrollToBottom(false);
     } else {
       contentEl.scrollTop = previousTop;
     }
@@ -381,7 +372,6 @@ export class ScrollController {
     this.relocationPending = false;
     this.clearRelocationMask();
     this.updateJumpButton();
-    this.scheduleScrollStateSave();
     return true;
   }
 
@@ -439,30 +429,12 @@ export class ScrollController {
     return el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
   }
 
-  // ---- persistence
-
-  /** Debounces scroll-state persistence so normal scrolling does not thrash plugin data writes. */
-  scheduleScrollStateSave(): void {
-    if (this.scrollSaveTimer) window.clearTimeout(this.scrollSaveTimer);
-    this.scrollSaveTimer = window.setTimeout(() => {
-      this.scrollSaveTimer = undefined;
-      this.persistScrollState();
-    }, 600);
-  }
-
-  /** Persists the current per-session scroll position through the plugin settings store. */
-  persistScrollState(): void {
-    const { contentEl, model, plugin } = this.deps;
-    if (this.relocationPending || !model.sessionId || !contentEl.isConnected || contentEl.clientHeight <= 0) return;
-    void plugin.rememberSessionScroll(model.sessionId, { top: contentEl.scrollTop, atBottom: this.isNearBottom() });
-  }
-
   // ---- helpers
 
   /** Clears a completed-turn marker only after the user reaches the latest session content. */
   private markSessionReadIfAtBottom(): void {
     const { model, plugin } = this.deps;
-    if (this.isNearBottom() && model.sessionId && plugin.settings.sessionUnread[model.sessionId] === true) this.deps.onUnreadChange(false);
+    if (this.isNearBottom() && model.sessionId && plugin.isSessionUnread(model.sessionId)) this.deps.onUnreadChange(false);
   }
 
   /** Waits for one animation frame so MarkdownRenderer-created DOM can affect layout. */

@@ -1,6 +1,6 @@
 /** Pure message-bundle metadata accessors. Extracted from SessionView for unit testing. */
 
-import type { JsonObject, OpenCodeMessageBundle } from "../../services/opencode-types";
+import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef } from "../../services/opencode-types";
 import { readNumber, readObject, readObjectArray, readString } from "./json-helpers";
 import { basename } from "./path-utils";
 
@@ -150,6 +150,20 @@ export function latestUserAgent(messages: OpenCodeMessageBundle[]): string | und
     if (messageRole(bundle) !== "user") continue;
     const agent = readString(bundle.info, ["agent"]);
     if (agent) return agent;
+  }
+  return undefined;
+}
+
+/** Returns the model and variant from the most recent user message, or undefined. */
+export function latestUserModel(messages: OpenCodeMessageBundle[]): OpenCodeModelRef | undefined {
+  for (const bundle of [...messages].reverse()) {
+    if (messageRole(bundle) !== "user") continue;
+    const model = readObject(bundle.info, "model");
+    const providerID = readString(model ?? bundle.info, ["providerID", "providerId"]);
+    const modelID = model
+      ? readString(model, ["modelID", "modelId", "id"])
+      : readString(bundle.info, ["modelID", "modelId"]);
+    if (providerID && modelID) return { providerID, modelID, variant: readString(model ?? bundle.info, ["variant"]) };
   }
   return undefined;
 }

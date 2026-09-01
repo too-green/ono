@@ -237,12 +237,12 @@ describe("buildModelEntries", () => {
 describe("composerAgentFromState", () => {
   const agents: JsonObject[] = [{ name: "build" }, { name: "plan" }];
 
-  it("prefers the persisted key choice when visible", () => {
-    expect(composerAgentFromState(agents, { agent: "plan" }, "build", [])).toBe("build");
+  it("prefers the canonical session agent when visible", () => {
+    expect(composerAgentFromState(agents, { agent: "plan" }, [])).toBe("plan");
   });
 
-  it("falls back to session.agent when key choice is not visible", () => {
-    expect(composerAgentFromState(agents, { agent: "plan" }, undefined, [])).toBe("plan");
+  it("uses the canonical session agent without local persistence", () => {
+    expect(composerAgentFromState(agents, { agent: "plan" }, [])).toBe("plan");
   });
 
   it("falls back to latest user-message agent when session has no agent", () => {
@@ -251,15 +251,15 @@ describe("composerAgentFromState", () => {
       { info: { type: "user", agent: "plan" }, parts: [] },
       { info: { type: "user" }, parts: [] },
     ];
-    expect(composerAgentFromState(agents, {}, undefined, messages)).toBe("plan");
+    expect(composerAgentFromState(agents, {}, messages)).toBe("plan");
   });
 
   it("falls back to first visible agent when nothing else resolves", () => {
-    expect(composerAgentFromState(agents, {}, undefined, [])).toBe("build");
+    expect(composerAgentFromState(agents, {}, [])).toBe("build");
   });
 
   it("returns undefined when no agents are visible", () => {
-    expect(composerAgentFromState([], {}, undefined, [])).toBeUndefined();
+    expect(composerAgentFromState([], {}, [])).toBeUndefined();
   });
 });
 
@@ -272,18 +272,22 @@ describe("composerModelFromState", () => {
     { name: "build", model: { providerID: "anthropic", modelID: "claude" }, variant: "high" },
   ];
 
-  it("prefers the persisted key choice when valid", () => {
-    expect(composerModelFromState(models, agents, {}, { providerID: "openai", modelID: "gpt-4o" })).toEqual({ providerID: "openai", modelID: "gpt-4o" });
+  it("falls back to the latest user-message model and variant", () => {
+    const messages: OpenCodeMessageBundle[] = [{
+      info: { role: "user", model: { providerID: "openai", modelID: "gpt-4o", variant: "high" } },
+      parts: [],
+    }];
+    expect(composerModelFromState(models, agents, {}, messages)).toEqual({ providerID: "openai", modelID: "gpt-4o", variant: "high" });
   });
 
   it("falls back to session.model", () => {
     const session: JsonObject = { model: { providerID: "openai", id: "gpt-4o", variant: "low" } };
-    expect(composerModelFromState(models, agents, session, undefined)).toEqual({ providerID: "openai", modelID: "gpt-4o", variant: "low" });
+    expect(composerModelFromState(models, agents, session, [])).toEqual({ providerID: "openai", modelID: "gpt-4o", variant: "low" });
   });
 
   it("falls back to the session-agent's configured model", () => {
     const session: JsonObject = { agent: "build" };
-    expect(composerModelFromState(models, agents, session, undefined)).toEqual({ providerID: "anthropic", modelID: "claude", variant: "high" });
+    expect(composerModelFromState(models, agents, session, [])).toEqual({ providerID: "anthropic", modelID: "claude", variant: "high" });
   });
 
   it("prefers the resolved selected agent when it differs from session.agent", () => {
@@ -292,15 +296,15 @@ describe("composerModelFromState", () => {
       { name: "plan", model: { providerID: "openai", modelID: "gpt-4o" }, variant: "low" },
     ];
     const session: JsonObject = { agent: "build" };
-    expect(composerModelFromState(models, availableAgents, session, undefined, "plan")).toEqual({ providerID: "openai", modelID: "gpt-4o", variant: "low" });
+    expect(composerModelFromState(models, availableAgents, session, [], "plan")).toEqual({ providerID: "openai", modelID: "gpt-4o", variant: "low" });
   });
 
   it("falls back to first available ref when no other source resolves", () => {
-    expect(composerModelFromState(models, agents, {}, undefined)).toEqual({ providerID: "anthropic", modelID: "claude" });
+    expect(composerModelFromState(models, agents, {}, [])).toEqual({ providerID: "anthropic", modelID: "claude" });
   });
 
   it("returns undefined when no models are available", () => {
-    expect(composerModelFromState([], agents, {}, undefined)).toBeUndefined();
+    expect(composerModelFromState([], agents, {}, [])).toBeUndefined();
   });
 });
 

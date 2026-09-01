@@ -372,7 +372,7 @@ export class AgentPanelView extends ItemView {
       createdAt: this.sessionTime(session, "created"),
       updatedAt: this.sessionTime(session, "updated"),
       status: this.visualStatusFor(id, statuses, requiresAttention),
-      muted: this.plugin.settings.sessionMute[id] === true,
+      muted: this.plugin.getSessionNotificationState(session).muted,
       requiresAttention,
     };
   }
@@ -1092,7 +1092,7 @@ export class AgentPanelView extends ItemView {
     if (this.erroredSessionIds.has(sessionId)) return "error";
     const status = statuses[sessionId];
     const type = status && typeof status === "object" && !Array.isArray(status) ? this.readString(status as JsonObject, ["type", "status", "state"]) : this.lastKnownSessionStatuses.get(sessionId);
-    return visualStatusForSession(type, this.plugin.settings.sessionUnread[sessionId] === true);
+    return visualStatusForSession(type, this.plugin.isSessionUnread(sessionId));
   }
 
   /** Reconciles busy-to-idle transitions so completed turns remain visible as unread. */
@@ -1116,7 +1116,7 @@ export class AgentPanelView extends ItemView {
   /** Marks a session unread only when a previously active run has settled. */
   private markCompletedSessionUnread(sessionId: string, previous: string | undefined, next: string): void {
     const settled = next === "idle" || next === "done" || next === "complete" || next === "completed";
-    if (!isActiveSessionStatus(previous) || !settled || this.plugin.settings.sessionUnread[sessionId] === true) return;
+    if (!isActiveSessionStatus(previous) || !settled || this.plugin.isSessionUnread(sessionId)) return;
     void this.plugin.rememberSessionUnread(sessionId, true);
   }
 

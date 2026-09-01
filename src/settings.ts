@@ -69,6 +69,30 @@ export interface ComposerImageAttachment {
 /** Filesystem paths and data-backed images accepted by the session composer. */
 export type ComposerAttachment = string | ComposerImageAttachment;
 
+export const OPENCODE_DATA_SCHEMA_VERSION = 1;
+
+/** Composer content retained only until the next successful submission. */
+export interface PersistedComposerState {
+  text?: string;
+  attachments?: ComposerAttachment[];
+}
+
+/** Session-owned UI policy and unsent composer state stored in plugin data. */
+export interface PersistedSessionState {
+  composer?: PersistedComposerState;
+  autoApprove?: boolean | "inherit";
+  muted?: boolean;
+  unread?: true;
+}
+
+/** Versioned data.json boundary separating global preferences from keyed local state. */
+export interface OpenCodePluginData {
+  schemaVersion: typeof OPENCODE_DATA_SCHEMA_VERSION;
+  preferences: OpenCodePluginSettings;
+  sessions: Record<string, PersistedSessionState>;
+  drafts: Record<string, PersistedSessionState>;
+}
+
 export interface OpenCodePluginSettings {
   server: OpenCodeServerConfig;
   openedDirectories: string[];
@@ -78,16 +102,7 @@ export interface OpenCodePluginSettings {
   todoInProgressStatusCharacter: string;
   interruptConfirmSeconds: number;
   archiveConfirmation: boolean;
-  sessionScroll: Record<string, { top: number; atBottom: boolean }>;
-  sessionDrafts: Record<string, string>;
-  sessionAgentChoices: Record<string, string>;
-  sessionModelChoices: Record<string, { providerID: string; modelID: string; variant?: string }>;
   defaultSessionAutoApprove: boolean;
-  sessionAutoApprove: Record<string, boolean>;
-  sessionAutoApproveDefaultApplied: Record<string, true>;
-  sessionMute: Record<string, boolean>;
-  sessionAttachedFiles: Record<string, ComposerAttachment[]>;
-  sessionUnread: Record<string, boolean>;
   notificationMode: NotificationMode;
   notifyOnAttention: boolean;
   notifyOnSessionError: boolean;
@@ -121,16 +136,7 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   todoInProgressStatusCharacter: "",
   interruptConfirmSeconds: 3,
   archiveConfirmation: true,
-  sessionScroll: {},
-  sessionDrafts: {},
-  sessionAgentChoices: {},
-  sessionModelChoices: {},
   defaultSessionAutoApprove: false,
-  sessionAutoApprove: {},
-  sessionAutoApproveDefaultApplied: {},
-  sessionMute: {},
-  sessionAttachedFiles: {},
-  sessionUnread: {},
   notificationMode: DEFAULT_NOTIFICATION_MODE,
   notifyOnAttention: true,
   notifyOnSessionError: true,
@@ -145,6 +151,49 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   debugLogging: false,
   openIde: DEFAULT_OPEN_IDE_ID,
 };
+
+/** Returns a validated attachment from persisted composer data. */
+function normalizeComposerAttachment(value: unknown): ComposerAttachment | undefined {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const attachment = value as Record<string, unknown>;
+  return typeof attachment.filename === "string" && typeof attachment.mime === "string" && typeof attachment.url === "string"
+    ? { filename: attachment.filename, mime: attachment.mime, url: attachment.url }
+    : undefined;
+}
+
+/** Compacts and validates one session or draft state loaded from versioned plugin data. */
+function normalizePersistedSessionState(value: unknown): PersistedSessionState | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const state: PersistedSessionState = {};
+  if (input.composer && typeof input.composer === "object" && !Array.isArray(input.composer)) {
+    const inputComposer = input.composer as Record<string, unknown>;
+    const composer: PersistedComposerState = {};
+    if (typeof inputComposer.text === "string" && inputComposer.text.trim()) composer.text = inputComposer.text;
+    if (Array.isArray(inputComposer.attachments)) {
+      const attachments = inputComposer.attachments.flatMap((item) => {
+        const attachment = normalizeComposerAttachment(item);
+        return attachment === undefined ? [] : [attachment];
+      });
+      if (attachments.length > 0) composer.attachments = attachments;
+    }
+    if (Object.keys(composer).length > 0) state.composer = composer;
+  }
+  if (typeof input.autoApprove === "boolean" || input.autoApprove === "inherit") state.autoApprove = input.autoApprove;
+  if (typeof input.muted === "boolean") state.muted = input.muted;
+  if (input.unread === true) state.unread = true;
+  return Object.keys(state).length > 0 ? state : undefined;
+}
+
+/** Returns a compact validated map of persisted session-owned state. */
+export function normalizePersistedSessionStates(value: unknown): Record<string, PersistedSessionState> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([id, raw]) => {
+    const state = id.trim() ? normalizePersistedSessionState(raw) : undefined;
+    return state ? [[id, state]] : [];
+  }));
+}
 
 /** Returns a supported Prompt-tab context label for persisted settings and live rendering. */
 export function normalizeSessionIslandContextLabel(value: unknown): SessionIslandContextLabel {

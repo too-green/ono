@@ -44,9 +44,8 @@ function setup(): DraftViewHarness {
   model.draftDirectory = "/workspace";
   const settings = {
     interruptConfirmSeconds: 3,
-    sessionAttachedFiles: {} as Record<string, unknown[]>,
-    sessionDrafts: {} as Record<string, string>,
   };
+  const composerState: Record<string, { text?: string; attachments?: unknown[] }> = {};
   const service = {
     listAgents: vi.fn(async () => []),
     listModels: vi.fn(async () => []),
@@ -56,11 +55,16 @@ function setup(): DraftViewHarness {
   };
   const plugin = {
     settings,
+    getSessionDraft: vi.fn((key: string) => composerState[key]?.text ?? ""),
+    getSessionAttachedFiles: vi.fn((key: string) => composerState[key]?.attachments ?? []),
     rememberSessionDraft: vi.fn(async (key: string, value: string) => {
-      if (value.trim()) settings.sessionDrafts[key] = value;
-      else delete settings.sessionDrafts[key];
+      const state = composerState[key] ?? {};
+      if (value.trim()) state.text = value;
+      else delete state.text;
+      composerState[key] = state;
     }),
     rememberSessionAttachedFiles: vi.fn(async () => undefined),
+    clearSessionComposer: vi.fn(async (key: string) => { delete composerState[key]; }),
     requireOpenCodeService: vi.fn(() => service),
   } as unknown as OpenCodePlugin;
   const contentEl = document.body.createDiv();
@@ -176,5 +180,18 @@ describe("SessionView draft composer stability", () => {
     await flushMountTimers();
 
     expect(document.activeElement).not.toBe(view.contentEl.querySelector("textarea"));
+  });
+
+  it("preserves an unsent in-memory agent and model across background remounts", async () => {
+    const view = setup();
+    view.model.selectedAgent = "plan";
+    view.model.selectedModel = { providerID: "openai", modelID: "gpt", variant: "high" };
+    view.model.composerSelectionDirty = true;
+
+    await view.renderDraftSession();
+
+    expect(view.model.selectedAgent).toBe("plan");
+    expect(view.model.selectedModel).toEqual({ providerID: "openai", modelID: "gpt", variant: "high" });
+    expect(view.model.composerSelectionDirty).toBe(true);
   });
 });

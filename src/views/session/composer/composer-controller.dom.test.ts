@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Modal } from "obsidian";
 
 import type OpenCodePlugin from "../../../../main";
-import type { ComposerAttachment } from "../../../settings";
+import { defaultContextBarSettings, type ComposerAttachment } from "../../../settings";
 import { SessionViewModel } from "../session-view-model";
 import { ComposerController, type ComposerDeps } from "./composer-controller";
 
@@ -36,6 +36,7 @@ function setup(options: { busy?: boolean } = {}) {
   model.sessionBusy = options.busy ?? false;
   const settings = {
     interruptConfirmSeconds: 3,
+    contextBar: defaultContextBarSettings(),
   };
   const composerState: Record<string, { text?: string; attachments?: ComposerAttachment[] }> = {};
   const service = { sendPromptAsync: vi.fn(async (_sessionId: string, _input: unknown, _directory?: string) => undefined) };
@@ -141,9 +142,10 @@ describe("ComposerController input stability", () => {
   it("renders checkpoint marker labels for hover-pill reveal", () => {
     const { contentEl } = setup();
     const labels = [...contentEl.querySelectorAll<HTMLElement>(".opencode-session-view__composer-progress-marker-label")];
-    expect(labels).toHaveLength(3);
+    // Five marker slots exist (max four thresholds + the limit); three are positioned/visible by default.
+    expect(labels).toHaveLength(5);
     expect(labels.every((label) => !label.hidden)).toBe(true);
-    expect(contentEl.querySelectorAll(".opencode-session-view__composer-progress-marker")).toHaveLength(3);
+    expect(contentEl.querySelectorAll(".opencode-session-view__composer-progress-marker")).toHaveLength(5);
   });
 
   it("keeps the focused textarea mounted across chunked external input while busy", () => {

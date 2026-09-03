@@ -1,9 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CONTEXT_BAR_MAX_THRESHOLDS,
+  DEFAULT_CONTEXT_PERCENT_SET,
+  DEFAULT_CONTEXT_TOKENS_SET,
   DEFAULT_OPENCODE_SETTINGS,
   DEFAULT_SERVER_BASE_URL,
+  defaultContextBarSettings,
+  formatContextThresholdValue,
+  hardStopGradient,
+  isValidContextSegmentHex,
   normalizeAgentPanelSessionSort,
+  normalizeContextBarSettings,
+  normalizeContextSegmentColor,
+  normalizeContextThresholdSet,
   normalizeDebugLogging,
   normalizeFolderCollapseDisplay,
   normalizeNotificationMode,
@@ -13,6 +23,8 @@ import {
   normalizeServerBaseUrl,
   normalizeServerUsername,
   normalizeSessionIslandContextLabel,
+  parseContextThresholdValue,
+  resolveContextSegmentColor,
 } from "./settings";
 
 describe("normalizePersistedSessionStates", () => {
@@ -134,5 +146,107 @@ describe("retry action prompt settings", () => {
     expect(normalizeRetryActionSuppressed({ hidden: true, false: false, text: "true" })).toEqual({ hidden: true });
     expect(normalizeRetryActionLastShown(undefined)).toEqual({});
     expect(normalizeRetryActionSuppressed([])).toEqual({});
+  });
+});
+
+describe("context bar settings", () => {
+  it("ships percent as the active unit with both default threshold sets seeded", () => {
+    expect(DEFAULT_OPENCODE_SETTINGS.contextBar).toEqual(defaultContextBarSettings());
+    expect(defaultContextBarSettings()).toEqual({
+      unit: "percent",
+      percent: DEFAULT_CONTEXT_PERCENT_SET,
+      tokens: DEFAULT_CONTEXT_TOKENS_SET,
+    });
+    expect(DEFAULT_CONTEXT_PERCENT_SET).toEqual({
+      thresholds: [{ fraction: 0.5, value: 60 }, { fraction: 0.75, value: 85 }],
+      segmentColors: ["accent", "yellow", "red"],
+    });
+    expect(DEFAULT_CONTEXT_TOKENS_SET).toEqual({
+      thresholds: [{ fraction: 0.5, value: 100_000 }, { fraction: 0.75, value: 250_000 }],
+      segmentColors: ["accent", "yellow", "red"],
+    });
+  });
+
+  it("returns fresh objects so saved settings never alias the defaults", () => {
+    const first = defaultContextBarSettings();
+    const second = defaultContextBarSettings();
+    expect(first).not.toBe(second);
+    expect(first.percent).not.toBe(second.percent);
+    expect(first.percent.thresholds[0]).not.toBe(second.percent.thresholds[0]);
+  });
+
+  it("normalizes threshold sets: clamped bounds, strictly ascending, capped length, padded colors", () => {
+    expect(normalizeContextThresholdSet({
+      thresholds: [
+        { fraction: -1, value: 0 },                          // clamps to 0.001 / 0.1
+        { fraction: 0.4, value: 120 },                       // percent clamps to 100
+        { fraction: 0.3, value: 95 },                        // non-ascending fraction → dropped
+        { fraction: 0.8, value: 50 },                        // non-ascending value (vs clamped 100) → dropped
+        { fraction: 0.9, value: 195.55, junk: true },        // clamps to 100... which equals the previous value → dropped
+      ],
+      segmentColors: ["red", "nope"],
+    }, "percent")).toEqual({
+      thresholds: [{ fraction: 0.001, value: 0.1 }, { fraction: 0.4, value: 100 }],
+      segmentColors: ["red", "accent", "accent"],
+    });
+    expect(normalizeContextThresholdSet({
+      thresholds: [
+        { fraction: 0.4, value: 60.44 },                     // percent rounds to 60.4
+        { fraction: 0.9, value: 95.55 },                     // rounds to 95.6, ascending → kept
+      ],
+      segmentColors: [],
+    }, "percent")).toEqual({
+      thresholds: [{ fraction: 0.4, value: 60.4 }, { fraction: 0.9, value: 95.6 }],
+      segmentColors: ["accent", "accent", "accent"],
+    });
+  });
+
+  it("caps normalized sets at the threshold maximum", () => {
+    const crowded = { thresholds: Array.from({ length: 8 }, (_, i) => ({ fraction: (i + 1) / 9, value: (i + 1) * 10 })) };
+    expect(normalizeContextThresholdSet(crowded, "percent").thresholds).toHaveLength(CONTEXT_BAR_MAX_THRESHOLDS);
+  });
+
+  it("preserves explicitly emptied sets but defaults missing ones", () => {
+    expect(normalizeContextBarSettings("nope")).toEqual(defaultContextBarSettings());
+    const emptied = normalizeContextBarSettings({ unit: "tokens", tokens: { thresholds: [], segmentColors: ["blue"] } });
+    expect(emptied.tokens).toEqual({ thresholds: [], segmentColors: ["blue"] });
+    expect(emptied.percent).toEqual(DEFAULT_CONTEXT_PERCENT_SET);
+    expect(normalizeContextBarSettings({ unit: "lightyears" }).unit).toBe("percent");
+  });
+
+  it("validates, normalizes, and resolves segment colors", () => {
+    expect(isValidContextSegmentHex("#f00")).toBe(true);
+    expect(isValidContextSegmentHex("#rrggbb")).toBe(false);
+    expect(normalizeContextSegmentColor("RED")).toBe("accent");
+    expect(normalizeContextSegmentColor("red")).toBe("red");
+    expect(normalizeContextSegmentColor(" #FF00AA ")).toBe("#ff00aa");
+    expect(resolveContextSegmentColor("accent")).toBe("var(--interactive-accent)");
+    expect(resolveContextSegmentColor("#ff00aa")).toBe("#ff00aa");
+    expect(resolveContextSegmentColor("garbage")).toBe("var(--interactive-accent)");
+  });
+
+  it("parses unit-aware threshold values and rejects the wrong unit's syntax", () => {
+    expect(parseContextThresholdValue("60%", "percent")).toBe(60);
+    expect(parseContextThresholdValue(" 99.9", "percent")).toBe(99.9);
+    expect(parseContextThresholdValue("100k", "tokens")).toBe(100_000);
+    expect(parseContextThresholdValue("1M", "tokens")).toBe(1_000_000);
+    expect(parseContextThresholdValue("250000", "tokens")).toBe(250_000);
+    expect(parseContextThresholdValue("100k", "percent")).toBeUndefined();
+    expect(parseContextThresholdValue("60%", "tokens")).toBeUndefined();
+    expect(parseContextThresholdValue("", "percent")).toBeUndefined();
+    expect(parseContextThresholdValue("lots", "tokens")).toBeUndefined();
+  });
+
+  it("formats threshold values with compact k/m suffixes for round token counts", () => {
+    expect(formatContextThresholdValue(60, "percent")).toBe("60%");
+    expect(formatContextThresholdValue(100_000, "tokens")).toBe("100k");
+    expect(formatContextThresholdValue(1_000_000, "tokens")).toBe("1m");
+    expect(formatContextThresholdValue(108_800, "tokens")).toBe("108800");
+  });
+
+  it("builds hard-stop gradients shared by the session bar and the settings editor", () => {
+    expect(hardStopGradient([{ from: 0, to: 0.5, color: "var(--interactive-accent)" }, { from: 0.5, to: 1, color: "#ff0000" }])).toBe(
+      "linear-gradient(to right, var(--interactive-accent) 0.00%, var(--interactive-accent) 50.00%, #ff0000 50.00%, #ff0000 100.00%)",
+    );
   });
 });

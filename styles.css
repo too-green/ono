@@ -2887,6 +2887,368 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
   color: var(--text-error);
 }
 
+/* Context bar settings use a vertical row so the interactive preview gets the full width. */
+.opencode-settings__context-bar.setting-item {
+  align-items: stretch;
+  flex-direction: column;
+  gap: var(--size-4-3);
+}
+
+.opencode-settings__context-bar > .setting-item-info {
+  flex: 0 0 auto;
+  max-width: none;
+  width: 100%;
+}
+
+.opencode-settings__context-bar .setting-item-description {
+  max-width: 72ch;
+}
+
+.opencode-context-bar-editor {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: var(--size-4-3);
+  min-width: 0;
+  width: 100%;
+}
+
+.opencode-context-bar-editor__controls {
+  align-items: center;
+  display: flex;
+  gap: var(--size-4-2);
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.opencode-context-bar-editor__unit-toggle {
+  background-color: var(--background-primary);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--button-radius);
+  display: inline-flex;
+  gap: 0;
+  min-width: 0;
+  padding: var(--size-2-1);
+}
+
+.opencode-context-bar-editor__unit-button {
+  background-color: transparent;
+  border: 0;
+  border-radius: var(--button-radius);
+  box-shadow: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  min-height: var(--size-4-7);
+  min-width: 0;
+  padding: var(--size-2-1) var(--size-4-2);
+  white-space: nowrap;
+}
+
+.opencode-context-bar-editor__unit-button.is-active {
+  background-color: var(--background-modifier-hover);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 16%);
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.opencode-context-bar-editor__unit-button:hover:not(.is-active),
+.opencode-context-bar-editor__unit-button:focus-visible {
+  color: var(--text-normal);
+}
+
+.opencode-context-bar-editor__add-button {
+  align-items: center;
+  background-color: var(--background-primary);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--button-radius);
+  box-shadow: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: var(--font-ui-small);
+  gap: var(--size-2-2);
+  min-height: var(--size-4-8);
+  padding: var(--size-2-1) var(--size-4-2);
+}
+
+.opencode-context-bar-editor__add-icon,
+.opencode-context-bar-editor__add-icon svg {
+  height: var(--icon-xs);
+  width: var(--icon-xs);
+}
+
+.opencode-context-bar-editor__add-button:not(:disabled):hover {
+  background-color: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+  color: var(--text-normal);
+}
+
+.opencode-context-bar-editor__add-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.opencode-context-bar-editor__bar-area {
+  background-color: var(--background-primary);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-sizing: border-box;
+  padding: var(--size-4-3) var(--size-4-5) var(--size-2-3);
+  position: relative;
+  width: 100%;
+}
+
+.opencode-context-bar-editor__pills {
+  display: block;
+  height: calc(var(--size-4-8) + var(--size-2-2));
+  position: relative;
+}
+
+.opencode-context-bar-editor__pill {
+  align-items: center;
+  background-color: var(--background-secondary);
+  border: var(--border-width) solid var(--background-modifier-border-hover);
+  border-radius: var(--pill-radius);
+  box-shadow: 0 2px 5px rgb(0 0 0 / 18%);
+  box-sizing: border-box;
+  color: var(--text-normal);
+  cursor: grab;
+  display: inline-flex;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-medium);
+  height: var(--size-4-7);
+  justify-content: center;
+  line-height: 1;
+  min-width: var(--size-4-8);
+  padding: 0 var(--size-2-3);
+  position: absolute;
+  top: 0;
+  touch-action: none;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.opencode-context-bar-editor__pill::after {
+  background-color: var(--background-modifier-border-hover);
+  bottom: calc(var(--size-4-5) * -1);
+  content: "";
+  height: var(--size-4-5);
+  left: 50%;
+  position: absolute;
+  width: var(--border-width);
+}
+
+.opencode-context-bar-editor__pill:hover,
+.opencode-context-bar-editor__pill:focus-visible {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 2px 7px rgb(0 0 0 / 24%);
+  outline: none;
+}
+
+.opencode-context-bar-editor__pill:hover::after,
+.opencode-context-bar-editor__pill:focus-visible::after {
+  background-color: var(--interactive-accent);
+}
+
+.opencode-context-bar-editor__pill:active {
+  cursor: grabbing;
+}
+
+.opencode-context-bar-editor__pill.is-dragging {
+  border-color: var(--interactive-accent);
+  cursor: grabbing;
+  user-select: none;
+}
+
+.opencode-context-bar-editor__track {
+  box-sizing: border-box;
+  height: var(--size-4-6);
+  position: relative;
+}
+
+.opencode-context-bar-editor__strip {
+  border: var(--border-width) solid color-mix(in srgb, var(--background-modifier-border-hover) 70%, transparent);
+  border-radius: var(--pill-radius);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 18%);
+  box-sizing: border-box;
+  height: var(--size-2-3);
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.opencode-context-bar-editor__segment {
+  box-sizing: border-box;
+  cursor: pointer;
+  height: 100%;
+  position: absolute;
+  top: 0;
+  z-index: 1;
+}
+
+.opencode-context-bar-editor__segment::after {
+  background-color: transparent;
+  content: "";
+  height: var(--size-2-3);
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.opencode-context-bar-editor__segment:hover::after {
+  background-color: rgb(255 255 255 / 14%);
+}
+
+.opencode-context-bar-editor__ruler {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  height: var(--size-4-5);
+  position: relative;
+}
+
+.opencode-context-bar-editor__ruler-tick {
+  background-color: var(--background-modifier-border);
+  height: var(--size-2-2);
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+
+.opencode-context-bar-editor__ruler-label {
+  bottom: 0;
+  line-height: 1;
+  position: absolute;
+}
+
+.opencode-context-bar-editor__ruler-label.is-start {
+  left: 0;
+}
+
+.opencode-context-bar-editor__ruler-label.is-end {
+  right: 0;
+}
+
+.opencode-context-bar-editor__position {
+  background-color: var(--background-modifier-hover);
+  border: var(--border-width) solid var(--background-modifier-border-hover);
+  border-radius: var(--radius-s);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  padding: var(--size-2-1) var(--size-2-2);
+  position: absolute;
+  top: var(--size-2-1);
+  transform: translateX(-50%);
+  z-index: 2;
+}
+
+.opencode-context-bar-editor__hint {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  line-height: var(--line-height-tight);
+  padding: 0 var(--size-2-1);
+}
+
+.opencode-context-bar-editor__popover {
+  background-color: var(--background-secondary);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-l);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-2);
+  margin-top: calc(var(--size-2-2) * -1);
+  max-width: 360px;
+  padding: var(--size-4-3);
+  position: relative;
+  z-index: var(--layer-popover, 15);
+}
+
+.opencode-context-bar-editor__popover-title {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+}
+
+.opencode-context-bar-editor__popover-hint {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.opencode-context-bar-editor__swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+}
+
+.opencode-context-bar-editor__swatch {
+  background-color: transparent;
+  border: var(--border-width) solid transparent;
+  border-radius: var(--button-radius);
+  cursor: pointer;
+  font-size: var(--font-ui-smaller);
+  padding: var(--size-2-1) var(--size-2-3);
+}
+
+.opencode-context-bar-editor__swatch.is-active {
+  background-color: var(--background-modifier-active-hover);
+  border-color: var(--background-modifier-border-hover);
+  font-weight: var(--font-semibold);
+}
+
+.opencode-context-bar-editor__value-input,
+.opencode-context-bar-editor__hex-input {
+  width: 100%;
+}
+
+.opencode-context-bar-editor__remove-button {
+  align-self: flex-start;
+  background-color: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: var(--size-2-1);
+}
+
+.opencode-context-bar-editor__remove-button:hover {
+  color: var(--text-error);
+}
+
+@media (max-width: 560px) {
+  .opencode-context-bar-editor__controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .opencode-context-bar-editor__unit-toggle,
+  .opencode-context-bar-editor__add-button {
+    width: 100%;
+  }
+
+  .opencode-context-bar-editor__unit-button {
+    flex: 1 1 50%;
+  }
+
+  .opencode-context-bar-editor__add-button {
+    justify-content: center;
+  }
+
+  .opencode-context-bar-editor__bar-area {
+    padding-inline: var(--size-4-4);
+  }
+}
+
 .opencode-session-view__empty,
 .opencode-session-view__state {
   color: var(--text-muted);

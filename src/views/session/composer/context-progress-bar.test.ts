@@ -1,88 +1,123 @@
 import { describe, expect, it } from "vitest";
+import { defaultContextBarSettings, type ContextBarSettings, type ContextThresholdSet } from "../../../settings";
 import {
-  PROGRESS_CHECKPOINTS,
   computeProgressSections,
   contextToBarFraction,
   sectionsToGradient,
 } from "./context-progress-bar";
 
-describe("PROGRESS_CHECKPOINTS", () => {
-  it("has 3 checkpoints in ascending fractions ending at 1.0", () => {
-    expect(PROGRESS_CHECKPOINTS).toHaveLength(3);
-    expect(PROGRESS_CHECKPOINTS.map((c) => c.fraction)).toEqual([0.5, 0.75, 1.0]);
-  });
+const ACCENT = "var(--interactive-accent)";
+const YELLOW = "var(--color-yellow)";
+const RED = "var(--color-red)";
 
-  it("marks the last checkpoint without an explicit context (defaults to model limit)", () => {
-    expect(PROGRESS_CHECKPOINTS[PROGRESS_CHECKPOINTS.length - 1].context).toBeUndefined();
-  });
-
-  it("assigns accent color by default and overrides on warning/danger checkpoints", () => {
-    expect(PROGRESS_CHECKPOINTS[0].color).toBeUndefined();
-    expect(PROGRESS_CHECKPOINTS[1].color).toBe("var(--color-yellow)");
-    expect(PROGRESS_CHECKPOINTS[2].color).toBe("var(--color-red)");
-  });
+/** Builds a policy around one unit's set, leaving the other unit at defaults. */
+const configWithSet = (unit: "percent" | "tokens", set: ContextThresholdSet): ContextBarSettings => ({
+  ...defaultContextBarSettings(),
+  unit,
+  [unit]: set,
 });
 
+/** Classic absolute-budget preset: 100k and 250k splits at 50%/75%. */
+const TOKENS_SET: ContextThresholdSet = {
+  thresholds: [
+    { fraction: 0.5, value: 100_000 },
+    { fraction: 0.75, value: 250_000 },
+  ],
+  segmentColors: ["accent", "yellow", "red"],
+};
+
 describe("computeProgressSections", () => {
-  it("returns 3 sections with default accent color when no checkpoint overrides color", () => {
-    const sections = computeProgressSections(500_000);
-    expect(sections).toHaveLength(3);
-    expect(sections[0]).toEqual({ startFraction: 0, endFraction: 0.5, startContext: 0, endContext: 100_000, color: "var(--interactive-accent)" });
-    expect(sections[1]).toEqual({ startFraction: 0.5, endFraction: 0.75, startContext: 100_000, endContext: 250_000, color: "var(--color-yellow)" });
-    expect(sections[2]).toEqual({ startFraction: 0.75, endFraction: 1.0, startContext: 250_000, endContext: 500_000, color: "var(--color-red)" });
+  it("renders the shipped default (percent 60/85 at 50%/75%) against the model limit", () => {
+    const sections = computeProgressSections(500_000, configWithSet("percent", {
+      thresholds: [{ fraction: 0.5, value: 60 }, { fraction: 0.75, value: 85 }],
+      segmentColors: ["accent", "yellow", "red"],
+    }));
+    expect(sections).toEqual([
+      { startFraction: 0, endFraction: 0.5, startContext: 0, endContext: 300_000, color: ACCENT },
+      { startFraction: 0.5, endFraction: 0.75, startContext: 300_000, endContext: 425_000, color: YELLOW },
+      { startFraction: 0.75, endFraction: 1, startContext: 425_000, endContext: 500_000, color: RED },
+    ]);
   });
 
-  it("forces the last section's endFraction to 1.0 and endContext to the model limit", () => {
-    const sections = computeProgressSections(400_000);
-    const last = sections[sections.length - 1];
-    expect(last.endFraction).toBe(1.0);
-    expect(last.endContext).toBe(400_000);
+  it("renders absolute thresholds (100k/250k) at their configured bar positions", () => {
+    const sections = computeProgressSections(500_000, configWithSet("tokens", TOKENS_SET));
+    expect(sections).toEqual([
+      { startFraction: 0, endFraction: 0.5, startContext: 0, endContext: 100_000, color: ACCENT },
+      { startFraction: 0.5, endFraction: 0.75, startContext: 100_000, endContext: 250_000, color: YELLOW },
+      { startFraction: 0.75, endFraction: 1, startContext: 250_000, endContext: 500_000, color: RED },
+    ]);
   });
 
-  it("truncates when a non-last checkpoint exceeds the limit", () => {
-    // Limit 150_000 sits between the 100k and 250k checkpoints, so the 250k checkpoint
-    // exceeds the limit and the second section is extended to fraction 1.0.
-    const sections = computeProgressSections(150_000);
-    expect(sections).toHaveLength(2);
-    expect(sections[0]).toEqual({ startFraction: 0, endFraction: 0.5, startContext: 0, endContext: 100_000, color: "var(--interactive-accent)" });
-    expect(sections[1]).toEqual({ startFraction: 0.5, endFraction: 1.0, startContext: 100_000, endContext: 150_000, color: "var(--color-yellow)" });
+  it("returns a single accent section when the active set has no thresholds", () => {
+    const sections = computeProgressSections(500_000, configWithSet("tokens", { thresholds: [], segmentColors: ["blue"] }));
+    expect(sections).toEqual([
+      { startFraction: 0, endFraction: 1, startContext: 0, endContext: 500_000, color: "var(--color-blue)" },
+    ]);
   });
 
-  it("truncates immediately when limit is below the first checkpoint context", () => {
-    const sections = computeProgressSections(50_000);
-    expect(sections).toHaveLength(1);
-    expect(sections[0]).toEqual({ startFraction: 0, endFraction: 1.0, startContext: 0, endContext: 50_000, color: "var(--interactive-accent)" });
+  it("returns a single accent section ending at context 0 when the limit is unknown", () => {
+    const sections = computeProgressSections(0, configWithSet("tokens", TOKENS_SET));
+    expect(sections).toEqual([
+      { startFraction: 0, endFraction: 1, startContext: 0, endContext: 0, color: ACCENT },
+    ]);
   });
 
-  it("returns 3 sections without forcing last to 1.0 when limit is 0", () => {
-    const sections = computeProgressSections(0);
-    expect(sections).toHaveLength(3);
-    // Last-section override is skipped when limit === 0, so fractions come straight from checkpoints.
-    // cp.context ?? 0 → undefined becomes 0; non-last checkpoints retain their explicit context values.
-    expect(sections[0].endContext).toBe(100_000);
-    expect(sections[1].endContext).toBe(250_000);
-    expect(sections[2].endContext).toBe(0); // last checkpoint has no explicit context; resolves to limit 0
-    expect(sections[2].endFraction).toBe(1.0); // checkpoint fraction, not the override
+  it("extends the overflowing section to the bar's end and drops later thresholds", () => {
+    // Limit 150k sits between the 100k and 250k thresholds: the yellow section
+    // (ending at 250k) stretches to fraction 1.0 at the limit; red never renders.
+    const sections = computeProgressSections(150_000, configWithSet("tokens", TOKENS_SET));
+    expect(sections).toEqual([
+      { startFraction: 0, endFraction: 0.5, startContext: 0, endContext: 100_000, color: ACCENT },
+      { startFraction: 0.5, endFraction: 1, startContext: 100_000, endContext: 150_000, color: YELLOW },
+    ]);
   });
 
-  it("never mutates the PROGRESS_CHECKPOINTS constant", () => {
-    const before = PROGRESS_CHECKPOINTS.map((c) => ({ ...c }));
-    computeProgressSections(123_456);
-    expect(PROGRESS_CHECKPOINTS.map((c) => ({ ...c }))).toEqual(before);
+  it("truncates immediately when the limit is below the first threshold", () => {
+    const sections = computeProgressSections(50_000, configWithSet("tokens", TOKENS_SET));
+    expect(sections).toEqual([
+      { startFraction: 0, endFraction: 1, startContext: 0, endContext: 50_000, color: ACCENT },
+    ]);
+  });
+
+  it("keeps a threshold equal to the limit and collapses the final section", () => {
+    // 100k == limit: not an overflow, so the accent section ends at its position
+    // and the following yellow section spans [100k, limit] stretched to the end.
+    const sections = computeProgressSections(100_000, configWithSet("tokens", TOKENS_SET));
+    expect(sections).toEqual([
+      { startFraction: 0, endFraction: 0.5, startContext: 0, endContext: 100_000, color: ACCENT },
+      { startFraction: 0.5, endFraction: 1, startContext: 100_000, endContext: 100_000, color: YELLOW },
+    ]);
+  });
+
+  it("resolves palette names and hex colors per segment", () => {
+    const sections = computeProgressSections(500_000, configWithSet("percent", {
+      thresholds: [{ fraction: 0.4, value: 50 }],
+      segmentColors: ["#00ff88", "cyan"],
+    }));
+    expect(sections.map((section) => section.color)).toEqual(["#00ff88", "var(--color-cyan)"]);
+  });
+
+  it("resolves the inactive unit's thresholds only when selected", () => {
+    const config = defaultContextBarSettings();
+    const sections = computeProgressSections(500_000, config);
+    // Default active unit is percent: 60% of 500k = 300k, 85% = 425k.
+    expect(sections.map((section) => section.endContext)).toEqual([300_000, 425_000, 500_000]);
+  });
+
+  it("never mutates the passed-in config", () => {
+    const config = configWithSet("tokens", TOKENS_SET);
+    const before = JSON.stringify(config);
+    computeProgressSections(123_456, config);
+    expect(JSON.stringify(config)).toBe(before);
   });
 });
 
 describe("contextToBarFraction", () => {
-  const sections = computeProgressSections(500_000);
+  const sections = computeProgressSections(500_000, configWithSet("tokens", TOKENS_SET));
 
   it("returns 0 for non-positive used", () => {
     expect(contextToBarFraction(0, sections)).toBe(0);
     expect(contextToBarFraction(-10, sections)).toBe(0);
-  });
-
-  it("returns 0 in the empty state (no assistant messages yet)", () => {
-    // used=0 maps to fraction 0
-    expect(contextToBarFraction(0, sections)).toBe(0);
   });
 
   it("interpolates linearly inside the first section", () => {
@@ -108,18 +143,19 @@ describe("contextToBarFraction", () => {
   });
 
   it("returns section endFraction when contextRange is zero (avoid divide-by-zero)", () => {
-    // Synthetic degenerate sections: zero-width on context axis.
+    // Synthetic degenerate sections: zero-width on the context axis.
     const degenerate = [
-      { startFraction: 0.5, endFraction: 0.5, startContext: 100, endContext: 100, color: "var(--interactive-accent)" },
+      { startFraction: 0.5, endFraction: 0.5, startContext: 100, endContext: 100, color: ACCENT },
     ];
     expect(contextToBarFraction(100, degenerate)).toBe(0.5);
+    expect(contextToBarFraction(101, degenerate)).toBe(1.0);
   });
 
-  it("respects truncation: a low limit yields fewer sections and the piecewise curve still monotonic", () => {
-    const truncated = computeProgressSections(150_000);
+  it("fills to the very end at the limit under extend-to-end truncation", () => {
+    const truncated = computeProgressSections(150_000, configWithSet("tokens", TOKENS_SET));
     // Section 0: context [0, 100_000] → fraction [0, 0.5]
     expect(contextToBarFraction(50_000, truncated)).toBeCloseTo(0.25, 5);
-    // Section 1 (truncated): context [100_000, 150_000] → fraction [0.5, 1.0]
+    // Section 1 (extended): context [100_000, 150_000] → fraction [0.5, 1.0]
     expect(contextToBarFraction(125_000, truncated)).toBeCloseTo(0.75, 5);
     expect(contextToBarFraction(150_000, truncated)).toBeCloseTo(1.0, 5);
   });
@@ -127,7 +163,7 @@ describe("contextToBarFraction", () => {
 
 describe("sectionsToGradient", () => {
   it("emits a linear-gradient with two hard stops per section", () => {
-    const sections = computeProgressSections(500_000);
+    const sections = computeProgressSections(500_000, configWithSet("tokens", TOKENS_SET));
     const gradient = sectionsToGradient(sections);
     expect(gradient.startsWith("linear-gradient(to right, ")).toBe(true);
     // 3 sections × 2 stops = 6 comma-separated stops (the join uses ", ")
@@ -136,19 +172,10 @@ describe("sectionsToGradient", () => {
   });
 
   it("preserves section colors at both endpoints of each stop", () => {
-    const sections = computeProgressSections(500_000);
+    const sections = computeProgressSections(500_000, configWithSet("tokens", TOKENS_SET));
     const gradient = sectionsToGradient(sections);
     // Section 1 (yellow) spans 50%–75%, so its two stops should both carry the yellow color.
     expect(gradient).toContain("var(--color-yellow) 50.00%");
     expect(gradient).toContain("var(--color-yellow) 75.00%");
-  });
-
-  it("rounds to two decimals on fraction→percent conversion", () => {
-    const sections = [
-      { startFraction: 1 / 3, endFraction: 2 / 3, color: "red" },
-    ];
-    const gradient = sectionsToGradient(sections);
-    expect(gradient).toContain("red 33.33%");
-    expect(gradient).toContain("red 66.67%");
   });
 });

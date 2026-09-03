@@ -120,7 +120,7 @@ export class ComposerController {
 
   constructor(deps: ComposerDeps) {
     this.deps = deps;
-    this.progressBar = new ContextProgressBarController({ model: deps.model });
+    this.progressBar = new ContextProgressBarController({ model: deps.model, getConfig: () => deps.plugin.settings.contextBar });
     // Captures macOS Command+Enter before Obsidian's global hotkey layer consumes it.
     deps.register.registerDomEvent(window, "keydown", this.handleGlobalComposerSend, { capture: true });
   }

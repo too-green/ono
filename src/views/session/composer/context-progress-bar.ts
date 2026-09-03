@@ -2,30 +2,24 @@ import { readNumber, readObject, readString } from "../json-helpers";
 import { formatCompactNumber } from "../format-helpers";
 import { modelRefFromInfo, sameModel } from "./model-variants";
 import type { SessionViewModel } from "../session-view-model";
+import { CONTEXT_BAR_MAX_THRESHOLDS, CONTEXT_SEGMENT_COLOR_VARS, hardStopGradient, resolveContextSegmentColor, type ContextBarSettings, type ContextThresholdSet } from "../../../settings";
 
 /**
  * Progress bar pinned to the composer's bottom border.
  *
  * Owns the bar DOM (mask + gradient track + checkpoint markers) and reads token
  * usage from `model.loadedMessages` and the limit from `model.selectedModel`.
- * Pure math (`computeProgressSections`, `contextToBarFraction`,
- * `sectionsToGradient`) is exported for unit testing.
+ * Scale and color thresholds come from `settings.contextBar`; pure math
+ * (`computeProgressSections`, `contextToBarFraction`, `sectionsToGradient`) is
+ * exported for unit testing.
  *
  * Lifecycle: `mount(container)` creates the DOM, `update()` re-pulls model
  * state, `dispose()` drops refs. The shell calls `update()` after each
  * streaming render frame and after canonical sync.
- *
- * Reference: `docs/product-spec/UI Elements/Context Progress Bar`.
  */
 
-/** Checkpoint tuples: (bar-fraction, absolute-context, color?). Color defaults to accent. Context optional on last tuple (defaults to model limit). */
-export const PROGRESS_CHECKPOINTS: readonly { fraction: number; context?: number; color?: string }[] = [
-  { fraction: 0.5, context: 100_000 },
-  { fraction: 0.75, context: 250_000, color: "var(--color-yellow)" },
-  { fraction: 1.0, color: "var(--color-red)" },
-];
-
-const ACCENT_COLOR = "var(--interactive-accent)";
+/** Upper bound on sections (thresholds + final) and therefore on rendered markers. */
+const MAX_MARKERS = CONTEXT_BAR_MAX_THRESHOLDS + 1;
 
 export interface ProgressSection {
   startFraction: number;
@@ -36,70 +30,73 @@ export interface ProgressSection {
 }
 
 /**
- * Computes effective progress sections from checkpoints, adjusting for the model's context limit.
+ * Computes effective progress sections from the context bar policy and the model's context limit.
+ *
+ * Walks the active unit's thresholds in fraction order. Extend-to-end
+ * truncation: the section ending at the first threshold whose resolved context
+ * exceeds the limit stretches to the bar's end and later thresholds drop, so a
+ * short-context model never renders unreachable segments. Percent thresholds
+ * resolve against the limit, so they never overflow. An empty set (or unknown
+ * limit) yields a single accent section.
  *
  * Pure: exported for unit tests in `context-progress-bar.test.ts`.
  * Referenced by `ContextProgressBarController.update`.
  */
-export function computeProgressSections(limit: number): ProgressSection[] {
+export function computeProgressSections(limit: number, config: ContextBarSettings): ProgressSection[] {
+  if (limit <= 0) {
+    return [{ startFraction: 0, endFraction: 1, startContext: 0, endContext: 0, color: resolveContextSegmentColor("accent") }];
+  }
+  const set: ContextThresholdSet = config.unit === "tokens" ? config.tokens : config.percent;
+
   const sections: ProgressSection[] = [];
-  let prevFraction = 0;
-  let prevContext = 0;
-
-  for (let i = 0; i < PROGRESS_CHECKPOINTS.length; i++) {
-    const cp = PROGRESS_CHECKPOINTS[i];
-    const isLast = i === PROGRESS_CHECKPOINTS.length - 1;
-    const context = cp.context ?? limit;
-    const color = cp.color ?? ACCENT_COLOR;
-
-    // Non-last checkpoint exceeds model limit: extend this section to the end and stop.
-    if (!isLast && limit > 0 && context > limit) {
-      sections.push({ startFraction: prevFraction, endFraction: 1.0, startContext: prevContext, endContext: limit, color });
+  let previousFraction = 0;
+  let previousContext = 0;
+  for (let i = 0; i < set.thresholds.length; i++) {
+    const threshold = set.thresholds[i];
+    const context = config.unit === "percent" ? (threshold.value / 100) * limit : threshold.value;
+    const color = resolveContextSegmentColor(set.segmentColors[i] ?? "accent");
+    if (context > limit) {
+      // The section ending at this overflowing threshold extends to the bar's end.
+      sections.push({ startFraction: previousFraction, endFraction: 1, startContext: previousContext, endContext: limit, color });
       return sections;
     }
-
-    sections.push({ startFraction: prevFraction, endFraction: cp.fraction, startContext: prevContext, endContext: context, color });
-    prevFraction = cp.fraction;
-    prevContext = context;
+    sections.push({ startFraction: previousFraction, endFraction: threshold.fraction, startContext: previousContext, endContext: context, color });
+    previousFraction = threshold.fraction;
+    previousContext = context;
   }
-
-  // Ensure the last section always reaches fraction 1.0 and the model limit.
-  const last = sections[sections.length - 1];
-  if (last && limit > 0) {
-    last.endFraction = 1.0;
-    last.endContext = limit;
-  }
-
+  sections.push({ startFraction: previousFraction, endFraction: 1, startContext: previousContext, endContext: limit, color: resolveContextSegmentColor(set.segmentColors[set.thresholds.length] ?? "accent") });
   return sections;
 }
 
 /**
  * Maps an absolute token count to a bar fraction via piecewise-linear interpolation across sections.
  *
+ * Scans from the end so a value landing on a shared boundary (including a
+ * zero-width clamped tail section) resolves to the latest section, keeping the
+ * curve monotonic all the way to a full bar at the model limit.
+ *
  * Pure: exported for unit tests in `context-progress-bar.test.ts`.
  * Referenced by `ContextProgressBarController.update`.
  */
 export function contextToBarFraction(used: number, sections: ProgressSection[]): number {
-  if (used <= 0) return 0;
-  for (const section of sections) {
-    if (used <= section.endContext) {
-      const contextRange = section.endContext - section.startContext;
-      if (contextRange <= 0) return section.endFraction;
-      const t = (used - section.startContext) / contextRange;
-      return section.startFraction + t * (section.endFraction - section.startFraction);
-    }
+  if (used <= 0 || sections.length === 0) return 0;
+  const last = sections[sections.length - 1];
+  if (used > last.endContext) return 1.0;
+  if (used === last.endContext) return last.endFraction;
+  for (let i = sections.length - 1; i >= 0; i -= 1) {
+    const section = sections[i];
+    if (used < section.startContext || used > section.endContext) continue;
+    const contextRange = section.endContext - section.startContext;
+    if (contextRange <= 0) return section.endFraction;
+    const t = (used - section.startContext) / contextRange;
+    return section.startFraction + t * (section.endFraction - section.startFraction);
   }
-  return 1.0;
+  return 0;
 }
 
-/** Builds a CSS linear-gradient string with hard color stops at each section boundary. Pure helper. */
+/** Builds a CSS linear-gradient string with hard color stops at each section boundary; delegates to the shared settings helper. */
 export function sectionsToGradient(sections: { startFraction: number; endFraction: number; color: string }[]): string {
-  const stops: string[] = [];
-  for (const section of sections) {
-    stops.push(`${section.color} ${(section.startFraction * 100).toFixed(2)}%`);
-    stops.push(`${section.color} ${(section.endFraction * 100).toFixed(2)}%`);
-  }
-  return `linear-gradient(to right, ${stops.join(", ")})`;
+  return hardStopGradient(sections.map((section) => ({ from: section.startFraction, to: section.endFraction, color: section.color })));
 }
 
 /** Returns total tokens from the latest assistant message, or 0; used by the bar and Session Island label. */
@@ -146,6 +143,8 @@ export function contextUsage(model: SessionViewModel): ContextUsage | undefined 
 export interface ContextProgressBarDeps {
   /** Shared domain state; the bar reads `loadedMessages`, `selectedModel`, `availableModels`. */
   model: SessionViewModel;
+  /** Reads the current context bar policy from plugin settings on every update. */
+  getConfig: () => ContextBarSettings;
 }
 
 /** Renders and updates the context-length progress bar pinned to the composer's bottom border. */
@@ -155,9 +154,11 @@ export class ContextProgressBarController {
   private fillEl?: HTMLElement;
   private readonly markers: HTMLElement[] = [];
   private readonly model: SessionViewModel;
+  private readonly getConfig: () => ContextBarSettings;
 
   constructor(deps: ContextProgressBarDeps) {
     this.model = deps.model;
+    this.getConfig = deps.getConfig;
   }
 
   /** Creates the progress bar DOM inside the given container; called by `ComposerController.mount`. */
@@ -169,8 +170,8 @@ export class ContextProgressBarController {
     this.trackEl = track;
     this.barEl = bar;
     this.markers.length = 0;
-    // One marker per checkpoint (section boundary, excluding the implicit 0-origin).
-    for (let i = 0; i < PROGRESS_CHECKPOINTS.length; i++) {
+    // One marker per section boundary (excluding the implicit 0-origin); extras stay hidden.
+    for (let i = 0; i < MAX_MARKERS; i++) {
       const marker = track.createDiv({ cls: "opencode-session-view__composer-progress-marker" });
       marker.createSpan({ cls: "opencode-session-view__composer-progress-marker-label" });
       this.markers.push(marker);
@@ -190,8 +191,8 @@ export class ContextProgressBarController {
     const hasAssistant = this.model.loadedMessages.some((bundle) => readString(bundle.info, ["role"]) === "assistant");
     const isEmpty = !hasAssistant || limit === 0 || used === 0;
 
-    // Compute piecewise-linear sections from checkpoints, adjusted for the model's limit.
-    const sections = computeProgressSections(limit);
+    // Compute piecewise-linear sections from the configured policy, adjusted for the model's limit.
+    const sections = computeProgressSections(limit, this.getConfig());
 
     // Set the multi-color gradient on the track.
     if (track) track.style.background = sectionsToGradient(sections);
@@ -217,7 +218,7 @@ export class ContextProgressBarController {
         marker.style.visibility = "visible";
         marker.style.setProperty("--checkpoint-color", sections[i].color);
         marker.toggleClass("is-passed", visualFrac >= sections[i].endFraction - 1e-9);
-        marker.toggleClass("is-warn", sections[i].color === "var(--color-yellow)");
+        marker.toggleClass("is-warn", sections[i].color === CONTEXT_SEGMENT_COLOR_VARS.yellow);
         if (label) label.setText(formatCompactNumber(sections[i].endContext));
       } else {
         marker.style.visibility = "hidden";

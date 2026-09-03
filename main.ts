@@ -4,6 +4,7 @@ import {
   OPENCODE_DATA_SCHEMA_VERSION,
   OpenCodeSettingTab,
   normalizeAgentPanelSessionSort,
+  normalizeContextBarSettings,
   normalizeDebugLogging,
   normalizeFolderCollapseDisplay,
   normalizeNotificationMode,
@@ -500,6 +501,7 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.workingAnimation = normalizeWorkingAnimation(this.settings.workingAnimation);
     this.settings.folderCollapseDisplay = normalizeFolderCollapseDisplay(this.settings.folderCollapseDisplay);
     this.settings.agentPanelSessionSort = normalizeAgentPanelSessionSort(this.settings.agentPanelSessionSort);
+    this.settings.contextBar = normalizeContextBarSettings(this.settings.contextBar);
     this.settings.debugLogging = normalizeDebugLogging(this.settings.debugLogging);
     this.settings.customToolDisplays = Array.isArray(this.settings.customToolDisplays)
       ? this.settings.customToolDisplays.flatMap((item) => {

@@ -1,4 +1,5 @@
 import { AbstractInputSuggest, PluginSettingTab, SecretComponent, Setting, getIconIds, setIcon, type App } from "obsidian";
+import { ContextBarEditor } from "./context-bar-editor";
 import type OpenCodePlugin from "../main";
 import type { SessionNotificationTestKind } from "./services/session-notifications";
 import type { OpenCodeServerConfig } from "./services/opencode-service";
@@ -26,6 +27,81 @@ export const SESSION_ISLAND_CONTEXT_LABELS: Record<SessionIslandContextLabel, st
 };
 
 export const DEFAULT_SESSION_ISLAND_CONTEXT_LABEL: SessionIslandContextLabel = "tokens";
+
+/** Unit for context-bar thresholds: share of the model limit or absolute token counts. */
+export type ContextThresholdUnit = "percent" | "tokens";
+
+export const CONTEXT_THRESHOLD_UNIT_LABELS: Record<ContextThresholdUnit, string> = {
+  percent: "Percent of context",
+  tokens: "Absolute tokens",
+};
+
+/** Canonical segment color names mapped to Obsidian CSS variables so themes apply. */
+export const CONTEXT_SEGMENT_COLOR_VARS = {
+  accent: "var(--interactive-accent)",
+  red: "var(--color-red)",
+  orange: "var(--color-orange)",
+  yellow: "var(--color-yellow)",
+  green: "var(--color-green)",
+  cyan: "var(--color-cyan)",
+  blue: "var(--color-blue)",
+  purple: "var(--color-purple)",
+  pink: "var(--color-pink)",
+} as const;
+
+export type ContextSegmentColorName = keyof typeof CONTEXT_SEGMENT_COLOR_VARS;
+
+/** One threshold pill: bar position (0–1 fraction) plus its value in the owning set's unit. */
+export interface ContextThreshold {
+  fraction: number;
+  value: number;
+}
+
+/** One unit's independently persisted threshold configuration. */
+export interface ContextThresholdSet {
+  thresholds: ContextThreshold[];
+  /** Segment colors; segment i ends at threshold i. Always thresholds.length + 1 entries. */
+  segmentColors: string[];
+}
+
+/** Composer context progress bar policy: active unit plus one persisted threshold set per unit. */
+export interface ContextBarSettings {
+  unit: ContextThresholdUnit;
+  percent: ContextThresholdSet;
+  tokens: ContextThresholdSet;
+}
+
+export const CONTEXT_BAR_MAX_THRESHOLDS = 4;
+
+export const DEFAULT_CONTEXT_PERCENT_SET: ContextThresholdSet = {
+  thresholds: [
+    { fraction: 0.5, value: 60 },
+    { fraction: 0.75, value: 85 },
+  ],
+  segmentColors: ["accent", "yellow", "red"],
+};
+
+export const DEFAULT_CONTEXT_TOKENS_SET: ContextThresholdSet = {
+  thresholds: [
+    { fraction: 0.5, value: 100_000 },
+    { fraction: 0.75, value: 250_000 },
+  ],
+  segmentColors: ["accent", "yellow", "red"],
+};
+
+/** Returns a deep copy of a threshold set; referenced by defaults and normalization. */
+function cloneContextThresholdSet(set: ContextThresholdSet): ContextThresholdSet {
+  return { thresholds: set.thresholds.map((threshold) => ({ ...threshold })), segmentColors: [...set.segmentColors] };
+}
+
+/** Returns a fresh deep copy of the default context bar policy; referenced by plugin defaults and tests. */
+export function defaultContextBarSettings(): ContextBarSettings {
+  return {
+    unit: "percent",
+    percent: cloneContextThresholdSet(DEFAULT_CONTEXT_PERCENT_SET),
+    tokens: cloneContextThresholdSet(DEFAULT_CONTEXT_TOKENS_SET),
+  };
+}
 
 export const FOLDER_COLLAPSE_DISPLAY_LABELS = {
   inset: "Inset icon",
@@ -117,6 +193,7 @@ export interface OpenCodePluginSettings {
   debugLogging: boolean;
   /** Configured IDE/editor id for the "Open project in IDE" command and menu item. */
   openIde: string;
+  contextBar: ContextBarSettings;
 }
 
 export interface ToolDisplaySetting {
@@ -150,6 +227,7 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   customToolDisplays: [],
   debugLogging: false,
   openIde: DEFAULT_OPEN_IDE_ID,
+  contextBar: defaultContextBarSettings(),
 };
 
 /** Returns a validated attachment from persisted composer data. */
@@ -268,6 +346,101 @@ export function normalizeServerUsername(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
+/** Matches #rgb, #rgba, #rrggbb, and #rrggbbaa hex colors. */
+const CONTEXT_SEGMENT_HEX_PATTERN = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+/** Returns true when the value is a valid hex color string for a context bar segment. */
+export function isValidContextSegmentHex(value: unknown): value is string {
+  return typeof value === "string" && CONTEXT_SEGMENT_HEX_PATTERN.test(value.trim());
+}
+
+/** Normalizes one stored segment color: canonical palette name, valid hex, or accent fallback. */
+export function normalizeContextSegmentColor(value: unknown): string {
+  if (typeof value === "string" && value in CONTEXT_SEGMENT_COLOR_VARS) return value;
+  if (isValidContextSegmentHex(value)) return value.trim().toLowerCase();
+  return "accent";
+}
+
+/** Resolves a stored segment color (palette name or hex) to a CSS color value for gradients. */
+export function resolveContextSegmentColor(color: string): string {
+  if (color in CONTEXT_SEGMENT_COLOR_VARS) return CONTEXT_SEGMENT_COLOR_VARS[color as ContextSegmentColorName];
+  return isValidContextSegmentHex(color) ? color : CONTEXT_SEGMENT_COLOR_VARS.accent;
+}
+
+/**
+ * Normalizes one unit's threshold set: bounded values, strictly ascending fractions and
+ * values (so the runtime piecewise mapping stays monotonic), matching color count, capped length.
+ */
+export function normalizeContextThresholdSet(value: unknown, unit: ContextThresholdUnit): ContextThresholdSet {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const thresholds: ContextThreshold[] = [];
+  for (const raw of Array.isArray(input.thresholds) ? input.thresholds : []) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const candidate = raw as Record<string, unknown>;
+    const fraction = Number(candidate.fraction);
+    const rawValue = Number(candidate.value);
+    if (!Number.isFinite(fraction) || !Number.isFinite(rawValue)) continue;
+    const clampedFraction = Math.min(Math.max(fraction, 0.001), 0.999);
+    const clampedValue = unit === "percent"
+      ? Math.min(Math.max(Math.round(rawValue * 10) / 10, 0.1), 100)
+      : Math.max(Math.round(rawValue), 1);
+    const previous = thresholds[thresholds.length - 1];
+    if (previous && (clampedFraction <= previous.fraction || clampedValue <= previous.value)) continue;
+    thresholds.push({ fraction: clampedFraction, value: clampedValue });
+    if (thresholds.length >= CONTEXT_BAR_MAX_THRESHOLDS) break;
+  }
+  const colors = (Array.isArray(input.segmentColors) ? input.segmentColors : [])
+    .slice(0, thresholds.length + 1)
+    .map((color) => normalizeContextSegmentColor(color));
+  while (colors.length < thresholds.length + 1) colors.push("accent");
+  return { thresholds, segmentColors: colors };
+}
+
+/**
+ * Returns a validated context bar policy for persisted settings. A missing per-unit set
+ * falls back to that unit's default; a present-but-emptied set is preserved as empty.
+ */
+export function normalizeContextBarSettings(value: unknown): ContextBarSettings {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const hasPercent = input.percent && typeof input.percent === "object" && !Array.isArray(input.percent);
+  const hasTokens = input.tokens && typeof input.tokens === "object" && !Array.isArray(input.tokens);
+  return {
+    unit: input.unit === "tokens" ? "tokens" : "percent",
+    percent: hasPercent ? normalizeContextThresholdSet(input.percent, "percent") : cloneContextThresholdSet(DEFAULT_CONTEXT_PERCENT_SET),
+    tokens: hasTokens ? normalizeContextThresholdSet(input.tokens, "tokens") : cloneContextThresholdSet(DEFAULT_CONTEXT_TOKENS_SET),
+  };
+}
+
+/** Builds a hard-stop linear-gradient string from positioned color stops; shared by the session bar and the settings editor. */
+export function hardStopGradient(stops: Array<{ from: number; to: number; color: string }>): string {
+  const parts = stops.flatMap((stop) => [
+    `${stop.color} ${(stop.from * 100).toFixed(2)}%`,
+    `${stop.color} ${(stop.to * 100).toFixed(2)}%`,
+  ]);
+  return `linear-gradient(to right, ${parts.join(", ")})`;
+}
+
+/** Parses a threshold value for the given unit: percent accepts `60` or `60%`; tokens accepts `100k`, `1m`, or `250000`. Returns undefined for empty or unparseable input. */
+export function parseContextThresholdValue(input: string, unit: ContextThresholdUnit): number | undefined {
+  const trimmed = input.trim();
+  const match = trimmed.match(unit === "percent" ? /^(\d+(?:\.\d+)?)\s*%?$/ : /^(\d+(?:\.\d+)?)\s*(k|m)?$/i);
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  if (unit === "percent") return Math.min(value, 100);
+  const suffix = match[2]?.toLowerCase();
+  const tokens = suffix === "k" ? value * 1_000 : suffix === "m" ? value * 1_000_000 : value;
+  return Math.max(1, Math.round(tokens));
+}
+
+/** Formats a threshold value for pill labels and settings inputs; compact k/m suffixes for round token counts. */
+export function formatContextThresholdValue(value: number, unit: ContextThresholdUnit): string {
+  if (unit === "percent") return `${value}%`;
+  if (value >= 1_000_000 && value % 1_000_000 === 0) return `${value / 1_000_000}m`;
+  if (value >= 1_000 && value % 1_000 === 0) return `${value / 1_000}k`;
+  return String(value);
+}
+
 class IconSuggest extends AbstractInputSuggest<string> {
   private readonly icons = getIconIds();
 
@@ -286,6 +459,8 @@ class IconSuggest extends AbstractInputSuggest<string> {
 }
 
 export class OpenCodeSettingTab extends PluginSettingTab {
+  private contextBarEditor?: ContextBarEditor;
+
   constructor(
     app: App,
     private readonly plugin: OpenCodePlugin,
@@ -295,6 +470,8 @@ export class OpenCodeSettingTab extends PluginSettingTab {
 
   /** Renders the plugin settings currently exposed by the product specification. */
   display(): void {
+    this.contextBarEditor?.dispose();
+    this.contextBarEditor = undefined;
     this.containerEl.empty();
 
     this.renderServerSettings();
@@ -421,6 +598,18 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           this.plugin.refreshSessionIslands();
         });
       });
+
+    const contextBarSetting = new Setting(this.containerEl)
+      .setName("Context progress bar")
+      .setDesc("Customize where context colors change. Drag a cutoff to position it, double-click it to edit its value, or select a bar segment to change its color.");
+    contextBarSetting.settingEl.classList.add("opencode-settings__context-bar");
+    this.contextBarEditor = new ContextBarEditor({
+      getConfig: () => this.plugin.settings.contextBar,
+      setConfig: (config) => { this.plugin.settings.contextBar = config; },
+      save: () => this.plugin.saveSettings(),
+      onApplied: () => this.plugin.refreshSessionViews(),
+    });
+    this.contextBarEditor.mount(contextBarSetting.settingEl);
 
     const todoStatus = new Setting(this.containerEl)
       .setName("In-progress todo status")

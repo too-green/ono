@@ -4,6 +4,7 @@ import { SessionView } from "./SessionView";
 import { SessionViewModel } from "./session/session-view-model";
 import { ComposerController, type ComposerDeps } from "./session/composer/composer-controller";
 import type OpenCodePlugin from "../../main";
+import { defaultContextBarSettings } from "../settings";
 import * as gitInfo from "../utils/git-info";
 
 type DomOptions = { text?: string; cls?: string; attr?: Record<string, string> };
@@ -44,6 +45,7 @@ function setup(): DraftViewHarness {
   model.draftDirectory = "/workspace";
   const settings = {
     interruptConfirmSeconds: 3,
+    contextBar: defaultContextBarSettings(),
   };
   const composerState: Record<string, { text?: string; attachments?: unknown[] }> = {};
   const service = {

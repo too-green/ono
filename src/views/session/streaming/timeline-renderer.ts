@@ -50,6 +50,7 @@ export interface TimelineDeps {
   getRevertMessageId: () => string | undefined;
   requestShellRender: () => Promise<void>;
   cancelStreamingMarkdownPatch: (key: string) => void;
+  isStreamingPartActive: (messageId: string, partId: string) => boolean;
   captureFollowLatest: () => FollowLatestAnchor | undefined;
   restoreFollowLatest: (anchor: FollowLatestAnchor | undefined) => boolean;
   updateJumpButton: () => void;
@@ -418,6 +419,10 @@ export class TimelineRenderer {
         retainedChildren.add(currentBlock);
         return currentBlock;
       }
+      if (this.keepStreamingBlock(currentBlock, nextBlock, current.dataset.messageId)) {
+        retainedChildren.add(currentBlock);
+        return currentBlock;
+      }
       if (
         currentBlock.classList.contains("opencode-session-view__message-meta--working")
         && nextBlock.classList.contains("opencode-session-view__message-meta--working")
@@ -465,6 +470,20 @@ export class TimelineRenderer {
     this.commitChildrenInPlace(current, desiredChildren, retainedChildren);
   }
 
+  /** Returns the streamed part ids a rendered block is mounted for. */
+  private streamingPartIds(block: HTMLElement): string[] {
+    return (block.dataset.partIds ?? block.dataset.partId ?? "").split(" ").filter(Boolean);
+  }
+
+  /** Returns true when the mounted target is a live patcher target for the same grouped parts. */
+  private keepStreamingBlock(currentBlock: HTMLElement, nextBlock: HTMLElement, messageId: string | undefined): boolean {
+    const currentIds = this.streamingPartIds(currentBlock);
+    if (!messageId || currentIds.length === 0) return false;
+    const nextIds = this.streamingPartIds(nextBlock);
+    if (nextIds.join(" ") !== currentIds.join(" ")) return false;
+    return currentIds.some((partId) => this.deps.isStreamingPartActive(messageId, partId));
+  }
+
   /** Updates a reasoning shell in place so streaming and completion never remount its disclosure or icon. */
   private reconcileReasoningBlock(current: HTMLElement, next: HTMLElement, messageId: string | undefined): boolean {
     if (!(current instanceof HTMLDetailsElement) || !(next instanceof HTMLDetailsElement)) return false;
@@ -478,7 +497,7 @@ export class TimelineRenderer {
 
     this.reconcileAnimatedSummary(currentSummary, nextSummary, ".opencode-session-view__reasoning-icon");
     this.syncAttributes(currentBody, nextBody);
-    if (currentBody.innerHTML !== nextBody.innerHTML) {
+    if (currentBody.innerHTML !== nextBody.innerHTML && !this.keepStreamingBlock(currentBody, nextBody, messageId)) {
       this.cancelStreamingPatches(currentBody, messageId);
       currentBody.replaceChildren(...Array.from(nextBody.childNodes));
     }

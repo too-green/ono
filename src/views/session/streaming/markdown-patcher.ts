@@ -12,17 +12,18 @@ interface StreamingMarkdownPatch {
   lastRendered?: string;
 }
 
-/** One committed block rendered once and frozen for the rest of the stream. */
+/** One committed block rendered directly into the target and frozen for the rest of the stream. */
 interface MountedWrapper {
   source: string;
-  el: HTMLElement;
+  /** Separator comment appended after this block's children. */
+  endMarker: Comment;
   scope: Component;
 }
 
-/** Per-element mounted render state: frozen committed wrappers plus the re-rendered tail. */
+/** Per-element mounted render state: frozen committed children plus the re-rendered tail children. */
 interface MountedState {
   wrappers: MountedWrapper[];
-  tail?: { el: HTMLElement; scope?: Component };
+  tail?: { scope?: Component };
 }
 
 /** Dependencies used by `MarkdownPatcher` while replacing a streamed Markdown part. */
@@ -118,7 +119,6 @@ export class MarkdownPatcher {
     patch.pending = false;
     patch.inFlight = true;
     const sourcePath = `opencode-session/${this.deps.getSessionId() ?? "session"}.md`;
-    let activeScope: Component | undefined;
     try {
       const { committed, tail } = splitMarkdownBlocks(markdown);
       if (!committed.length && !tail) {
@@ -136,56 +136,77 @@ export class MarkdownPatcher {
         state = { wrappers: [] };
         this.mounted.set(element, state);
       }
-      for (let i = state.wrappers.length; i < committed.length; i++) {
-        const scope = new Component();
-        this.deps.component.addChild(scope);
-        activeScope = scope;
+      const pending: Array<{ source: string; scope: Component; nodes: Node[] }> = [];
+      let tailScope: Component | undefined;
+      let tailNodes: Node[] = [];
+      let mounted = false;
+      try {
+        // Render every new committed block off-DOM so staleness never mutates the target.
+        for (let i = state.wrappers.length; i < committed.length; i++) {
+          const scope = new Component();
+          this.deps.component.addChild(scope);
+          const block: { source: string; scope: Component; nodes: Node[] } = { source: committed[i], scope, nodes: [] };
+          pending.push(block);
+          const scratch = document.createElement("div");
+          scratch.classList.add("markdown-rendered");
+          await MarkdownRenderer.renderMarkdown(committed[i], scratch, sourcePath, scope);
+          if (this.flushStale(key, patch, state, markdown)) return;
+          block.nodes = Array.from(scratch.childNodes);
+        }
+        // Render the fresh tail off-DOM so the old tail children stay visible until the swap.
+        tailScope = new Component();
+        this.deps.component.addChild(tailScope);
         const scratch = document.createElement("div");
         scratch.classList.add("markdown-rendered");
-        await MarkdownRenderer.renderMarkdown(committed[i], scratch, sourcePath, scope);
-        if (!element.isConnected || this.patches.get(key) !== patch || this.mounted.get(element) !== state || (patch.pending && patch.markdown !== markdown)) {
-          this.releaseScopeComponent(scope);
-          activeScope = undefined;
-          return;
+        await MarkdownRenderer.renderMarkdown(tail, scratch, sourcePath, tailScope);
+        if (this.flushStale(key, patch, state, markdown)) return;
+        tailNodes = Array.from(scratch.childNodes);
+
+        // Swap the old tail out, then mount committed children plus their separators and the fresh tail.
+        const previousTailScope = state.tail?.scope;
+        this.removeTailNodes(element, state);
+        if (previousTailScope) this.releaseScopeComponent(previousTailScope);
+        state.tail = undefined;
+        for (const block of pending) {
+          element.append(...block.nodes);
+          const endMarker = document.createComment("stream-block");
+          element.append(endMarker);
+          state.wrappers.push({ source: block.source, endMarker, scope: block.scope });
         }
-        const el = document.createElement("div");
-        el.append(...Array.from(scratch.childNodes));
-        element.insertBefore(el, state.tail?.el ?? null);
-        state.wrappers.push({ source: committed[i], el, scope });
-        activeScope = undefined;
+        element.append(...tailNodes);
+        state.tail = { scope: tailScope };
+        mounted = true;
+        patch.lastRendered = markdown;
+        this.deps.restoreFollowLatest(followGeneration);
+        this.deps.updateJumpButton();
+      } finally {
+        if (!mounted) {
+          for (const block of pending) this.releaseScopeComponent(block.scope);
+          if (tailScope) this.releaseScopeComponent(tailScope);
+        }
       }
-      const previousTailScope = state.tail?.scope;
-      const scope = new Component();
-      this.deps.component.addChild(scope);
-      activeScope = scope;
-      const scratch = document.createElement("div");
-      scratch.classList.add("markdown-rendered");
-      await MarkdownRenderer.renderMarkdown(tail, scratch, sourcePath, scope);
-      if (!element.isConnected || this.patches.get(key) !== patch || this.mounted.get(element) !== state || (patch.pending && patch.markdown !== markdown)) {
-        this.releaseScopeComponent(scope);
-        activeScope = undefined;
-        return;
-      }
-      if (!state.tail) {
-        const el = document.createElement("div");
-        element.appendChild(el);
-        state.tail = { el };
-      }
-      state.tail.el.replaceChildren(...Array.from(scratch.childNodes));
-      // The previous tail DOM was just destroyed by replaceChildren; unload its render children.
-      if (previousTailScope) this.releaseScopeComponent(previousTailScope);
-      state.tail.scope = scope;
-      activeScope = undefined;
-      patch.lastRendered = markdown;
-      this.deps.restoreFollowLatest(followGeneration);
-      this.deps.updateJumpButton();
     } catch (error) {
-      if (activeScope) this.releaseScopeComponent(activeScope);
       logger.warn("session-stream", "markdown patch failed", { error });
     } finally {
       patch.inFlight = false;
       if (this.patches.get(key) !== patch) return;
       if (patch.pending && patch.element.isConnected) this.queue(key, patch.element, patch.markdown);
+    }
+  }
+
+  /** Returns true when this flush no longer owns the element or newer markdown superseded it. */
+  private flushStale(key: string, patch: StreamingMarkdownPatch, state: MountedState, markdown: string): boolean {
+    return !patch.element.isConnected || this.patches.get(key) !== patch || this.mounted.get(patch.element) !== state || (patch.pending && patch.markdown !== markdown);
+  }
+
+  /** Removes the tail children mounted after the last committed separator comment. */
+  private removeTailNodes(element: HTMLElement, state: MountedState): void {
+    const lastMarker = state.wrappers.at(-1)?.endMarker;
+    let node = lastMarker ? lastMarker.nextSibling : element.firstChild;
+    while (node) {
+      const next = node.nextSibling;
+      node.remove();
+      node = next;
     }
   }
 

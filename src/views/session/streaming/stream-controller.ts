@@ -62,6 +62,8 @@ export class StreamController {
   private connectionOpened = false;
   private workVersion = 0;
   private disposed = false;
+  /** Last patch activity per `${messageId}:${partId}` so reconciliation can preserve live streaming blocks. */
+  private readonly streamingActivity = new Map<string, number>();
 
   constructor(private readonly deps: StreamDeps) {}
 
@@ -158,6 +160,7 @@ export class StreamController {
     this.subscription = undefined;
     this.subscriptionDirectory = undefined;
     this.connectionOpened = false;
+    this.streamingActivity.clear();
     if (this.refreshTimer !== undefined) window.clearTimeout(this.refreshTimer);
     if (this.renderFrame !== undefined) window.cancelAnimationFrame(this.renderFrame);
     this.refreshTimer = undefined;
@@ -207,6 +210,7 @@ export class StreamController {
       const removedId = jsonHelpers.readString(properties, ["messageID", "messageId"]);
       if (removedId) {
         this.deps.model.loadedMessages = this.deps.model.loadedMessages.filter((message) => messageId(message) !== removedId);
+        this.forgetMessageStreamingParts(removedId);
         this.deps.onMessageRemoved(removedId);
         this.scheduleRender();
       }
@@ -216,8 +220,9 @@ export class StreamController {
       const parentId = jsonHelpers.readString(properties, ["messageID", "messageId"]);
       const removedId = jsonHelpers.readString(properties, ["partID", "partId"]);
       const message = parentId ? this.deps.model.loadedMessages.find((item) => messageId(item) === parentId) : undefined;
-      if (message && removedId) {
+      if (parentId && message && removedId) {
         message.parts = message.parts.filter((part) => jsonHelpers.readString(part, ["id", "partID", "partId"]) !== removedId);
+        this.forgetStreamingPart(parentId, removedId);
         this.scheduleRender();
       }
       return;
@@ -233,6 +238,7 @@ export class StreamController {
         const reasoningComplete = type === "reasoning" && typeof time?.end === "number";
         const patchable = (type === "text" && part.synthetic !== true && part.ignored !== true) || (type === "reasoning" && !reasoningComplete);
         if (patchable && parentId && partId && this.patchPart({ messageId: parentId, partId, field: "text", part })) return;
+        if (!patchable && parentId && partId) this.forgetStreamingPart(parentId, partId);
       }
       this.scheduleRender();
       return;
@@ -341,6 +347,30 @@ export class StreamController {
     return { messageId: parentId, partId, field, part };
   }
 
+  /** Returns true when a part was patched within the last 10 seconds, keeping its block uncanonicalized. */
+  isPartStreaming(messageId: string, partId: string): boolean {
+    const last = this.streamingActivity.get(`${messageId}:${partId}`);
+    return last !== undefined && Date.now() - last < 10_000;
+  }
+
+  /** Records patch activity for every grouped part id mounted on one streaming target. */
+  private touchStreamingParts(messageId: string, partIds: string[]): void {
+    const now = Date.now();
+    for (const partId of partIds) this.streamingActivity.set(`${messageId}:${partId}`, now);
+  }
+
+  /** Drops one part from the active streaming set once it completes or is removed. */
+  private forgetStreamingPart(messageId: string, partId: string): void {
+    this.streamingActivity.delete(`${messageId}:${partId}`);
+  }
+
+  /** Drops every part of a removed message from the active streaming set. */
+  private forgetMessageStreamingParts(messageId: string): void {
+    for (const key of [...this.streamingActivity.keys()]) {
+      if (key.startsWith(`${messageId}:`)) this.streamingActivity.delete(key);
+    }
+  }
+
   /** Applies a text delta directly to the mounted active part when a patchable target exists. */
   private patchPart(delta: AppliedPartDelta): boolean {
     if (delta.field !== "text") return false;
@@ -349,6 +379,7 @@ export class StreamController {
     const target = this.deps.findStreamingPartTarget(delta.messageId, delta.partId, type);
     if (!target) return false;
     const groupedPartIds = (target.dataset.partIds ?? target.dataset.partId ?? delta.partId).split(" ");
+    this.touchStreamingParts(delta.messageId, groupedPartIds);
     const bundle = this.deps.model.loadedMessages.find((message) => messageId(message) === delta.messageId);
     const markdown = groupedPartIds
       .map((partId) => bundle?.parts.find((part) => jsonHelpers.readString(part, ["id", "partID", "partId"]) === partId))

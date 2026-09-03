@@ -258,14 +258,32 @@ describe("MarkdownPatcher", () => {
     expect(target.children[0].textContent).toBe("alpha one");
     expect(target.children[1].textContent).toBe("beta two");
     expect(target.children[2].textContent).toBe("gamma three");
-    for (const wrapperParagraph of [target.children[0].children[0], target.children[1].children[0]]) {
-      expect(created.filter((entry) => entry.node === wrapperParagraph)).toHaveLength(1);
+    const [alphaParagraph, betaParagraph] = [target.children[0], target.children[1]];
+    for (const committedParagraph of [alphaParagraph, betaParagraph]) {
+      expect(created.filter((entry) => entry.node === committedParagraph)).toHaveLength(1);
     }
 
     patcher.queue("part", target, full);
     runNextFrame();
     await settle();
     expect(render).toHaveBeenCalledTimes(32);
+    expect(target.children[0]).toBe(alphaParagraph);
+    expect(target.children[1]).toBe(betaParagraph);
+  });
+
+  it("mounts flattened children with separators only between committed blocks", async () => {
+    const { patcher, target } = setup();
+    installBlockRenderer();
+
+    await streamDeltas(patcher, target, ["one\n\ntwo\n\ntail"]);
+
+    expect(target.children).toHaveLength(3);
+    expect(target.firstChild).toBe(target.children[0]);
+    expect(target.lastChild).toBe(target.children[2]);
+    expect(target.childNodes).toHaveLength(5);
+    expect(target.childNodes[1].nodeType).toBe(Node.COMMENT_NODE);
+    expect((target.childNodes[1] as Comment).data).toBe("stream-block");
+    expect(target.childNodes[3].nodeType).toBe(Node.COMMENT_NODE);
   });
 
   it("keeps an unterminated fence in the tail and commits it once it closes", async () => {
@@ -278,7 +296,7 @@ describe("MarkdownPatcher", () => {
     await streamDeltas(patcher, target, deltas.slice(0, 16));
     let sources = render.mock.calls.map((call) => call[0] as string);
     expect(sources.some((source) => source.startsWith("```js") && source.endsWith("```"))).toBe(false);
-    const committedParagraph = target.children[0].children[0];
+    const committedParagraph = target.children[0];
     expect(target.children[0].textContent).toBe("code incoming");
     expect(created.filter((entry) => entry.node === committedParagraph)).toHaveLength(1);
 
@@ -287,7 +305,7 @@ describe("MarkdownPatcher", () => {
     expect(sources.filter((source) => source === "```js\nconst a = 1;\n```")).toHaveLength(1);
     expect(target.children).toHaveLength(3);
     expect(target.children[2].textContent).toBe("done");
-    expect(created.filter((entry) => entry.node === target.children[1].children[0])).toHaveLength(1);
+    expect(created.filter((entry) => entry.node === target.children[1])).toHaveLength(1);
   });
 
   it("never splits loose lists or blockquotes mid-construct", async () => {
@@ -332,23 +350,25 @@ describe("MarkdownPatcher", () => {
     expect(target.textContent).toContain("two");
   });
 
-  it("preserves committed wrapper nodes across later flushes and swaps only tail children", async () => {
+  it("preserves committed block nodes across later flushes and swaps only tail children", async () => {
     const { patcher, target } = setup();
-    installBlockRenderer();
+    const created: Array<{ source: string; node: HTMLElement }> = [];
+    installBlockRenderer(created);
 
     await streamDeltas(patcher, target, ["one\n\ntail", "one\n\ntail longer"]);
 
     expect(target.children).toHaveLength(2);
-    const wrapper = target.children[0];
-    const tailEl = target.children[1];
-    const wrapperParagraph = wrapper.children[0];
+    const committed = target.children[0];
+    const committedParagraph = committed;
+    const tailParagraph = target.children[1];
 
     await streamDeltas(patcher, target, ["one\n\ntail longer still", "one\n\ntail final"]);
 
-    expect(target.children[0]).toBe(wrapper);
-    expect(target.children[1]).toBe(tailEl);
-    expect(wrapper.children[0]).toBe(wrapperParagraph);
-    expect(tailEl.textContent).toBe("tail final");
+    expect(target.children[0]).toBe(committed);
+    expect(created.filter((entry) => entry.node === committedParagraph)).toHaveLength(1);
+    expect(target.children[1]).not.toBe(tailParagraph);
+    expect(target.children[1].textContent).toBe("tail final");
+    expect(target.lastChild).toBe(target.children[1]);
   });
 
   it("keeps mounted scope counts bounded across many flushes", async () => {

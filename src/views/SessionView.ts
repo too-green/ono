@@ -124,6 +124,7 @@ export class SessionView extends ItemView {
         if (this.model.currentSession) await this.renderSession(this.model.currentSession, this.model.loadedMessages, { initialLoad: false });
       },
       cancelStreamingMarkdownPatch: (key) => this.markdownPatcher.cancel(key),
+      isStreamingPartActive: (messageId, partId) => this.stream.isPartStreaming(messageId, partId),
       captureFollowLatest: () => this.scroll.captureFollowLatest(),
       restoreFollowLatest: (anchor) => this.scroll.restoreFollowLatest(anchor),
       updateJumpButton: () => this.scroll.updateJumpButton(),

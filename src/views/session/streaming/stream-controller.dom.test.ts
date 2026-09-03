@@ -215,6 +215,61 @@ describe("StreamController", () => {
     expect(frames.size).toBe(1);
   });
 
+  it("tracks grouped part activity on patch success and expires entries after 10 seconds", () => {
+    const { model, handlers, deps, controller } = setup();
+    const target = document.createElement("div");
+    target.dataset.partIds = "p1 p2";
+    deps.findStreamingPartTarget.mockReturnValue(target);
+    model.loadedMessages = [{ info: { id: "m1" }, parts: [{ id: "p1", messageID: "m1", type: "text", text: "a" }] }];
+
+    emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: "b" });
+
+    expect(controller.isPartStreaming("m1", "p1")).toBe(true);
+    expect(controller.isPartStreaming("m1", "p2")).toBe(true);
+    expect(controller.isPartStreaming("m1", "p3")).toBe(false);
+
+    vi.advanceTimersByTime(9_999);
+    expect(controller.isPartStreaming("m1", "p1")).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(controller.isPartStreaming("m1", "p1")).toBe(false);
+    expect(controller.isPartStreaming("m1", "p2")).toBe(false);
+  });
+
+  it("clears part activity when the part completes, is removed, or its message is removed", () => {
+    const { model, handlers, deps, controller } = setup();
+    const target = document.createElement("div");
+    target.dataset.partId = "p1";
+    deps.findStreamingPartTarget.mockReturnValue(target);
+    model.loadedMessages = [{ info: { id: "m1" }, parts: [{ id: "p1", messageID: "m1", type: "text", text: "a" }] }];
+    emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: "b" });
+    expect(controller.isPartStreaming("m1", "p1")).toBe(true);
+
+    emit(handlers, "message.part.updated", { sessionID: "s1", part: { id: "p1", messageID: "m1", type: "reasoning", text: "done", time: { end: 3 } } });
+    expect(controller.isPartStreaming("m1", "p1")).toBe(false);
+
+    emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: "c" });
+    emit(handlers, "message.part.removed", { sessionID: "s1", messageID: "m1", partID: "p1" });
+    expect(controller.isPartStreaming("m1", "p1")).toBe(false);
+
+    emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: "d" });
+    emit(handlers, "message.removed", { sessionID: "s1", messageID: "m1" });
+    expect(controller.isPartStreaming("m1", "p1")).toBe(false);
+  });
+
+  it("clears all part activity on disconnect", () => {
+    const { model, handlers, deps, controller } = setup();
+    const target = document.createElement("div");
+    target.dataset.partId = "p1";
+    deps.findStreamingPartTarget.mockReturnValue(target);
+    model.loadedMessages = [{ info: { id: "m1" }, parts: [{ id: "p1", messageID: "m1", type: "text", text: "a" }] }];
+    emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: "b" });
+    expect(controller.isPartStreaming("m1", "p1")).toBe(true);
+
+    controller.disconnect();
+
+    expect(controller.isPartStreaming("m1", "p1")).toBe(false);
+  });
+
   it("routes session, status, permission, and question events through narrow callbacks", () => {
     const { model, handlers, deps } = setup();
     const session = { id: "s1", title: "Updated" };

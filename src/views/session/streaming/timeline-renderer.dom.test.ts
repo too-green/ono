@@ -93,6 +93,7 @@ describe("TimelineRenderer DOM", () => {
       getRevertMessageId: () => revertMessageId,
       requestShellRender: vi.fn(async () => undefined),
       cancelStreamingMarkdownPatch: vi.fn(),
+      isStreamingPartActive: vi.fn(() => false),
       captureFollowLatest: vi.fn(() => undefined as { generation: number } | undefined),
       restoreFollowLatest: vi.fn(() => false),
       updateJumpButton: vi.fn(),
@@ -713,6 +714,35 @@ describe("TimelineRenderer DOM", () => {
     expect(row.dataset.messageSignature).not.toBe(before);
     expect(timeline.querySelector(".opencode-session-view__assistant-markdown")?.textContent).toBe("first!");
     controller.dispose();
+  });
+
+  it("keeps a streaming assistant block mounted and canonicalizes once the stream ends", async () => {
+    const { contentEl, model, deps, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const assistant = bundle("a1", "assistant", 2_000, [{ id: "p1", messageID: "a1", type: "text", text: "first" }]);
+    model.loadedMessages = [assistant];
+    model.sessionBusy = true;
+    await renderer.renderInto(timeline, model.loadedMessages);
+    const row = timeline.querySelector<HTMLElement>('[data-message-id="a1"]')!;
+    const body = row.querySelector<HTMLElement>(".opencode-session-view__assistant-markdown")!;
+    const isStreamingPartActive = vi.mocked(deps.isStreamingPartActive);
+
+    isStreamingPartActive.mockReturnValue(true);
+    assistant.parts[0].text = "second";
+    touchRenderedState(assistant.parts[0]);
+    await renderer.renderStreaming();
+    expect(row.querySelector(".opencode-session-view__assistant-markdown")).toBe(body);
+    expect(body.textContent).toBe("first");
+    expect(deps.cancelStreamingMarkdownPatch).not.toHaveBeenCalledWith("a1:p1:text");
+
+    isStreamingPartActive.mockReturnValue(false);
+    assistant.parts[0].text = "final";
+    touchRenderedState(assistant.parts[0]);
+    await renderer.renderStreaming();
+    const canonicalBody = row.querySelector<HTMLElement>(".opencode-session-view__assistant-markdown")!;
+    expect(canonicalBody).not.toBe(body);
+    expect(canonicalBody.textContent).toBe("final");
+    expect(deps.cancelStreamingMarkdownPatch).toHaveBeenCalledWith("a1:p1:text");
   });
 
   it("requests a shell render when no timeline is mounted", async () => {

@@ -111,6 +111,7 @@ describe("OpenCodePlugin server connection settings", () => {
     const saveSettings = vi.fn(async () => undefined);
     const refreshSessionsPanels = vi.fn(async () => undefined);
     const refreshSessionViews = vi.fn(async () => undefined);
+    const clearDirectoryContexts = vi.fn();
     const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
     Object.assign(plugin, {
       app: { secretStorage: { getSecret } },
@@ -118,6 +119,7 @@ describe("OpenCodePlugin server connection settings", () => {
       sessionState: pluginSessionState({ stale: { composer: { text: "old server" } } }, { draft: { composer: { text: "keep" } } }),
       forgottenSessionIds: new Set(["stale"]),
       opencode: { updateConfig },
+      directoryContexts: { clear: clearDirectoryContexts },
       saveSettings,
       refreshSessionsPanels,
       refreshSessionViews,
@@ -133,6 +135,7 @@ describe("OpenCodePlugin server connection settings", () => {
     });
     expect(getSecret).toHaveBeenCalledWith("opencode-pw");
     expect(updateConfig).toHaveBeenCalledWith(plugin.settings.server);
+    expect(clearDirectoryContexts).toHaveBeenCalledOnce();
     expect(saveSettings).toHaveBeenCalledOnce();
     expect((plugin as unknown as { sessionState: ReturnType<typeof pluginSessionState> }).sessionState).toEqual(
       pluginSessionState({}, { draft: { composer: { text: "keep" } } }),
@@ -420,18 +423,21 @@ describe("OpenCodePlugin session-state retention", () => {
 
   it("forgets state when a remote archive event arrives", async () => {
     const saveSettings = vi.fn(async () => undefined);
+    const handleDirectoryEvent = vi.fn();
     const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
     Object.assign(plugin, {
       settings: pluginSettings(),
       sessionState: pluginSessionState({ archived: { composer: { text: "stale" }, unread: true } }),
       saveSettings,
       notificationService: { handleSessionEvent: vi.fn() },
+      directoryContexts: { handleEvent: handleDirectoryEvent },
     });
 
     (plugin as unknown as { handleNotificationEvent(event: { type: string; properties: Record<string, unknown> }, directory: string): void })
       .handleNotificationEvent({ type: "session.updated", properties: { info: { id: "archived", time: { archived: 123 } } } }, "/workspace");
 
     await vi.waitFor(() => expect(saveSettings).toHaveBeenCalledOnce());
+    expect(handleDirectoryEvent).toHaveBeenCalledWith("/workspace", expect.objectContaining({ type: "session.updated" }));
     expect((plugin as unknown as { sessionState: { sessions: Record<string, PersistedSessionState> } }).sessionState.sessions).toEqual({});
   });
 
@@ -471,12 +477,14 @@ describe("OpenCodePlugin session-state retention", () => {
   it("schedules canonical pruning when a directory event stream reconnects", () => {
     let onOpen: (() => void) | undefined;
     const scheduleSessionStatePrune = vi.fn();
+    const invalidateDirectoryContext = vi.fn();
     const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
     Object.assign(plugin, {
       settings: pluginSettings({ openedDirectories: ["/workspace"] }),
       notificationEventSubscriptions: new Map(),
       layoutReady: true,
       scheduleSessionStatePrune,
+      directoryContexts: { invalidate: invalidateDirectoryContext },
       opencode: {
         subscribeToEvents: vi.fn((handlers: { onOpen?: () => void }) => {
           onOpen = handlers.onOpen;
@@ -489,6 +497,7 @@ describe("OpenCodePlugin session-state retention", () => {
     onOpen?.();
 
     expect(scheduleSessionStatePrune).toHaveBeenCalledOnce();
+    expect(invalidateDirectoryContext).toHaveBeenCalledWith("/workspace");
   });
 });
 

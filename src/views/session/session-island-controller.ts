@@ -229,7 +229,11 @@ export class SessionIslandController {
     const hydration = (async (): Promise<void> => {
       const [todoResult, projectResult] = await Promise.allSettled([
         service.getSessionTodo(sessionId, directory),
-        shouldRefreshProject ? service.getCurrentProject(directory) : Promise.resolve(undefined),
+        shouldRefreshProject
+          ? refreshProject
+            ? this.deps.plugin.directoryContexts.refreshProject(directory)
+            : this.deps.plugin.directoryContexts.getProject(directory)
+          : Promise.resolve(undefined),
       ]);
       if (!this.isCurrent(version, sessionId)) return;
 

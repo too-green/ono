@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { readGitInfo } from "./git-info";
+import { readGitInfo, withServerBranch } from "./git-info";
 
 /** Creates an empty temp directory suitable for one test's fake repository. */
 function tempDir(): string {
@@ -87,5 +87,18 @@ describe("readGitInfo", () => {
     fs.writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/dev\n");
     fs.writeFileSync(path.join(dir, ".git"), `gitdir: ${gitDir}\n`);
     expect(readGitInfo(dir)).toEqual({ branch: "dev" });
+  });
+});
+
+describe("withServerBranch", () => {
+  it("uses the server branch while preserving local repository metadata", () => {
+    expect(withServerBranch({ branch: "main", detached: true, githubRepository: "owner/repository" }, "feature/remote")).toEqual({
+      branch: "feature/remote",
+      githubRepository: "owner/repository",
+    });
+  });
+
+  it("does not use a local branch when the server provides none", () => {
+    expect(withServerBranch({ branch: "main" }, undefined)).toBeUndefined();
   });
 });

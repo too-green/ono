@@ -5,7 +5,6 @@ import { SessionViewModel } from "./session/session-view-model";
 import { ComposerController, type ComposerDeps } from "./session/composer/composer-controller";
 import type OpenCodePlugin from "../../main";
 import { defaultContextBarSettings } from "../settings";
-import * as gitInfo from "../utils/git-info";
 
 type DomOptions = { text?: string; cls?: string; attr?: Record<string, string> };
 
@@ -34,7 +33,10 @@ interface DraftViewHarness {
   model: SessionViewModel;
   contentEl: HTMLElement;
   composer: ComposerController;
-  plugin: { requireOpenCodeService: ReturnType<typeof vi.fn> };
+  plugin: {
+    requireOpenCodeService: ReturnType<typeof vi.fn>;
+    directoryContexts: { get: ReturnType<typeof vi.fn> };
+  };
   renderDraftSession(): Promise<void>;
 }
 
@@ -53,8 +55,13 @@ function setup(): DraftViewHarness {
     listModels: vi.fn(async () => []),
     listCommands: vi.fn(async () => []),
     getConfig: vi.fn(async () => ({})),
-    getCurrentProject: vi.fn(async () => ({ id: "project-1", worktree: "/workspace", vcs: "git" })),
   };
+  const getDirectoryContext = vi.fn(async (directory: string) => ({
+    directory,
+    project: { id: "project-1", worktree: "/canonical/main", vcs: "git" },
+    vcs: { branch: "feature/new-session-context", default_branch: "main" },
+    git: { branch: "feature/new-session-context", githubRepository: "owner/obsidian-opencode-plugin" },
+  }));
   const plugin = {
     settings,
     getSessionDraft: vi.fn((key: string) => composerState[key]?.text ?? ""),
@@ -68,6 +75,7 @@ function setup(): DraftViewHarness {
     rememberSessionAttachedFiles: vi.fn(async () => undefined),
     clearSessionComposer: vi.fn(async (key: string) => { delete composerState[key]; }),
     requireOpenCodeService: vi.fn(() => service),
+    directoryContexts: { get: getDirectoryContext },
   } as unknown as OpenCodePlugin;
   const contentEl = document.body.createDiv();
   const composerDeps: ComposerDeps = {
@@ -151,10 +159,6 @@ describe("SessionView draft composer stability", () => {
   });
 
   it("shows the target directory and GitHub context before the session starts", async () => {
-    vi.spyOn(gitInfo, "readGitInfo").mockReturnValue({
-      branch: "feature/new-session-context",
-      githubRepository: "owner/obsidian-opencode-plugin",
-    });
     const view = setup();
 
     await view.renderDraftSession();
@@ -168,6 +172,7 @@ describe("SessionView draft composer stability", () => {
       ["Repository", "owner/obsidian-opencode-plugin"],
       ["Branch", "feature/new-session-context"],
     ]));
+    expect(view.plugin.directoryContexts.get).toHaveBeenCalledWith("/workspace");
     expect(view.contentEl.querySelector(".opencode-session-view__draft-context-value.is-path")?.getAttribute("title")).toBe("/workspace");
   });
 

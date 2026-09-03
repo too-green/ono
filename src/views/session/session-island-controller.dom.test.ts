@@ -86,6 +86,7 @@ describe("SessionIslandController", () => {
         todoInProgressStatusCharacter: input.marker ?? "",
       },
       requireOpenCodeService: () => service,
+      directoryContexts: { getProject: service.getCurrentProject, refreshProject: service.getCurrentProject },
       openSessionTab: vi.fn(),
     } as unknown as OpenCodePlugin;
     const model = input.model ?? new SessionViewModel();
@@ -183,7 +184,11 @@ describe("SessionIslandController", () => {
       getCurrentProject: vi.fn(async () => ({ id: "p1", worktree: "/workspace" })),
       listMessages: vi.fn(async () => []),
     };
-    const plugin = { settings: { sessionIslandContextLabel: "percentage", todoInProgressStatusCharacter: "" }, requireOpenCodeService: () => service } as unknown as OpenCodePlugin;
+    const plugin = {
+      settings: { sessionIslandContextLabel: "percentage", todoInProgressStatusCharacter: "" },
+      requireOpenCodeService: () => service,
+      directoryContexts: { getProject: service.getCurrentProject, refreshProject: service.getCurrentProject },
+    } as unknown as OpenCodePlugin;
     const controller = new SessionIslandController({
       plugin,
       component: new Component(),
@@ -258,7 +263,11 @@ describe("SessionIslandController", () => {
       getCurrentProject: vi.fn(async () => ({ id: "p1", worktree: "/workspace", vcs: "git" })),
       listMessages: vi.fn(async () => [fresh]),
     };
-    const plugin = { settings: { sessionIslandContextLabel: "percentage", todoInProgressStatusCharacter: "" }, requireOpenCodeService: () => service } as unknown as OpenCodePlugin;
+    const plugin = {
+      settings: { sessionIslandContextLabel: "percentage", todoInProgressStatusCharacter: "" },
+      requireOpenCodeService: () => service,
+      directoryContexts: { getProject: service.getCurrentProject, refreshProject: service.getCurrentProject },
+    } as unknown as OpenCodePlugin;
     const controller = new SessionIslandController({
       plugin,
       component: new Component(),
@@ -303,7 +312,11 @@ describe("SessionIslandController", () => {
       getCurrentProject: vi.fn(async () => ({ id: "p1", worktree: "/workspace" })),
       listMessages: vi.fn(async () => []),
     };
-    const plugin = { settings: { sessionIslandContextLabel: "percentage", todoInProgressStatusCharacter: "" }, requireOpenCodeService: () => service } as unknown as OpenCodePlugin;
+    const plugin = {
+      settings: { sessionIslandContextLabel: "percentage", todoInProgressStatusCharacter: "" },
+      requireOpenCodeService: () => service,
+      directoryContexts: { getProject: service.getCurrentProject, refreshProject: service.getCurrentProject },
+    } as unknown as OpenCodePlugin;
     const controller = new SessionIslandController({
       plugin,
       component: new Component(),

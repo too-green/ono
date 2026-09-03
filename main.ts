@@ -39,12 +39,14 @@ import { nextAvailableForkTitle } from "./src/session-fork";
 import { logServiceError, OpenCodeHttpError } from "./src/services/opencode-http";
 import { logger } from "./src/logger";
 import { eligibleRetryActionKey, safeRetryActionLink, type SessionRetryAction } from "./src/session-retry-action";
+import { DirectoryContextStore } from "./src/services/directory-context-store";
 
 export const LEGACY_DIFF_PANEL_VIEW_TYPE = "opencode-diff-panel";
 
 export default class OpenCodePlugin extends Plugin {
   settings: OpenCodePluginSettings = DEFAULT_OPENCODE_SETTINGS;
   opencode?: OpenCodeService;
+  readonly directoryContexts = new DirectoryContextStore(() => this.requireOpenCodeService());
   private archivingSessionIds = new Set<string>();
   private notificationService?: SessionNotificationService;
   private notificationEventSubscriptions = new Map<string, OpenCodeEventSubscription>();
@@ -224,6 +226,7 @@ export default class OpenCodePlugin extends Plugin {
     this.app.workspace.detachLeavesOfType(LEGACY_DIFF_PANEL_VIEW_TYPE);
     this.closeNotificationEventSubscriptions();
     this.notificationService?.dispose();
+    this.directoryContexts?.clear();
     this.opencode?.dispose();
   }
 
@@ -244,7 +247,10 @@ export default class OpenCodePlugin extends Plugin {
     for (const directory of directories) {
       if (this.notificationEventSubscriptions.has(directory)) continue;
       const subscription = this.requireOpenCodeService().subscribeToEvents({
-        onOpen: () => this.reconcileSessionStateAfterReconnect(),
+        onOpen: () => {
+          this.directoryContexts?.invalidate(directory);
+          this.reconcileSessionStateAfterReconnect();
+        },
         onEvent: (event) => this.handleNotificationEvent(event, directory),
       }, directory);
       this.notificationEventSubscriptions.set(directory, subscription);
@@ -259,6 +265,7 @@ export default class OpenCodePlugin extends Plugin {
 
   /** Centrally routes request and lifecycle events needed even when no plugin view is mounted. */
   private handleNotificationEvent(event: OpenCodeEvent, directory: string): void {
+    this.directoryContexts?.handleEvent(directory, event);
     const properties = event.properties;
     const info = properties?.info;
     const session = info && typeof info === "object" && !Array.isArray(info) ? info as JsonObject : undefined;
@@ -469,6 +476,7 @@ export default class OpenCodePlugin extends Plugin {
   async removeOpenedDirectory(directory: string): Promise<void> {
     const key = this.pathKey(directory);
     this.settings.openedDirectories = this.settings.openedDirectories.filter((item) => this.pathKey(item) !== key);
+    this.directoryContexts?.invalidate(directory);
     await this.saveSettings();
     this.syncNotificationEventSubscriptions();
     await this.refreshSessionsPanels();
@@ -566,6 +574,7 @@ export default class OpenCodePlugin extends Plugin {
       password: this.resolveServerPassword(secretName),
     };
     await this.saveSettings();
+    this.directoryContexts?.clear();
     if (this.opencode) this.opencode.updateConfig(this.settings.server);
     else this.opencode = new OpenCodeService(this.settings.server);
     await this.refreshSessionsPanels();

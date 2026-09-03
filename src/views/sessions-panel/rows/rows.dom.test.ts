@@ -170,6 +170,7 @@ describe("sessions-panel row components", () => {
       getOpenedDirectories: () => ["/workspace"],
       getActiveSessionId: () => undefined,
       requireOpenCodeService: () => service,
+      directoryContexts: { getProject: service.getCurrentProject },
       cacheSessionHierarchy: vi.fn(),
       routePermissionRequest: vi.fn(),
       shouldSuppressPermissionRequest: vi.fn(() => false),

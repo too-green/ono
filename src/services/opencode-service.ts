@@ -23,6 +23,7 @@ import type {
   OpenCodeSummarizeInput,
   OpenCodeTodo,
   OpenCodeUpdateSessionInput,
+  OpenCodeVcsInfo,
 } from "./opencode-types";
 
 export interface OpenCodeServerConfig {
@@ -78,9 +79,9 @@ export class OpenCodeService {
     return this.http.get<JsonObject>("/path");
   }
 
-  /** Reads VCS metadata from `GET /vcs`. */
-  getVcs(): Promise<JsonObject> {
-    return this.http.get<JsonObject>("/vcs");
+  /** Reads directory-scoped VCS metadata from `GET /vcs`; referenced by draft and folder context. */
+  getVcs(directory?: string): Promise<OpenCodeVcsInfo> {
+    return this.http.get<OpenCodeVcsInfo>("/vcs", { directory });
   }
 
   /** Reads OpenCode config metadata from `GET /config`. */

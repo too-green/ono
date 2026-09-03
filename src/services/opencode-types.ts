@@ -24,6 +24,11 @@ export interface OpenCodeProject extends JsonObject {
   time?: { created?: number; initialized?: number };
 }
 
+export interface OpenCodeVcsInfo extends JsonObject {
+  branch?: string;
+  default_branch?: string;
+}
+
 export interface OpenCodeTodo extends JsonObject {
   id?: string;
   content: string;

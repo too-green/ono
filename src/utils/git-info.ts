@@ -44,6 +44,15 @@ export function readGitInfo(directory: string): GitInfo | undefined {
   return info.branch === undefined && info.githubRepository === undefined && info.worktreeOf === undefined ? undefined : info;
 }
 
+/** Combines optional local repository metadata with the server-authoritative branch used by draft and folder context. */
+export function withServerBranch(local: GitInfo | undefined, branch: unknown): GitInfo | undefined {
+  const info: GitInfo = {};
+  if (local?.githubRepository) info.githubRepository = local.githubRepository;
+  if (local?.worktreeOf) info.worktreeOf = local.worktreeOf;
+  if (typeof branch === "string" && branch) info.branch = branch;
+  return Object.keys(info).length ? info : undefined;
+}
+
 /** Parses a linked worktree's `.git` pointer file (`gitdir: <main>/.git/worktrees/<name>`). */
 function resolveGitDirFile(dotGitPath: string, directory: string): { gitDir: string; mainWorktree: string | undefined } | undefined {
   let gitDir: string | undefined;

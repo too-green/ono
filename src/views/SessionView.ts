@@ -34,7 +34,7 @@ import { StreamController } from "./session/streaming/stream-controller";
 import { TimelineRenderer } from "./session/streaming/timeline-renderer";
 import { SessionIslandController } from "./session/session-island-controller";
 import { getIdeOrDefault } from "../utils/ide-launcher";
-import { readGitInfo, type GitInfo } from "../utils/git-info";
+import type { GitInfo } from "../utils/git-info";
 
 export const VIEW_TYPE_OPENCODE_SESSION = "opencode-session";
 
@@ -781,12 +781,12 @@ export class SessionView extends ItemView {
     try {
       this.composer.persistDraft();
       const service = this.plugin.requireOpenCodeService();
-      const [agents, models, commands, config, project] = await Promise.all([
+      const [agents, models, commands, config, directoryContext] = await Promise.all([
         service.listAgents(directory),
         service.listModels(directory).catch(logServiceError([], "listModels")),
         service.listCommands(directory).catch(logServiceError([], "listCommands")),
         service.getConfig().catch(logServiceError({}, "getConfig")),
-        service.getCurrentProject(directory).catch(logServiceError(undefined, "getCurrentProject")),
+        this.plugin.directoryContexts.get(directory),
       ]);
       if (this.sessionBindingVersion !== bindingVersion || this.model.draftId !== draftId || this.model.sessionId) return;
       this.model.availableAgents = agents;
@@ -806,7 +806,7 @@ export class SessionView extends ItemView {
       const shell = this.contentEl.createDiv({ cls: "opencode-session-view__shell opencode-session-view__shell--draft" });
       const body = shell.createDiv({ cls: "opencode-session-view__draft-body" });
       body.createDiv({ text: "What would you like to work on?", cls: "opencode-session-view__draft-title" });
-      this.renderDraftContext(body, directory, readGitInfo(project?.worktree ?? directory));
+      this.renderDraftContext(body, directory, directoryContext.git);
       const bottomDock = shell.createDiv({ cls: "opencode-session-view__bottom-dock" });
       this.docks.mount(bottomDock);
       const promptPanel = this.island.mount(bottomDock);

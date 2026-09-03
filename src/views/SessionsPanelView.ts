@@ -216,7 +216,7 @@ export class SessionsPanelView extends ItemView {
         Promise.all(
           openedDirectories.map(async (directory): Promise<OpenedDirectoryContext> => ({
             directory,
-            project: await service.getCurrentProject(directory).catch(logServiceError(undefined, "getCurrentProject")),
+            project: await this.plugin.directoryContexts.getProject(directory).catch(logServiceError(undefined, "getCurrentProject")),
           })),
         ),
         Promise.all(openedDirectories.map((directory) => this.listSessions(directory))),

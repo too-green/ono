@@ -1,6 +1,6 @@
 import { FuzzySuggestModal, setIcon, type App, type FuzzyMatch } from "obsidian";
 import type OpenCodePlugin from "../../main";
-import { readGitInfo, type GitInfo } from "../utils/git-info";
+import type { GitInfo } from "../utils/git-info";
 
 /** One opened directory enriched with the metadata rendered in its picker row. */
 export interface FolderSuggestion {
@@ -19,19 +19,17 @@ function basename(directory: string): string {
 /**
  * Builds one enriched suggestion per opened directory.
  *
- * Git metadata is read synchronously from the filesystem while project names
- * come from the server; a failing `getCurrentProject` degrades the row to
- * git-only instead of blocking the picker.
+ * Branches and project names come from the server. Optional repository and
+ * linked-worktree metadata is enriched from the local filesystem when present.
  */
 export async function loadFolderSuggestions(plugin: OpenCodePlugin): Promise<FolderSuggestion[]> {
-  const service = plugin.requireOpenCodeService();
   return Promise.all(
     plugin.getOpenedDirectories().map(async (directory): Promise<FolderSuggestion> => {
-      const project = await service.getCurrentProject(directory).catch(() => undefined);
+      const context = await plugin.directoryContexts.get(directory);
       return {
         directory,
-        projectName: typeof project?.name === "string" && project.name ? project.name : undefined,
-        git: readGitInfo(directory),
+        projectName: typeof context.project?.name === "string" && context.project.name ? context.project.name : undefined,
+        git: context.git,
       };
     }),
   );

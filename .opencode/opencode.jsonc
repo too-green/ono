@@ -4,27 +4,7 @@
     "opencode": {
       "repository": "anomalyco/opencode",
       "branch": "dev",
-      "description": "Refer for OpenCode implementation details, APIs, and UI behavior."
-    },
-    "openchamber": {
-      "repository": "openchamber/openchamber",
-      "branch": "main",
-      "description": "a popular 3rd party opensource opencode GUI client app"
-    },
-    "tasknotes": {
-      "repository": "callumalpass/tasknotes",
-      "branch": "main",
-      "description": "a popular task management obsidian plugin"
-    },
-    "obsidian-pi": {
-      "repository": "ChristianLempa/obsidian-pi",
-      "branch": "main",
-      "description": "an obsidian plugin that allows chatting with pi agent inside obsidian app"
-    },
-    "claudian": {
-      "repository": "https://github.com/yishentu/claudian",
-      "branch" : "main",
-      "description": "An Obsidian plugin that embeds Claude Code/Codex as an AI collaborator in your vault"
+      "description": "Refer for communication layer details and UI behaviours of first-pary clients and opencode server API docs"
     }
   },
   "instructions": ["custom-instructions/*.md"]

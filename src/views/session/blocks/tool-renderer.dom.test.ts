@@ -127,7 +127,7 @@ describe("shared tool container", () => {
   });
 
   it("shows synthetic new-file write totals in the collapsed shared container", async () => {
-    const container = document.createElement("div");
+    const container = document.body.appendChild(document.createElement("div"));
     await renderToolCall(container, {
       id: "write-part",
       type: "tool",
@@ -153,7 +153,7 @@ describe("shared tool container", () => {
   it.each([
     ["edit", { filePath: "/work/src/file.ts", oldString: "old", newString: "new" }],
   ])("keeps specialized %s rendering inside the shared tool container", async (tool, input) => {
-    const container = document.createElement("div");
+    const container = document.body.appendChild(document.createElement("div"));
     await renderToolCall(container, {
       id: `${tool}-part`,
       type: "tool",
@@ -220,7 +220,7 @@ describe("shared tool container", () => {
   });
 
   it("switches one expanded fallback block between formatted output and the complete raw part", async () => {
-    const container = document.createElement("div");
+    const container = document.body.appendChild(document.createElement("div"));
     await renderToolCall(container, {
       id: "part-123",
       type: "tool",
@@ -309,7 +309,7 @@ describe("apply_patch tool rendering", () => {
   });
 
   it("renders one collapsed edit-style block per completed patch file", async () => {
-    const container = document.createElement("div");
+    const container = document.body.appendChild(document.createElement("div"));
     const state: JsonObject = {
       status: "completed",
       input: { patchText: "patch" },
@@ -373,7 +373,7 @@ describe("apply_patch tool rendering", () => {
   });
 
   it("renders pure moves with paths but without empty diff tables or stats", async () => {
-    const container = document.createElement("div");
+    const container = document.body.appendChild(document.createElement("div"));
     await renderToolCall(container, {
       type: "tool",
       tool: "apply_patch",

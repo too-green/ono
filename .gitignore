@@ -8,6 +8,8 @@ main.js
 dist/
 build/
 coverage/
+.benchmark-recordings/
+.benchmark-results/
 
 # Obsidian local vault/plugin state
 .obsidian/

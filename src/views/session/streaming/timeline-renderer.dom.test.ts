@@ -1,8 +1,11 @@
 import { Component, MarkdownRenderer, type App } from "obsidian";
-import type { JsonObject, OpenCodeMessageBundle } from "../../../services/opencode-types";
+import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle } from "../../../services/opencode-types";
+import type { OpenCodeEventHandlers } from "../../../services/opencode-events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SessionViewModel } from "../session-view-model";
+import { touchRenderedState } from "../render-signature";
+import { StreamController } from "./stream-controller";
 import { messageRenderSignature, TimelineRenderer } from "./timeline-renderer";
 
 type DomOptions = { text?: string; cls?: string; attr?: Record<string, string> };
@@ -322,6 +325,7 @@ describe("TimelineRenderer DOM", () => {
     const removals = recordRemovedNodes(row);
 
     assistant.parts[0].text = "second";
+    touchRenderedState(assistant.parts[0]);
     await renderer.renderStreaming();
     removals.finish();
 
@@ -376,6 +380,7 @@ describe("TimelineRenderer DOM", () => {
     const removals = recordRemovedNodes(row);
 
     assistant.parts[0].text = "still thinking";
+    touchRenderedState(assistant.parts[0]);
     await renderer.renderStreaming();
     removals.finish();
 
@@ -449,6 +454,7 @@ describe("TimelineRenderer DOM", () => {
     const body = reasoning.querySelector<HTMLElement>(".opencode-session-view__reasoning-body")!;
 
     assistant.parts[0].time = { end: 3_000 };
+    touchRenderedState(assistant.parts[0]);
     await renderer.renderStreaming();
 
     expect(timeline.querySelector(".opencode-session-view__reasoning")).toBe(reasoning);
@@ -478,6 +484,7 @@ describe("TimelineRenderer DOM", () => {
     await vi.waitFor(() => expect(tool.dataset.toolRaw).toBe("true"));
 
     assistant.parts[0].state = { status: "completed", input: { command: "pwd" }, output: "/workspace" };
+    touchRenderedState(assistant.parts[0]);
     await renderer.renderStreaming();
 
     expect(timeline.querySelector(".opencode-session-view__tool")).toBe(tool);
@@ -533,6 +540,7 @@ describe("TimelineRenderer DOM", () => {
     model.loadedMessages = [assistant];
     await renderer.renderInto(timeline, model.loadedMessages);
     assistant.parts[0].text = "snapshot";
+    touchRenderedState(assistant.parts[0]);
     let releaseSnapshot: (() => void) | undefined;
     vi.mocked(MarkdownRenderer.renderMarkdown).mockImplementation(async (markdown, container) => {
       if (markdown === "snapshot") await new Promise<void>((resolve) => { releaseSnapshot = resolve; });
@@ -542,6 +550,7 @@ describe("TimelineRenderer DOM", () => {
     const rendering = renderer.renderStreaming();
     await vi.waitFor(() => expect(releaseSnapshot).toBeTypeOf("function"));
     assistant.parts[0].text = "latest";
+    touchRenderedState(assistant.parts[0]);
     releaseSnapshot?.();
     await rendering;
 
@@ -655,6 +664,55 @@ describe("TimelineRenderer DOM", () => {
 
     expect(timeline.isConnected).toBe(true);
     expect(contentEl.querySelector(".opencode-session-view__rewind-file-path")?.textContent).toBe("new.ts");
+  });
+
+  it("changes the row signature when a streamed delta appends to a part", async () => {
+    const { contentEl, model, renderer } = setup();
+    const timeline = contentEl.createDiv({ cls: "opencode-session-view__timeline" });
+    const assistant = bundle("a1", "assistant", 1, [{ id: "p1", messageID: "a1", type: "text", text: "first" }]);
+    model.loadedMessages = [assistant];
+    await renderer.renderInto(timeline, model.loadedMessages);
+    const row = timeline.querySelector<HTMLElement>('[data-message-id="a1"]')!;
+    const before = row.dataset.messageSignature!;
+
+    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+    const handlers: OpenCodeEventHandlers[] = [];
+    const controller = new StreamController({
+      model,
+      subscribeToEvents: (next) => {
+        handlers.push(next);
+        return { close: () => undefined };
+      },
+      findStreamingPartTarget: () => undefined,
+      queueStreamingMarkdownPatch: vi.fn(),
+      extendFollowLatest: vi.fn(),
+      onSessionUpdated: vi.fn(),
+      onSessionDiff: vi.fn(),
+      onTodosUpdated: vi.fn(),
+      onMessageChanged: vi.fn(),
+      onMessageRemoved: vi.fn(),
+      onStreamOpen: vi.fn(),
+      onStatusChange: vi.fn(),
+      onSessionError: vi.fn(),
+      onConnectionChange: vi.fn(),
+      onSessionDeleted: vi.fn(),
+      onDescendantsChanged: vi.fn(),
+      onPermissionAsked: vi.fn(),
+      onPermissionReplied: vi.fn(),
+      onQuestionAsked: vi.fn(),
+      onQuestionSettled: vi.fn(),
+      requestTimelineRender: async () => undefined,
+      requestComposerProgressRefresh: () => undefined,
+      requestCanonicalSync: () => undefined,
+    });
+    controller.subscribe("/workspace");
+    handlers[handlers.length - 1]?.onEvent({ type: "message.part.delta", properties: { sessionID: "s1", messageID: "a1", partID: "p1", field: "text", delta: "!" } } as OpenCodeEvent);
+    await renderer.renderStreaming();
+
+    expect(assistant.parts[0].text).toBe("first!");
+    expect(row.dataset.messageSignature).not.toBe(before);
+    expect(timeline.querySelector(".opencode-session-view__assistant-markdown")?.textContent).toBe("first!");
+    controller.dispose();
   });
 
   it("requests a shell render when no timeline is mounted", async () => {

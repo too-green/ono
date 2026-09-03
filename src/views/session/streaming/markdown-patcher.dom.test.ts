@@ -205,4 +205,180 @@ describe("MarkdownPatcher", () => {
     expect(frames.size).toBe(0);
     expect(target.textContent).toBe("");
   });
+
+  /** Drains the microtask queue so a queued animation frame's async flush fully settles. */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+  }
+
+  /** Streams cumulative Markdown deltas through the patcher, settling every flush. */
+  async function streamDeltas(patcher: MarkdownPatcher, target: HTMLElement, deltas: string[], key = "part"): Promise<void> {
+    for (const markdown of deltas) {
+      patcher.queue(key, target, markdown);
+      runNextFrame();
+      await settle();
+    }
+  }
+
+  /** Builds N cumulative deltas covering the full text. */
+  function cumulativeDeltas(full: string, steps: number): string[] {
+    const deltas: string[] = [];
+    for (let i = 1; i <= steps; i++) deltas.push(full.slice(0, Math.ceil((i / steps) * full.length)));
+    return deltas;
+  }
+
+  /** Installs a block-aware mock renderer emitting one paragraph per blank-line-separated part. */
+  function installBlockRenderer(created: Array<{ source: string; node: HTMLElement }> = []) {
+    return vi.spyOn(MarkdownRenderer, "renderMarkdown").mockImplementation(async (markdown: string, container: HTMLElement) => {
+      for (const part of markdown.split(/\n[ \t\r]*\n/)) {
+        if (!part.trim()) continue;
+        const paragraph = document.createElement("p");
+        paragraph.textContent = part;
+        container.appendChild(paragraph);
+        created.push({ source: markdown, node: paragraph });
+      }
+    });
+  }
+
+  it("renders committed blocks once and only re-renders the tail per flush", async () => {
+    const { patcher, target } = setup();
+    const created: Array<{ source: string; node: HTMLElement }> = [];
+    const render = installBlockRenderer(created);
+    const full = "alpha one\n\nbeta two\n\ngamma three";
+
+    await streamDeltas(patcher, target, cumulativeDeltas(full, 30));
+
+    expect(render).toHaveBeenCalledTimes(32);
+    const sources = render.mock.calls.map((call) => call[0] as string);
+    expect(sources).not.toContain(full);
+    const tailOnlyArgs = sources.slice(-11);
+    for (const source of tailOnlyArgs) expect("gamma three".startsWith(source) || source === "beta two").toBe(true);
+
+    expect(target.children).toHaveLength(3);
+    expect(target.children[0].textContent).toBe("alpha one");
+    expect(target.children[1].textContent).toBe("beta two");
+    expect(target.children[2].textContent).toBe("gamma three");
+    for (const wrapperParagraph of [target.children[0].children[0], target.children[1].children[0]]) {
+      expect(created.filter((entry) => entry.node === wrapperParagraph)).toHaveLength(1);
+    }
+
+    patcher.queue("part", target, full);
+    runNextFrame();
+    await settle();
+    expect(render).toHaveBeenCalledTimes(32);
+  });
+
+  it("keeps an unterminated fence in the tail and commits it once it closes", async () => {
+    const { patcher, target } = setup();
+    const created: Array<{ source: string; node: HTMLElement }> = [];
+    const render = installBlockRenderer(created);
+    const full = "code incoming\n\n```js\nconst a = 1;\n```\n\ndone";
+    const deltas = cumulativeDeltas(full, 24);
+
+    await streamDeltas(patcher, target, deltas.slice(0, 16));
+    let sources = render.mock.calls.map((call) => call[0] as string);
+    expect(sources.some((source) => source.startsWith("```js") && source.endsWith("```"))).toBe(false);
+    const committedParagraph = target.children[0].children[0];
+    expect(target.children[0].textContent).toBe("code incoming");
+    expect(created.filter((entry) => entry.node === committedParagraph)).toHaveLength(1);
+
+    await streamDeltas(patcher, target, deltas.slice(16));
+    sources = render.mock.calls.map((call) => call[0] as string);
+    expect(sources.filter((source) => source === "```js\nconst a = 1;\n```")).toHaveLength(1);
+    expect(target.children).toHaveLength(3);
+    expect(target.children[2].textContent).toBe("done");
+    expect(created.filter((entry) => entry.node === target.children[1].children[0])).toHaveLength(1);
+  });
+
+  it("never splits loose lists or blockquotes mid-construct", async () => {
+    const { patcher, target } = setup();
+    const render = installBlockRenderer();
+    const list = "- one\n\n- two\n\n- three";
+
+    await streamDeltas(patcher, target, cumulativeDeltas(list, 12));
+    let sources = render.mock.calls.map((call) => call[0] as string);
+    expect(sources).not.toContain("- two");
+    expect(sources).not.toContain("- three");
+    expect(target.textContent).toBe(list.replace(/\n\n/g, ""));
+
+    render.mockClear();
+    const quotes = "> q one\n\n> q two\n\nafter";
+
+    await streamDeltas(patcher, target, cumulativeDeltas(quotes, 12), "quoted");
+    sources = render.mock.calls.map((call) => call[0] as string);
+    expect(sources).not.toContain("> q one");
+    expect(sources).not.toContain("> q two");
+  });
+
+  it("falls back to a full rebuild when the committed prefix changes canonically", async () => {
+    const { patcher, target } = setup();
+    const render = installBlockRenderer();
+
+    await streamDeltas(patcher, target, ["one", "one\n\ntwo"]);
+
+    expect(target.children).toHaveLength(2);
+    const staleWrapper = target.children[0];
+
+    patcher.queue("part", target, "CHANGED\n\ntwo");
+    runNextFrame();
+    await settle();
+
+    const sources = render.mock.calls.map((call) => call[0] as string);
+    expect(sources.filter((source) => source === "CHANGED")).toHaveLength(1);
+    expect(sources.filter((source) => source === "two")).toHaveLength(2);
+    expect(target.children).toHaveLength(2);
+    expect(target.children[0]).not.toBe(staleWrapper);
+    expect(target.textContent).toContain("CHANGED");
+    expect(target.textContent).toContain("two");
+  });
+
+  it("preserves committed wrapper nodes across later flushes and swaps only tail children", async () => {
+    const { patcher, target } = setup();
+    installBlockRenderer();
+
+    await streamDeltas(patcher, target, ["one\n\ntail", "one\n\ntail longer"]);
+
+    expect(target.children).toHaveLength(2);
+    const wrapper = target.children[0];
+    const tailEl = target.children[1];
+    const wrapperParagraph = wrapper.children[0];
+
+    await streamDeltas(patcher, target, ["one\n\ntail longer still", "one\n\ntail final"]);
+
+    expect(target.children[0]).toBe(wrapper);
+    expect(target.children[1]).toBe(tailEl);
+    expect(wrapper.children[0]).toBe(wrapperParagraph);
+    expect(tailEl.textContent).toBe("tail final");
+  });
+
+  it("keeps mounted scope counts bounded across many flushes", async () => {
+    const { patcher, target, component } = setup(false);
+    installBlockRenderer();
+    const addChild = vi.spyOn(component, "addChild");
+    const removeChild = vi.spyOn(component, "removeChild");
+
+    await streamDeltas(patcher, target, cumulativeDeltas("growing tail text", 10));
+
+    expect(addChild).toHaveBeenCalledTimes(10);
+    expect(removeChild).toHaveBeenCalledTimes(9);
+
+    target.remove();
+    patcher.releaseDetached();
+    expect(removeChild).toHaveBeenCalledTimes(10);
+  });
+
+  it("matches a one-shot full render once the stream quiesces", async () => {
+    const { patcher, target } = setup();
+    installBlockRenderer();
+    const full = "# Heading\n\nfirst para\n\nsecond para\n\n- item\n\n- second item";
+
+    await streamDeltas(patcher, target, cumulativeDeltas(full, 30));
+
+    const reference = document.createElement("div");
+    await MarkdownRenderer.renderMarkdown(full, reference, "ref.md", new Component());
+    const renderedBlocks = Array.from(target.querySelectorAll("p")).map((p) => p.textContent);
+    const referenceBlocks = Array.from(reference.querySelectorAll("p")).map((p) => p.textContent);
+    expect(renderedBlocks).toEqual(referenceBlocks);
+    expect(target.textContent).toBe(reference.textContent);
+  });
 });

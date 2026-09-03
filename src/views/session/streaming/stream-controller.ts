@@ -4,6 +4,7 @@ import type { OpenCodeEventHandlers, OpenCodeEventSubscription } from "../../../
 import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeTodo } from "../../../services/opencode-types";
 import * as jsonHelpers from "../json-helpers";
 import { messageId, messageTime } from "../message-helpers";
+import { touchRenderedState } from "../render-signature";
 import type { SessionViewModel } from "../session-view-model";
 
 interface AppliedPartDelta {
@@ -336,6 +337,7 @@ export class StreamController {
     if (!part) return undefined;
     const current = typeof part[field] === "string" ? part[field] : "";
     part[field] = `${current}${delta}`;
+    touchRenderedState(part);
     return { messageId: parentId, partId, field, part };
   }
 

@@ -104,6 +104,7 @@ describe("agents-panel row components", () => {
     expect(handle.rowEl.lastElementChild?.classList.contains("opencode-agent-panel__session-modified")).toBe(true);
     expect(handle.rowEl.querySelector(".opencode-status-badge--working")?.getAttribute("data-working-animation")).toBe("pulse");
     const workingIndicator = handle.rowEl.querySelector(".opencode-status-badge--working span");
+    expect(workingIndicator?.children).toHaveLength(3);
 
     handle.updatePresentation?.({ ...session, updatedAt: Date.now() }, true, "pulse");
 

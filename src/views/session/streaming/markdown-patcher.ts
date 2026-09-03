@@ -1,6 +1,7 @@
 import { Component, MarkdownRenderer } from "obsidian";
 import { logger } from "../../../logger";
 import type { FollowLatestAnchor } from "../scroll-controller";
+import { splitMarkdownBlocks } from "./markdown-blocks";
 
 interface StreamingMarkdownPatch {
   element: HTMLElement;
@@ -8,6 +9,20 @@ interface StreamingMarkdownPatch {
   frame?: number;
   inFlight: boolean;
   pending: boolean;
+  lastRendered?: string;
+}
+
+/** One committed block rendered once and frozen for the rest of the stream. */
+interface MountedWrapper {
+  source: string;
+  el: HTMLElement;
+  scope: Component;
+}
+
+/** Per-element mounted render state: frozen committed wrappers plus the re-rendered tail. */
+interface MountedState {
+  wrappers: MountedWrapper[];
+  tail?: { el: HTMLElement; scope?: Component };
 }
 
 /** Dependencies used by `MarkdownPatcher` while replacing a streamed Markdown part. */
@@ -20,11 +35,11 @@ export interface MarkdownPatcherDeps {
   updateJumpButton: () => void;
 }
 
-/** Owns frame-bounded, deduplicated Markdown rendering for active streamed parts. */
+/** Owns frame-bounded, deduplicated, block-incremental Markdown rendering for active streamed parts. */
 export class MarkdownPatcher {
   private readonly patches = new Map<string, StreamingMarkdownPatch>();
-  /** Current render scope per mounted target; multiple grouped part keys can share one element. */
-  private readonly mountedScopes = new Map<HTMLElement, Component>();
+  /** Mounted wrapper/tail scopes per target element; multiple grouped part keys can share one element. */
+  private readonly mounted = new Map<HTMLElement, MountedState>();
 
   constructor(private readonly deps: MarkdownPatcherDeps) {}
 
@@ -51,7 +66,7 @@ export class MarkdownPatcher {
     if (!patch) return;
     if (patch.frame !== undefined) window.cancelAnimationFrame(patch.frame);
     patch.pending = false;
-    this.releaseElementScope(patch.element);
+    this.teardownMounted(patch.element);
     this.patches.delete(key);
   }
 
@@ -71,8 +86,7 @@ export class MarkdownPatcher {
       patch.pending = false;
     }
     this.patches.clear();
-    for (const scope of this.mountedScopes.values()) this.releaseScopeComponent(scope);
-    this.mountedScopes.clear();
+    for (const element of [...this.mounted.keys()]) this.teardownMounted(element);
   }
 
   /** Releases mounted scopes whose target left the DOM; called after a full shell replacement. */
@@ -83,48 +97,90 @@ export class MarkdownPatcher {
       patch.pending = false;
       this.patches.delete(key);
     }
-    for (const element of [...this.mountedScopes.keys()]) {
-      if (!element.isConnected) this.releaseElementScope(element);
+    for (const element of [...this.mounted.keys()]) {
+      if (!element.isConnected) this.teardownMounted(element);
     }
   }
 
-  /** Renders one queued patch and schedules the newest value when a delta arrives mid-render. */
+  /** Renders one queued patch incrementally: commits stable blocks once, re-renders only the tail. */
   private async flush(key: string, patch: StreamingMarkdownPatch): Promise<void> {
-    if (!patch.pending || !patch.element.isConnected) {
+    const element = patch.element;
+    if (!patch.pending || !element.isConnected) {
       if (this.patches.get(key) === patch) this.patches.delete(key);
       return;
     }
-
     const markdown = patch.markdown;
-    const element = patch.element;
+    if (patch.lastRendered === markdown) {
+      patch.pending = false;
+      return;
+    }
     const followGeneration = this.deps.captureFollowLatest();
     patch.pending = false;
     patch.inFlight = true;
-    // Render under a dedicated scope: MarkdownRenderer children must never register on the
-    // long-lived view, or every streamed frame leaks a detached MarkdownRenderChild.
-    const scope = new Component();
-    this.deps.component.addChild(scope);
+    const sourcePath = `opencode-session/${this.deps.getSessionId() ?? "session"}.md`;
+    let activeScope: Component | undefined;
     try {
+      const { committed, tail } = splitMarkdownBlocks(markdown);
+      if (!committed.length && !tail) {
+        this.teardownMounted(element);
+        element.replaceChildren();
+        patch.lastRendered = markdown;
+        this.deps.restoreFollowLatest(followGeneration);
+        this.deps.updateJumpButton();
+        return;
+      }
+      let state = this.mounted.get(element);
+      if (!state || !prefixMatches(state, committed)) {
+        this.teardownMounted(element);
+        element.replaceChildren();
+        state = { wrappers: [] };
+        this.mounted.set(element, state);
+      }
+      for (let i = state.wrappers.length; i < committed.length; i++) {
+        const scope = new Component();
+        this.deps.component.addChild(scope);
+        activeScope = scope;
+        const scratch = document.createElement("div");
+        scratch.classList.add("markdown-rendered");
+        await MarkdownRenderer.renderMarkdown(committed[i], scratch, sourcePath, scope);
+        if (!element.isConnected || this.patches.get(key) !== patch || this.mounted.get(element) !== state || (patch.pending && patch.markdown !== markdown)) {
+          this.releaseScopeComponent(scope);
+          activeScope = undefined;
+          return;
+        }
+        const el = document.createElement("div");
+        el.append(...Array.from(scratch.childNodes));
+        element.insertBefore(el, state.tail?.el ?? null);
+        state.wrappers.push({ source: committed[i], el, scope });
+        activeScope = undefined;
+      }
+      const previousTailScope = state.tail?.scope;
+      const scope = new Component();
+      this.deps.component.addChild(scope);
+      activeScope = scope;
       const scratch = document.createElement("div");
       scratch.classList.add("markdown-rendered");
-      await MarkdownRenderer.renderMarkdown(markdown, scratch, `opencode-session/${this.deps.getSessionId() ?? "session"}.md`, scope);
-      if (!element.isConnected || this.patches.get(key) !== patch) {
+      await MarkdownRenderer.renderMarkdown(tail, scratch, sourcePath, scope);
+      if (!element.isConnected || this.patches.get(key) !== patch || this.mounted.get(element) !== state || (patch.pending && patch.markdown !== markdown)) {
         this.releaseScopeComponent(scope);
+        activeScope = undefined;
         return;
       }
-      if (patch.pending && patch.markdown !== markdown) {
-        this.releaseScopeComponent(scope);
-        return;
+      if (!state.tail) {
+        const el = document.createElement("div");
+        element.appendChild(el);
+        state.tail = { el };
       }
-      element.replaceChildren(...Array.from(scratch.childNodes));
-      const previous = this.mountedScopes.get(element);
-      this.mountedScopes.set(element, scope);
-      // The previous flush's DOM was just destroyed by replaceChildren; unload its render children.
-      if (previous) this.releaseScopeComponent(previous);
+      state.tail.el.replaceChildren(...Array.from(scratch.childNodes));
+      // The previous tail DOM was just destroyed by replaceChildren; unload its render children.
+      if (previousTailScope) this.releaseScopeComponent(previousTailScope);
+      state.tail.scope = scope;
+      activeScope = undefined;
+      patch.lastRendered = markdown;
       this.deps.restoreFollowLatest(followGeneration);
       this.deps.updateJumpButton();
     } catch (error) {
-      this.releaseScopeComponent(scope);
+      if (activeScope) this.releaseScopeComponent(activeScope);
       logger.warn("session-stream", "markdown patch failed", { error });
     } finally {
       patch.inFlight = false;
@@ -133,12 +189,13 @@ export class MarkdownPatcher {
     }
   }
 
-  /** Drops one mounted target's scope after canonical reconciliation replaces its DOM. */
-  private releaseElementScope(element: HTMLElement): void {
-    const scope = this.mountedScopes.get(element);
-    if (!scope) return;
-    this.mountedScopes.delete(element);
-    this.releaseScopeComponent(scope);
+  /** Releases every wrapper and tail scope mounted for one target element. */
+  private teardownMounted(element: HTMLElement): void {
+    const state = this.mounted.get(element);
+    if (!state) return;
+    this.mounted.delete(element);
+    for (const wrapper of state.wrappers) this.releaseScopeComponent(wrapper.scope);
+    if (state.tail?.scope) this.releaseScopeComponent(state.tail.scope);
   }
 
   /** Detaches a render scope from the view and unloads its children. */
@@ -146,4 +203,10 @@ export class MarkdownPatcher {
     this.deps.component.removeChild(scope);
     scope.unload();
   }
+}
+
+/** Returns true when mounted committed wrappers exactly prefix the freshly split blocks. */
+function prefixMatches(state: MountedState, committed: string[]): boolean {
+  if (state.wrappers.length > committed.length) return false;
+  return state.wrappers.every((wrapper, index) => wrapper.source === committed[index]);
 }

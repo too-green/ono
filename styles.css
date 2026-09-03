@@ -235,17 +235,32 @@
   width: var(--opencode-session-done-size, var(--size-2-3));
 }
 
+/*
+ * Working indicator dots: three children animated via transform only, so the
+ * animation composites without repaints (background/filter animations kept the GPU pinned).
+ */
 .opencode-status-badge--working span {
-  animation: opencode-session-working-bounce 1.2s ease-in-out infinite;
-  background-image:
-    radial-gradient(circle, var(--text-muted) 50%, transparent 55%),
-    radial-gradient(circle, var(--text-muted) 50%, transparent 55%),
-    radial-gradient(circle, var(--text-muted) 50%, transparent 55%);
-  background-position: 0 100%, 50% 100%, 100% 100%;
-  background-repeat: no-repeat;
-  background-size: 33.333% 33.333%;
+  align-items: flex-end;
+  display: inline-flex;
   height: var(--opencode-session-done-size, var(--size-2-3));
+  justify-content: space-between;
   width: var(--opencode-session-done-size, var(--size-2-3));
+}
+
+.opencode-status-badge--working span i {
+  animation: opencode-session-working-bounce 1.2s ease-in-out infinite;
+  background: var(--text-muted);
+  border-radius: 50%;
+  height: 33.333%;
+  width: 33.333%;
+}
+
+.opencode-status-badge--working span i:nth-child(2) {
+  animation-delay: 0.4s;
+}
+
+.opencode-status-badge--working span i:nth-child(3) {
+  animation-delay: 0.8s;
 }
 
 .opencode-status-badge--working[data-working-animation="pulse"] span {
@@ -262,21 +277,60 @@
   mask: radial-gradient(farthest-side, transparent calc(100% - var(--border-width)), #000 0);
 }
 
+/* Single-circle variants ignore the dot children. */
+.opencode-status-badge--working[data-working-animation="pulse"] span i,
+.opencode-status-badge--working[data-working-animation="orbit"] span i,
+.opencode-status-badge--working[data-working-animation="scanner"] span i {
+  display: none;
+}
+
+/* Scanner sweeps a static gradient band via transform inside an overflow-hidden pill. */
 .opencode-status-badge--working[data-working-animation="scanner"] span {
-  animation: opencode-session-working-scanner 1.4s ease-in-out infinite alternate;
-  background: linear-gradient(90deg, transparent, var(--interactive-accent), transparent) 100% 50% / 200% 33.333% no-repeat;
   border-radius: var(--pill-radius);
+  overflow: hidden;
+  position: relative;
+}
+
+.opencode-status-badge--working[data-working-animation="scanner"] span::before {
+  animation: opencode-session-working-scanner 1.4s ease-in-out infinite alternate;
+  background: linear-gradient(90deg, transparent, var(--interactive-accent), transparent);
+  content: "";
+  height: 33.333%;
+  left: 0;
+  position: absolute;
+  top: 33.333%;
+  width: 50%;
 }
 
 .opencode-status-badge--working[data-working-animation="puzzle"] span {
-  animation: opencode-session-working-puzzle 2.4s linear infinite;
-  background-color: transparent;
-  background-image:
-    linear-gradient(var(--text-normal), var(--text-normal)),
-    linear-gradient(var(--text-normal), var(--text-normal)),
-    linear-gradient(var(--text-normal), var(--text-normal));
-  background-repeat: no-repeat;
-  background-size: 40% 40%;
+  position: relative;
+}
+
+.opencode-status-badge--working[data-working-animation="puzzle"] span i {
+  animation-duration: 2.4s;
+  animation-iteration-count: infinite;
+  animation-timing-function: linear;
+  background: var(--text-normal);
+  height: 40%;
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 40%;
+}
+
+.opencode-status-badge--working[data-working-animation="puzzle"] span i:nth-child(1) {
+  animation-delay: 0s;
+  animation-name: opencode-session-working-puzzle-a;
+}
+
+.opencode-status-badge--working[data-working-animation="puzzle"] span i:nth-child(2) {
+  animation-delay: 0s;
+  animation-name: opencode-session-working-puzzle-b;
+}
+
+.opencode-status-badge--working[data-working-animation="puzzle"] span i:nth-child(3) {
+  animation-delay: 0s;
+  animation-name: opencode-session-working-puzzle-c;
 }
 
 .opencode-agent-panel__new-session-action {
@@ -353,28 +407,12 @@
   }
 }
 
-@keyframes opencode-session-working-accent-shimmer {
-  0%,
-  100% {
-    filter: drop-shadow(0 0 0 transparent);
-  }
-  50% {
-    filter: drop-shadow(0 0 1px var(--interactive-accent));
-  }
-}
-
 @keyframes opencode-session-working-bounce {
   0%, 30%, 65%, 100% {
-    background-position: 0 100%, 50% 100%, 100% 100%;
+    transform: translateY(0);
   }
   15% {
-    background-position: 0 0, 50% 100%, 100% 100%;
-  }
-  48% {
-    background-position: 0 100%, 50% 0, 100% 100%;
-  }
-  82% {
-    background-position: 0 100%, 50% 100%, 100% 0;
+    transform: translateY(-200%);
   }
 }
 
@@ -396,35 +434,42 @@
 }
 
 @keyframes opencode-session-working-scanner {
-  0%,
-  15% {
-    background-position: 100% 50%;
+  0%, 15% {
+    transform: translateX(-100%);
   }
-  85%,
-  100% {
-    background-position: 0 50%;
+  85%, 100% {
+    transform: translateX(200%);
   }
 }
 
-@keyframes opencode-session-working-puzzle {
-  0%,
-  8% {
-    background-position: 0% 0%, 100% 0%, 0% 100%;
+/* Sliding puzzle: each dot follows one original layer's corner path via transform. */
+@keyframes opencode-session-working-puzzle-a {
+  0%, 33% {
+    transform: translate(0, 0);
   }
-  25%,
-  33% {
-    background-position: 0% 0%, 100% 0%, 100% 100%;
+  50%, 100% {
+    transform: translate(0, 150%);
   }
-  50%,
-  58% {
-    background-position: 0% 100%, 100% 0%, 100% 100%;
+}
+
+@keyframes opencode-session-working-puzzle-b {
+  0%, 58% {
+    transform: translate(150%, 0);
   }
-  75%,
-  83% {
-    background-position: 0% 100%, 0% 0%, 100% 100%;
+  75%, 100% {
+    transform: translate(0, 0);
+  }
+}
+
+@keyframes opencode-session-working-puzzle-c {
+  0%, 8% {
+    transform: translate(0, 150%);
+  }
+  25%, 83% {
+    transform: translate(150%, 150%);
   }
   100% {
-    background-position: 0% 100%, 0% 0%, 100% 0%;
+    transform: translate(150%, 0);
   }
 }
 
@@ -462,11 +507,11 @@
 
 @media (prefers-reduced-motion: reduce) {
   .opencode-status-badge--working span,
+  .opencode-status-badge--working span::before,
+  .opencode-status-badge--working span i,
   .opencode-status-badge--retry,
   .opencode-session-view__retry-spinner,
-  .opencode-session-view__reasoning--streaming .opencode-session-view__reasoning-icon,
-  .opencode-session-view__tool--pending > .opencode-session-view__tool-summary .opencode-session-view__tool-icon,
-  .opencode-session-view__tool--running > .opencode-session-view__tool-summary .opencode-session-view__tool-icon {
+  .opencode-session-view__composer-send.is-confirming::after {
     animation: none;
   }
 }
@@ -1596,13 +1641,24 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
 }
 
 .opencode-session-view__composer-send.is-confirming {
-  animation: opencode-composer-pulse 1s ease-in-out infinite;
   box-shadow: 0 0 0 calc(var(--border-width) * 2) color-mix(in srgb, var(--color-red) 50%, transparent);
+  position: relative;
+}
+
+/* Pulsing outer ring rides a composited pseudo-element; opacity-only keeps paints off the GPU. */
+.opencode-session-view__composer-send.is-confirming::after {
+  animation: opencode-composer-pulse 1s ease-in-out infinite;
+  border-radius: inherit;
+  box-shadow: 0 0 0 var(--size-2-2) color-mix(in srgb, var(--color-red) 50%, transparent);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
 }
 
 @keyframes opencode-composer-pulse {
-  0%, 100% { box-shadow: 0 0 0 calc(var(--border-width) * 2) color-mix(in srgb, var(--color-red) 30%, transparent); }
-  50% { box-shadow: 0 0 0 var(--size-2-2) color-mix(in srgb, var(--color-red) 50%, transparent); }
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
 }
 
 /*
@@ -2273,8 +2329,8 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
   font-weight: 400 !important;
 }
 
+/* Static accent marks the streaming state; the old shimmer animation kept the GPU pinned. */
 .opencode-session-view__reasoning--streaming .opencode-session-view__reasoning-icon {
-  animation: opencode-session-working-accent-shimmer 1.8s ease-in-out infinite;
   color: var(--interactive-accent);
 }
 
@@ -2359,9 +2415,9 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
   width: var(--icon-s);
 }
 
+/* Static accent marks pending/running states; color follows status class changes with no per-frame work. */
 .opencode-session-view__tool--pending > .opencode-session-view__tool-summary .opencode-session-view__tool-icon,
 .opencode-session-view__tool--running > .opencode-session-view__tool-summary .opencode-session-view__tool-icon {
-  animation: opencode-session-working-accent-shimmer 1.8s ease-in-out infinite;
   color: var(--interactive-accent);
 }
 

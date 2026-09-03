@@ -45,5 +45,10 @@ export function paintStatusBadge(badge: HTMLElement, options: StatusBadgeOptions
   badge.dataset.statusSignature = signature;
   const icon = STATUS_ICONS[options.status] ?? (options.status === "idle" ? options.idleGlyph : undefined);
   if (icon) setIcon(badge, icon);
-  if (options.status === "working" || options.status === "done") badge.createSpan();
+  if (options.status === "done") badge.createSpan();
+  // Working variants bounce/puzzle animate three child dots via transform; other variants hide them in CSS.
+  if (options.status === "working") {
+    const indicator = badge.createSpan();
+    for (let index = 0; index < 3; index += 1) indicator.createEl("i");
+  }
 }

@@ -8,11 +8,11 @@ import { renderMessageMeta, renderRewindBoundary, type AssistantMetaOptions, typ
 import { bindStreamingTextTarget, renderReasoningBlock } from "../blocks/reasoning-block";
 import { taskSessionId } from "../blocks/specialized-tool-renderers";
 import { normalizedToolName, renderToolCall } from "../blocks/tool-renderer";
-import { adoptLazyDetailsBody, blockPartId, type BlockRenderCtx } from "../blocks/tool-primitives";
+import { adoptLazyDetailsBody, blockPartId, hydrateLazyDetails, type BlockRenderCtx } from "../blocks/tool-primitives";
 import * as jsonHelpers from "../json-helpers";
 import * as messageHelpers from "../message-helpers";
 import type { ImageAttachment } from "../message-helpers";
-import { hashRenderState } from "../render-signature";
+import { hashRenderState, projectedRenderState, renderedPartHash } from "../render-signature";
 import { RenderScopeRegistry } from "./render-scopes";
 import type { SessionViewModel } from "../session-view-model";
 import { retryCountdownText, type SessionRetryStatus } from "../session-status";
@@ -177,7 +177,7 @@ export function assistantTurnTiming(messages: OpenCodeMessageBundle[], index: nu
 
 /** Returns a compact signature used to detect canonical changes to an already-mounted message. */
 export function messageRenderSignature(bundle: OpenCodeMessageBundle): string {
-  return hashRenderState(JSON.stringify(bundle));
+  return hashRenderState(JSON.stringify([JSON.stringify(bundle.info), bundle.parts.map(renderedPartHash)]));
 }
 
 /** Owns session timeline classification, message rendering, replacement, and append reconciliation. */
@@ -215,6 +215,7 @@ export class TimelineRenderer {
       const row = await this.renderMessageRow(message, options, assistantOptions, this.isUserQueued(visibleMessages, index, pendingIndex));
       if (!this.isBindingCurrent(binding)) return visibleMessages.length;
       timeline.appendChild(row);
+      hydrateLazyDetails(row);
     }
     if (!this.isBindingCurrent(binding)) return visibleMessages.length;
     const renderedRetry = this.renderSessionRetry(timeline);
@@ -309,7 +310,9 @@ export class TimelineRenderer {
       for (const entry of entries) {
         const row = entry.current ?? entry.next!;
         if (entry.current && entry.next) this.reconcileMessageRow(entry.current, entry.next);
-        if (previous.nextElementSibling !== row) timeline.insertBefore(row, previous.nextElementSibling);
+        const moved = previous.nextElementSibling !== row;
+        if (moved) timeline.insertBefore(row, previous.nextElementSibling);
+        if (entry.next || moved) hydrateLazyDetails(row);
         previous = row;
       }
 
@@ -379,7 +382,14 @@ export class TimelineRenderer {
     assistantOptions?: AssistantMetaOptions,
     queued = false,
   ): string {
-    return hashRenderState(JSON.stringify([bundle, options, assistantOptions, queued, bundle.parts.map((part) => this.taskSessionRenderState(part))]));
+    return hashRenderState(JSON.stringify([
+      JSON.stringify(bundle.info),
+      bundle.parts.map(renderedPartHash),
+      options,
+      assistantOptions,
+      queued,
+      bundle.parts.map((part) => this.taskSessionRenderState(part)),
+    ]));
   }
 
   /** Derives TUI-parity queued state: a user message trailing the active assistant turn while busy. */
@@ -878,7 +888,7 @@ export class TimelineRenderer {
   /** Assigns stable identity and visual state to a direct message block. */
   private annotateBlock(block: HTMLElement, key: string, state: unknown): void {
     block.dataset.blockKey = key;
-    block.dataset.blockSignature = hashRenderState(JSON.stringify(state));
+    block.dataset.blockSignature = hashRenderState(JSON.stringify(projectedRenderState(state)));
   }
 
   /** Returns external child identity that can change a task block without changing its message part. */

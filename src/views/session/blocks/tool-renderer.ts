@@ -5,7 +5,7 @@ import type { ToolDisplaySetting } from "../../../settings";
 import { inlineValue, languageFromPath, parseReadOutputRows, parseUnifiedDiffRows } from "../diff-parsing";
 import { readNumber, readObject, readString } from "../json-helpers";
 import { displayPath as displayPathRaw, splitPath } from "../path-utils";
-import { hashRenderState } from "../render-signature";
+import { cachedRenderHash } from "../render-signature";
 import {
   renderEditDiff,
   renderEditTool,
@@ -133,15 +133,17 @@ function renderToolBlock(container: HTMLElement, options: ToolBlockOptions): voi
 
 /** Hashes tool detail inputs separately from transient status so retained bodies refresh only when needed. */
 function toolDetailSignature(part: JsonObject): string {
-  const state = { ...(readObject(part, "state") ?? {}) };
-  delete state.status;
-  delete state.title;
-  return hashRenderState(JSON.stringify([normalizedToolName(part), state]));
+  return cachedRenderHash(part, "tool-detail", () => {
+    const state = { ...(readObject(part, "state") ?? {}) };
+    delete state.status;
+    delete state.title;
+    return JSON.stringify([normalizedToolName(part), state]);
+  });
 }
 
 /** Hashes detail-relevant state for a grouped context-tool disclosure. */
 export function toolPartsDetailSignature(parts: JsonObject[]): string {
-  return hashRenderState(JSON.stringify(parts.map(toolDetailSignature)));
+  return cachedRenderHash(parts, "tool-parts-detail", () => JSON.stringify(parts.map(toolDetailSignature)));
 }
 
 /** Renders a non-expandable placeholder while apply_patch has no authoritative per-file metadata. */

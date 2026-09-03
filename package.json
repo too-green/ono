@@ -5,8 +5,13 @@
   "main": "main.js",
   "scripts": {
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "benchmark:record": "node tools/benchmark-proxy/cli.mjs record",
+    "benchmark:replay": "node tools/benchmark-proxy/cli.mjs replay",
+    "benchmark:run": "node tools/benchmark-runner/cli.mjs",
     "dev": "node esbuild.config.mjs",
-    "test": "vitest run",
+    "test": "vitest run && node --test tools/benchmark-proxy/proxy.test.mjs tools/benchmark-runner/runner.test.mjs",
+    "test:benchmark-proxy": "node --test tools/benchmark-proxy/proxy.test.mjs",
+    "test:benchmark-runner": "node --test tools/benchmark-runner/runner.test.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
@@ -24,6 +29,7 @@
     "jsdom": "^25.0.1",
     "obsidian": "^1.6.7",
     "typescript": "^5.5.3",
-    "vitest": "^2.1.9"
+    "vitest": "^2.1.9",
+    "ws": "^8.21.3"
   }
 }

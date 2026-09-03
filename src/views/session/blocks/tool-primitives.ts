@@ -27,6 +27,9 @@ interface LazyDetailsState {
   body?: HTMLElement;
   hydrated: boolean;
   version: number;
+  visible?: boolean;
+  dirty?: boolean;
+  observer?: IntersectionObserver;
 }
 
 const lazyDetailsStates = new WeakMap<HTMLDetailsElement, LazyDetailsState>();
@@ -69,8 +72,27 @@ export function renderLazyDetailsBody(details: HTMLDetailsElement, bodyClass: st
     return;
   }
   lazyDetailsStates.set(details, { bodyClass, render, hydrated: false, version: 0 });
-  details.addEventListener("toggle", () => hydrateLazyDetailsBody(details));
+  details.addEventListener("toggle", () => {
+    const state = lazyDetailsStates.get(details);
+    if (!state) return;
+    if (!details.open) {
+      state.observer?.disconnect();
+      state.observer = undefined;
+      return;
+    }
+    if (!details.isConnected) return;
+    hydrateLazyDetailsBody(details, true);
+  });
   hydrateLazyDetailsBody(details);
+}
+
+/** Hydrates the container itself plus every descendant lazy details after a row commits to the DOM. */
+export function hydrateLazyDetails(container: ParentNode): void {
+  if (container instanceof HTMLDetailsElement) hydrateLazyDetailsBody(container);
+  if (!(container instanceof Element)) return;
+  for (const details of Array.from(container.querySelectorAll<HTMLDetailsElement>("details"))) {
+    if (lazyDetailsStates.has(details)) hydrateLazyDetailsBody(details);
+  }
 }
 
 /** Transfers the latest lazy renderer to a retained details shell and optionally refreshes its body. */
@@ -82,20 +104,53 @@ export function adoptLazyDetailsBody(current: HTMLDetailsElement, next: HTMLDeta
   currentState.render = nextState.render;
   if (resetBody) {
     currentState.version += 1;
-    currentState.body?.remove();
-    currentState.body = undefined;
-    currentState.hydrated = false;
+    if (current.isConnected && (typeof IntersectionObserver === "undefined" || currentState.visible === true)) {
+      currentState.dirty = false;
+      currentState.body?.remove();
+      currentState.body = undefined;
+      currentState.hydrated = false;
+    } else {
+      currentState.dirty = true;
+    }
   }
   hydrateLazyDetailsBody(current);
   return true;
 }
 
-/** Hydrates one open details body from its latest registered renderer. */
-function hydrateLazyDetailsBody(details: HTMLDetailsElement): void {
+/** Watches one lazy details for viewport entry so deferred hydration flushes once it is visible. */
+function observeLazyDetails(details: HTMLDetailsElement, state: LazyDetailsState): void {
+  if (state.observer || typeof IntersectionObserver === "undefined") return;
+  const observer = new IntersectionObserver((entries) => {
+    if (lazyDetailsStates.get(details) !== state) {
+      observer.disconnect();
+      return;
+    }
+    if (!entries.some((entry) => entry.isIntersecting)) return;
+    observer.disconnect();
+    state.observer = undefined;
+    state.visible = true;
+    hydrateLazyDetailsBody(details);
+  }, { rootMargin: "200px" });
+  state.observer = observer;
+  observer.observe(details);
+}
+
+/** Hydrates one open details body from its latest registered renderer, gated on connectivity and visibility. */
+function hydrateLazyDetailsBody(details: HTMLDetailsElement, immediate = false): void {
   const state = lazyDetailsStates.get(details);
-  if (!state || !details.open || state.hydrated) return;
+  if (!state || !details.open || (state.hydrated && !state.dirty)) return;
+  if (!immediate) {
+    if (!details.isConnected) return;
+    if (typeof IntersectionObserver !== "undefined" && state.visible !== true) {
+      state.dirty = true;
+      observeLazyDetails(details, state);
+      return;
+    }
+  }
+  state.dirty = false;
   state.hydrated = true;
   const version = ++state.version;
+  state.body?.remove();
   const body = details.createDiv({ cls: state.bodyClass });
   state.body = body;
   body.createDiv({ text: "Loading details…", cls: "opencode-session-view__tool-empty" });

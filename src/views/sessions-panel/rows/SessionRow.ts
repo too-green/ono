@@ -1,13 +1,13 @@
 import { setIcon } from "obsidian";
 import type { SessionVisualStatus, WorkingAnimation } from "../../../session-state";
 import { paintStatusBadge } from "../../../status-badge";
-import type { AgentPanelSessionRowComponent, AgentPanelSessionRowHandle, SessionRowProps } from "./types";
+import type { SessionsPanelSessionRowComponent, SessionsPanelSessionRowHandle, SessionRowProps } from "./types";
 
-/** Default compact Obsidian-native session row used by AgentPanelView. */
-export class SessionRow implements AgentPanelSessionRowComponent {
+/** Default compact Obsidian-native session row used by SessionsPanelView. */
+export class SessionRow implements SessionsPanelSessionRowComponent {
   /** Renders one session row and exposes stable title/status operations to the panel. */
-  render(container: HTMLElement, props: SessionRowProps): AgentPanelSessionRowHandle {
-    const itemEl = container.createDiv({ cls: "tree-item nav-file opencode-agent-panel__session" });
+  render(container: HTMLElement, props: SessionRowProps): SessionsPanelSessionRowHandle {
+    const itemEl = container.createDiv({ cls: "tree-item nav-file opencode-sessions-panel__session" });
     const rowEl = itemEl.createDiv({ cls: "tree-item-self nav-file-title is-clickable" });
     if (props.active) rowEl.addClass("is-active");
 
@@ -23,7 +23,7 @@ export class SessionRow implements AgentPanelSessionRowComponent {
         return;
       }
       if (notificationEl) return;
-      notificationEl = rowEl.createDiv({ cls: "opencode-agent-panel__notification" });
+      notificationEl = rowEl.createDiv({ cls: "opencode-sessions-panel__notification" });
       setIcon(notificationEl, "bell-off");
       if (modifiedTimeEl) rowEl.insertBefore(notificationEl, modifiedTimeEl);
     };
@@ -56,7 +56,7 @@ export class SessionRow implements AgentPanelSessionRowComponent {
     let badge = slot.querySelector<HTMLElement>(":scope > .opencode-status-badge") ?? undefined;
     if (!badge) {
       slot.empty();
-      slot.className = "tree-item-icon opencode-agent-panel__status";
+      slot.className = "tree-item-icon opencode-sessions-panel__status";
       badge = slot.createDiv({ cls: "opencode-status-badge" });
     }
     paintStatusBadge(badge, { status, workingAnimation });
@@ -73,7 +73,7 @@ export class SessionRow implements AgentPanelSessionRowComponent {
       current?.remove();
       return undefined;
     }
-    const element = current ?? container.createEl("time", { cls: "opencode-agent-panel__session-modified" });
+    const element = current ?? container.createEl("time", { cls: "opencode-sessions-panel__session-modified" });
     element.setText(relativeModifiedTime(timestamp));
     element.setAttribute("datetime", date.toISOString());
     element.title = `Modified ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date)}`;

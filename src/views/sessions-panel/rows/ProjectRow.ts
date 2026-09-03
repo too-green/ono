@@ -1,15 +1,15 @@
 import { renderFolderCollapseState, renderNewSessionAction } from "./row-primitives";
-import type { AgentPanelFolderRowHandle, AgentPanelProjectRowComponent, ProjectRowProps } from "./types";
+import type { SessionsPanelFolderRowHandle, SessionsPanelProjectRowComponent, ProjectRowProps } from "./types";
 
-/** Default Obsidian-native project grouping row used by AgentPanelView. */
-export class ProjectRow implements AgentPanelProjectRowComponent {
+/** Default Obsidian-native project grouping row used by SessionsPanelView. */
+export class ProjectRow implements SessionsPanelProjectRowComponent {
   /** Renders the project shell while leaving navigation and actions panel-owned. */
-  render(container: HTMLElement, props: ProjectRowProps): AgentPanelFolderRowHandle {
-    const itemEl = container.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__project" });
+  render(container: HTMLElement, props: ProjectRowProps): SessionsPanelFolderRowHandle {
+    const itemEl = container.createDiv({ cls: "tree-item nav-folder opencode-sessions-panel__project" });
     const rowEl = itemEl.createDiv({ cls: "tree-item-self nav-folder-title is-clickable" });
     rowEl.setAttribute("aria-expanded", String(!props.collapsed));
 
-    const avatar = rowEl.createDiv({ text: this.initials(props.project.name), cls: "tree-item-icon opencode-agent-panel__project-avatar" });
+    const avatar = rowEl.createDiv({ text: this.initials(props.project.name), cls: "tree-item-icon opencode-sessions-panel__project-avatar" });
     // Per-project identity has no equivalent single Obsidian token; the value still resolves to a built-in color variable.
     avatar.style.setProperty("--opencode-project-avatar-color", this.projectColor(props.project.id));
     rowEl.createDiv({ text: props.project.name, cls: "tree-item-inner nav-folder-title-content" });

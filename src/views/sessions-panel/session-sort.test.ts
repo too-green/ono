@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { AgentPanelSessionSort } from "../../settings";
-import type { AgentPanelSession } from "./rows";
-import { sortAgentPanelSessions } from "./session-sort";
+import type { SessionsPanelSessionSort } from "../../settings";
+import type { SessionsPanelSession } from "./rows";
+import { sortSessionsPanelSessions } from "./session-sort";
 
 /** Creates the minimal session-row model needed by sort tests. */
-function session(id: string, title: string, createdAt?: number, updatedAt?: number): AgentPanelSession {
+function session(id: string, title: string, createdAt?: number, updatedAt?: number): SessionsPanelSession {
   return {
     id,
     title,
@@ -17,14 +17,14 @@ function session(id: string, title: string, createdAt?: number, updatedAt?: numb
   };
 }
 
-describe("sortAgentPanelSessions", () => {
+describe("sortSessionsPanelSessions", () => {
   const sessions = [
     session("alpha", "Alpha 10", 100, 400),
     session("beta", "Beta", 300, 200),
     session("alpha-2", "Alpha 2", 200, 300),
   ];
 
-  it.each<[AgentPanelSessionSort, string[]]>([
+  it.each<[SessionsPanelSessionSort, string[]]>([
     ["created-desc", ["beta", "alpha-2", "alpha"]],
     ["created-asc", ["alpha", "alpha-2", "beta"]],
     ["modified-desc", ["alpha", "alpha-2", "beta"]],
@@ -32,12 +32,12 @@ describe("sortAgentPanelSessions", () => {
     ["title-asc", ["alpha-2", "alpha", "beta"]],
     ["title-desc", ["beta", "alpha", "alpha-2"]],
   ])("orders sessions using %s", (sort, expected) => {
-    expect(sortAgentPanelSessions(sessions, sort).map((item) => item.id)).toEqual(expected);
+    expect(sortSessionsPanelSessions(sessions, sort).map((item) => item.id)).toEqual(expected);
   });
 
   it("places missing timestamps last in either direction", () => {
     const incomplete = [session("missing", "Missing"), session("known", "Known", 100, 200)];
-    expect(sortAgentPanelSessions(incomplete, "created-asc").map((item) => item.id)).toEqual(["known", "missing"]);
-    expect(sortAgentPanelSessions(incomplete, "modified-desc").map((item) => item.id)).toEqual(["known", "missing"]);
+    expect(sortSessionsPanelSessions(incomplete, "created-asc").map((item) => item.id)).toEqual(["known", "missing"]);
+    expect(sortSessionsPanelSessions(incomplete, "modified-desc").map((item) => item.id)).toEqual(["known", "missing"]);
   });
 });

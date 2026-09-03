@@ -7,10 +7,10 @@ export function renderFolderCollapseState(
   collapsed: boolean,
   collapseDisplay: FolderCollapseDisplay,
 ): HTMLElement | undefined {
-  container.addClass(`opencode-agent-panel__folder-row--${collapseDisplay}`, collapsed ? "is-collapsed" : "is-expanded");
+  container.addClass(`opencode-sessions-panel__folder-row--${collapseDisplay}`, collapsed ? "is-collapsed" : "is-expanded");
   if (collapseDisplay !== "chevron") return undefined;
   const indicator = container.createDiv({
-    cls: "opencode-agent-panel__collapse-indicator",
+    cls: "opencode-sessions-panel__collapse-indicator",
     attr: { "aria-hidden": "true" },
   });
   setIcon(indicator, collapsed ? "chevron-right" : "chevron-down");
@@ -20,7 +20,7 @@ export function renderFolderCollapseState(
 /** Adds the native trailing action shared by session-creation scopes. */
 export function renderNewSessionAction(container: HTMLElement): HTMLButtonElement {
   const action = container.createEl("button", {
-    cls: "clickable-icon opencode-agent-panel__new-session-action",
+    cls: "clickable-icon opencode-sessions-panel__new-session-action",
     attr: { type: "button", "aria-label": "New session" },
   });
   setIcon(action, "plus");

@@ -648,7 +648,7 @@ export class ComposerController {
         await this.deps.plugin.rememberSessionDraft(composerKey, this.composerTextarea?.value ?? text);
         await this.deps.plugin.promoteSessionDraft(composerKey, targetSessionId);
         if (model.composerStorageKey === composerKey) await this.deps.requestDraftPromotion(targetSessionId, createdTitle);
-        await this.deps.plugin.refreshAgentPanels({ showLoading: false });
+        await this.deps.plugin.refreshSessionsPanels({ showLoading: false });
       }
 
       const fileParts = this.composerFileParts(targetSessionId);

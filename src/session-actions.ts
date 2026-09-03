@@ -146,7 +146,7 @@ class ArchiveSessionModal extends Modal {
     const count = this.countUnarchived(this.tree);
     this.setTitle(count === 1 ? "Archive session?" : `Archive ${count} sessions?`);
     this.contentEl.createEl("p", {
-      text: count === 1 ? "This session will no longer appear in the agents panel." : "This session and its descendants will no longer appear in the agents panel.",
+      text: count === 1 ? "This session will no longer appear in the sessions panel." : "This session and its descendants will no longer appear in the sessions panel.",
     });
     const list = this.contentEl.createEl("ul");
     this.renderTree(list, this.tree);

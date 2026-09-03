@@ -19,7 +19,7 @@
   overflow-y: auto;
 }
 
-.opencode-agent-panel__header {
+.opencode-sessions-panel__header {
   align-items: center;
   border-bottom: var(--border-width) solid var(--background-modifier-border);
   display: flex;
@@ -30,23 +30,23 @@
   padding: 0 var(--size-4-3) var(--size-4-1);
 }
 
-.opencode-agent-panel__title {
+.opencode-sessions-panel__title {
   color: var(--tab-text-color);
   font-size: var(--font-ui-small);
   font-weight: var(--font-semibold);
 }
 
-.opencode-agent-panel__actions {
+.opencode-sessions-panel__actions {
   align-items: center;
   display: flex;
   gap: var(--size-2-1);
 }
 
-.opencode-agent-panel__tree {
+.opencode-sessions-panel__tree {
   padding: 0 var(--size-4-1);
 }
 
-.opencode-sidebar-panel--agents .tree-item-self {
+.opencode-sidebar-panel--sessions .tree-item-self {
   align-items: center;
   border-radius: var(--radius-s);
   color: var(--nav-item-color);
@@ -55,28 +55,28 @@
   padding-inline-end: var(--size-2-2);
 }
 
-.opencode-sidebar-panel--agents .tree-item-self:hover {
+.opencode-sidebar-panel--sessions .tree-item-self:hover {
   background-color: var(--nav-item-background-hover);
   color: var(--nav-item-color-hover);
 }
 
-.opencode-sidebar-panel--agents .tree-item-self.is-active {
+.opencode-sidebar-panel--sessions .tree-item-self.is-active {
   background-color: var(--nav-item-background-active);
   color: var(--nav-item-color-active);
 }
 
-.opencode-sidebar-panel--agents .tree-item-self.opencode-agent-panel__row-highlighted:not(.is-active) {
+.opencode-sidebar-panel--sessions .tree-item-self.opencode-sessions-panel__row-highlighted:not(.is-active) {
   background-color: var(--background-modifier-hover);
   box-shadow: inset 0 0 0 var(--border-width) var(--background-modifier-border-hover);
 }
 
-.opencode-sidebar-panel--agents .tree-item-inner {
+.opencode-sidebar-panel--sessions .tree-item-inner {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.opencode-agent-panel__rename-input {
+.opencode-sessions-panel__rename-input {
   background: var(--background-primary);
   border: var(--border-width) solid var(--interactive-accent);
   border-radius: var(--input-radius);
@@ -87,7 +87,7 @@
   width: 100%;
 }
 
-.opencode-sidebar-panel--agents .tree-item-icon.opencode-agent-panel__project-avatar {
+.opencode-sidebar-panel--sessions .tree-item-icon.opencode-sessions-panel__project-avatar {
   align-items: center;
   background: color-mix(in srgb, var(--opencode-project-avatar-color) 22%, transparent);
   border: var(--border-width) solid color-mix(in srgb, var(--opencode-project-avatar-color) 45%, transparent);
@@ -106,26 +106,26 @@
   width: var(--icon-m);
 }
 
-.opencode-agent-panel__folder-row--inset.is-collapsed .opencode-agent-panel__project-avatar,
-.opencode-agent-panel__folder-row--inset.is-collapsed .opencode-agent-panel__worktree-icon {
+.opencode-sessions-panel__folder-row--inset.is-collapsed .opencode-sessions-panel__project-avatar,
+.opencode-sessions-panel__folder-row--inset.is-collapsed .opencode-sessions-panel__worktree-icon {
   box-shadow: inset 0 0 0 var(--size-2-1) color-mix(in srgb, var(--text-faint) 45%, transparent);
 }
 
-.opencode-agent-panel__folder-row--inset.is-collapsed .opencode-agent-panel__worktree-icon {
+.opencode-sessions-panel__folder-row--inset.is-collapsed .opencode-sessions-panel__worktree-icon {
   border-radius: var(--radius-s);
 }
 
-.opencode-agent-panel__folder-row--size .opencode-agent-panel__project-avatar,
-.opencode-agent-panel__folder-row--size .opencode-agent-panel__worktree-icon svg {
+.opencode-sessions-panel__folder-row--size .opencode-sessions-panel__project-avatar,
+.opencode-sessions-panel__folder-row--size .opencode-sessions-panel__worktree-icon svg {
   transition: transform var(--anim-duration-fast) ease-out;
 }
 
-.opencode-agent-panel__folder-row--size.is-collapsed .opencode-agent-panel__project-avatar,
-.opencode-agent-panel__folder-row--size.is-collapsed .opencode-agent-panel__worktree-icon svg {
+.opencode-sessions-panel__folder-row--size.is-collapsed .opencode-sessions-panel__project-avatar,
+.opencode-sessions-panel__folder-row--size.is-collapsed .opencode-sessions-panel__worktree-icon svg {
   transform: scale(0.81);
 }
 
-.opencode-agent-panel__collapse-indicator {
+.opencode-sessions-panel__collapse-indicator {
   align-items: center;
   color: var(--text-faint);
   display: inline-flex;
@@ -135,21 +135,21 @@
   width: var(--icon-s);
 }
 
-.opencode-agent-panel__collapse-indicator svg {
+.opencode-sessions-panel__collapse-indicator svg {
   height: var(--icon-xs);
   width: var(--icon-xs);
 }
 
-.opencode-agent-panel__worktree-icon {
+.opencode-sessions-panel__worktree-icon {
   color: var(--text-muted);
 }
 
 /* Muted sessions signal suppressed notifications, so the bell stays error-red. */
-.opencode-agent-panel__notification {
+.opencode-sessions-panel__notification {
   color: var(--color-red);
 }
 
-.opencode-agent-panel__notification {
+.opencode-sessions-panel__notification {
   align-items: center;
   display: inline-flex;
   flex: 0 0 var(--icon-s);
@@ -158,12 +158,12 @@
   width: var(--icon-s);
 }
 
-.opencode-agent-panel__notification svg {
+.opencode-sessions-panel__notification svg {
   height: var(--icon-xs);
   width: var(--icon-xs);
 }
 
-.opencode-agent-panel__session-modified {
+.opencode-sessions-panel__session-modified {
   color: var(--text-faint);
   flex: 0 0 auto;
   font-size: var(--font-ui-smaller);
@@ -175,7 +175,7 @@
 /*
  * ── Session status badge ──
  * The single canonical session status indicator. Rendered by src/status-badge.ts and
- * mounted in agent-panel session rows (inside a `tree-item-icon` wrapper that keeps
+ * mounted in sessions-panel session rows (inside a `tree-item-icon` wrapper that keeps
  * Obsidian's nav layout), the native view-header/tab-header chrome, assistant-turn
  * meta rows, and island subagent rows. Colors are declared on the badge itself so
  * they override any inherited icon color (core's `.tree-item-self .tree-item-icon`
@@ -194,8 +194,8 @@
   width: var(--icon-s);
 }
 
-/* Compact nav sizing inside agent-panel rows; matches core's tree-item-icon svg rule. */
-.opencode-agent-panel__status .opencode-status-badge svg {
+/* Compact nav sizing inside sessions-panel rows; matches core's tree-item-icon svg rule. */
+.opencode-sessions-panel__status .opencode-status-badge svg {
   height: var(--icon-xs);
   width: var(--icon-xs);
 }
@@ -333,7 +333,7 @@
   animation-name: opencode-session-working-puzzle-c;
 }
 
-.opencode-agent-panel__new-session-action {
+.opencode-sessions-panel__new-session-action {
   align-items: center;
   color: var(--text-faint);
   display: inline-flex;
@@ -347,12 +347,12 @@
   width: var(--icon-m);
 }
 
-.opencode-agent-panel__new-session-action svg {
+.opencode-sessions-panel__new-session-action svg {
   height: var(--icon-xs);
   width: var(--icon-xs);
 }
 
-.opencode-agent-panel__state {
+.opencode-sessions-panel__state {
   align-items: center;
   color: var(--text-muted);
   display: flex;
@@ -364,24 +364,24 @@
   text-align: center;
 }
 
-.opencode-agent-panel__state-title {
+.opencode-sessions-panel__state-title {
   color: var(--text-normal);
   font-weight: var(--font-semibold);
 }
 
-.opencode-agent-panel__state-text,
-.opencode-agent-panel__error-detail {
+.opencode-sessions-panel__state-text,
+.opencode-sessions-panel__error-detail {
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
 
-.opencode-agent-panel__error-detail {
+.opencode-sessions-panel__error-detail {
   color: var(--text-error);
   margin-top: var(--size-4-2);
 }
 
-.opencode-agent-panel__spinner {
-  animation: opencode-agent-panel-spin 1s linear infinite;
+.opencode-sessions-panel__spinner {
+  animation: opencode-sessions-panel-spin 1s linear infinite;
   border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-top-color: var(--text-muted);
   border-radius: 50%;
@@ -389,7 +389,7 @@
   width: var(--icon-m);
 }
 
-@keyframes opencode-agent-panel-spin {
+@keyframes opencode-sessions-panel-spin {
   to {
     transform: rotate(360deg);
   }
@@ -1627,7 +1627,7 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
 }
 
 .opencode-session-view__composer-send.is-loading svg {
-  animation: opencode-agent-panel-spin 1s linear infinite;
+  animation: opencode-sessions-panel-spin 1s linear infinite;
 }
 
 .opencode-session-view__composer-send.is-stop {
@@ -1806,7 +1806,7 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
 }
 
 .opencode-session-view__history-spinner {
-  animation: opencode-agent-panel-spin 1s linear infinite;
+  animation: opencode-sessions-panel-spin 1s linear infinite;
   border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-radius: 50%;
   border-top-color: var(--text-faint);
@@ -2162,7 +2162,7 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
 }
 
 .opencode-session-view__retry-spinner {
-  animation: opencode-agent-panel-spin 1s linear infinite;
+  animation: opencode-sessions-panel-spin 1s linear infinite;
   border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-radius: 50%;
   border-top-color: var(--text-error);
@@ -3276,7 +3276,7 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
 }
 
 .opencode-session-view__spinner {
-  animation: opencode-agent-panel-spin 1s linear infinite;
+  animation: opencode-sessions-panel-spin 1s linear infinite;
   border: calc(var(--border-width) * 2) solid var(--background-modifier-border);
   border-radius: 50%;
   border-top-color: var(--text-muted);

@@ -113,7 +113,7 @@ export type FolderCollapseDisplay = keyof typeof FOLDER_COLLAPSE_DISPLAY_LABELS;
 
 export const DEFAULT_FOLDER_COLLAPSE_DISPLAY: FolderCollapseDisplay = "inset";
 
-export const AGENT_PANEL_SESSION_SORT_LABELS = {
+export const SESSIONS_PANEL_SESSION_SORT_LABELS = {
   "created-desc": "Created: newest first",
   "created-asc": "Created: oldest first",
   "modified-desc": "Modified: newest first",
@@ -122,9 +122,9 @@ export const AGENT_PANEL_SESSION_SORT_LABELS = {
   "title-desc": "Title: Z to A",
 } as const;
 
-export type AgentPanelSessionSort = keyof typeof AGENT_PANEL_SESSION_SORT_LABELS;
+export type SessionsPanelSessionSort = keyof typeof SESSIONS_PANEL_SESSION_SORT_LABELS;
 
-export const DEFAULT_AGENT_PANEL_SESSION_SORT: AgentPanelSessionSort = "created-desc";
+export const DEFAULT_SESSIONS_PANEL_SESSION_SORT: SessionsPanelSessionSort = "created-desc";
 
 export const NOTIFICATION_MODE_LABELS = {
   system: "System notifications",
@@ -187,7 +187,7 @@ export interface OpenCodePluginSettings {
   retryActionSuppressed: Record<string, true>;
   workingAnimation: WorkingAnimation;
   folderCollapseDisplay: FolderCollapseDisplay;
-  agentPanelSessionSort: AgentPanelSessionSort;
+  sessionsPanelSessionSort: SessionsPanelSessionSort;
   favoriteModels: Array<{ providerID: string; modelID: string; variant?: string }>;
   customToolDisplays: ToolDisplaySetting[];
   debugLogging: boolean;
@@ -222,7 +222,7 @@ export const DEFAULT_OPENCODE_SETTINGS: OpenCodePluginSettings = {
   retryActionSuppressed: {},
   workingAnimation: DEFAULT_WORKING_ANIMATION,
   folderCollapseDisplay: DEFAULT_FOLDER_COLLAPSE_DISPLAY,
-  agentPanelSessionSort: DEFAULT_AGENT_PANEL_SESSION_SORT,
+  sessionsPanelSessionSort: DEFAULT_SESSIONS_PANEL_SESSION_SORT,
   favoriteModels: [],
   customToolDisplays: [],
   debugLogging: false,
@@ -279,16 +279,16 @@ export function normalizeSessionIslandContextLabel(value: unknown): SessionIslan
   return DEFAULT_SESSION_ISLAND_CONTEXT_LABEL;
 }
 
-/** Returns a supported agents-panel folder collapse treatment for persisted settings. */
+/** Returns a supported sessions-panel folder collapse treatment for persisted settings. */
 export function normalizeFolderCollapseDisplay(value: unknown): FolderCollapseDisplay {
   if (typeof value === "string" && value in FOLDER_COLLAPSE_DISPLAY_LABELS) return value as FolderCollapseDisplay;
   return DEFAULT_FOLDER_COLLAPSE_DISPLAY;
 }
 
-/** Returns a supported agents-panel session ordering for persisted settings. */
-export function normalizeAgentPanelSessionSort(value: unknown): AgentPanelSessionSort {
-  if (typeof value === "string" && value in AGENT_PANEL_SESSION_SORT_LABELS) return value as AgentPanelSessionSort;
-  return DEFAULT_AGENT_PANEL_SESSION_SORT;
+/** Returns a supported sessions-panel session ordering for persisted settings. */
+export function normalizeSessionsPanelSessionSort(value: unknown): SessionsPanelSessionSort {
+  if (typeof value === "string" && value in SESSIONS_PANEL_SESSION_SORT_LABELS) return value as SessionsPanelSessionSort;
+  return DEFAULT_SESSIONS_PANEL_SESSION_SORT;
 }
 
 /** Returns a supported notification delivery mode for persisted settings. */
@@ -578,13 +578,13 @@ export class OpenCodeSettingTab extends PluginSettingTab {
 
     new Setting(this.containerEl)
       .setName("Folder collapse indicator")
-      .setDesc("Choose how collapsed project and worktree rows are distinguished in the agents panel.")
+      .setDesc("Choose how collapsed project and worktree rows are distinguished in the sessions panel.")
       .addDropdown((dropdown) => {
         for (const [value, label] of Object.entries(FOLDER_COLLAPSE_DISPLAY_LABELS)) dropdown.addOption(value, label);
         dropdown.setValue(normalizeFolderCollapseDisplay(this.plugin.settings.folderCollapseDisplay)).onChange(async (value) => {
           this.plugin.settings.folderCollapseDisplay = normalizeFolderCollapseDisplay(value);
           await this.plugin.saveSettings();
-          await this.plugin.refreshAgentPanels({ showLoading: false });
+          await this.plugin.refreshSessionsPanels({ showLoading: false });
         });
       });
 
@@ -668,7 +668,7 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           this.plugin.settings.workingAnimation = normalizeWorkingAnimation(value);
           await this.plugin.saveSettings();
           await Promise.all([
-            this.plugin.refreshAgentPanels({ showLoading: false }),
+            this.plugin.refreshSessionsPanels({ showLoading: false }),
             this.plugin.refreshSessionViews(),
           ]);
         });
@@ -703,7 +703,7 @@ export class OpenCodeSettingTab extends PluginSettingTab {
   private renderServerSettings(): void {
     new Setting(this.containerEl)
       .setName("OpenCode server")
-      .setDesc("Connection used by the agents panel, sessions, and notifications.")
+      .setDesc("Connection used by the sessions panel, sessions, and notifications.")
       .setHeading();
 
     const server = { ...this.plugin.settings.server };

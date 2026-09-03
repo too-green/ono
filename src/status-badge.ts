@@ -21,7 +21,7 @@ export interface StatusBadgeOptions {
 }
 
 /**
- * Renders the canonical session status badge used by agent-panel rows, native
+ * Renders the canonical session status badge used by sessions-panel rows, native
  * tab/view-header chrome, assistant-turn meta, and island subagent rows.
  * Referenced by SessionRow, SessionView, message-meta, and session-island-controller.
  */

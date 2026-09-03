@@ -51,7 +51,7 @@ export class NewSessionFolderModal extends FuzzySuggestModal<FolderSuggestion> {
   ) {
     super(app);
     this.setPlaceholder("Select a folder for the new session\u2026");
-    this.emptyStateText = "No folders are currently opened in the agents panel.";
+    this.emptyStateText = "No folders are currently opened in the sessions panel.";
   }
 
   /** Returns the pre-enriched opened-directory rows; referenced by the fuzzy engine. */

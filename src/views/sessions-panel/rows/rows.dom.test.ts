@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type OpenCodePlugin from "../../../../main";
-import { AgentPanelView } from "../../AgentPanelView";
+import { SessionsPanelView } from "../../SessionsPanelView";
 import { ProjectRow } from "./ProjectRow";
 import { SessionRow, relativeModifiedTime } from "./SessionRow";
 import { WorktreeRow } from "./WorktreeRow";
-import type { AgentPanelProject, AgentPanelSession, AgentPanelWorktree } from "./types";
+import type { SessionsPanelProject, SessionsPanelSession, SessionsPanelWorktree } from "./types";
 
 type DomOptions = { text?: string; cls?: string; attr?: Record<string, string> };
 
@@ -30,7 +30,7 @@ function installObsidianDomMethods(): void {
   });
 }
 
-const session: AgentPanelSession = {
+const session: SessionsPanelSession = {
   id: "session-1",
   title: "Extract panel rows",
   directory: "/workspace",
@@ -41,21 +41,21 @@ const session: AgentPanelSession = {
   requiresAttention: false,
 };
 
-const worktree: AgentPanelWorktree = {
+const worktree: SessionsPanelWorktree = {
   id: "/workspace",
   name: "workspace",
   path: "/workspace",
   sessions: [session],
 };
 
-const project: AgentPanelProject = {
+const project: SessionsPanelProject = {
   id: "project-1",
   name: "OpenCode plugin",
   openedDirectories: ["/workspace"],
   worktrees: [worktree],
 };
 
-describe("agents-panel row components", () => {
+describe("sessions-panel row components", () => {
   beforeEach(() => {
     installObsidianDomMethods();
     document.body.replaceChildren();
@@ -73,7 +73,7 @@ describe("agents-panel row components", () => {
     expect(handle.rowEl.getAttribute("aria-expanded")).toBe("true");
     expect(handle.childrenEl?.parentElement).toBe(handle.itemEl);
     expect(handle.newSessionButtonEl?.getAttribute("aria-label")).toBe("New session");
-    const avatar = handle.rowEl.querySelector<HTMLElement>(".opencode-agent-panel__project-avatar");
+    const avatar = handle.rowEl.querySelector<HTMLElement>(".opencode-sessions-panel__project-avatar");
     expect(avatar?.textContent).toBe("OP");
     expect(avatar?.classList.contains("tree-item-icon")).toBe(true);
     expect(avatar?.classList.contains("collapse-icon")).toBe(false);
@@ -86,10 +86,10 @@ describe("agents-panel row components", () => {
     expect(handle.rowEl.textContent).toContain("workspace");
     expect(handle.rowEl.title).toBe("/workspace");
     expect(handle.rowEl.getAttribute("aria-expanded")).toBe("false");
-    expect(handle.rowEl.querySelector(".opencode-agent-panel__worktree-icon")?.classList.contains("tree-item-icon")).toBe(true);
+    expect(handle.rowEl.querySelector(".opencode-sessions-panel__worktree-icon")?.classList.contains("tree-item-icon")).toBe(true);
     expect(handle.childrenEl).toBeUndefined();
     expect(handle.newSessionButtonEl).toBeInstanceOf(HTMLButtonElement);
-    expect(handle.rowEl.classList.contains("opencode-agent-panel__folder-row--size")).toBe(true);
+    expect(handle.rowEl.classList.contains("opencode-sessions-panel__folder-row--size")).toBe(true);
   });
 
   it("exposes stable session title and live-status operations", () => {
@@ -98,10 +98,10 @@ describe("agents-panel row components", () => {
     expect(handle.rowEl.classList.contains("is-active")).toBe(true);
     expect(handle.titleEl.textContent).toBe("Extract panel rows");
     expect(handle.rowEl.querySelector(".collapse-icon")).toBeNull();
-    expect(handle.rowEl.querySelector(".opencode-agent-panel__status")?.classList.contains("tree-item-icon")).toBe(true);
-    expect(handle.rowEl.querySelector(".opencode-agent-panel__notification")).not.toBeNull();
-    expect(handle.rowEl.querySelector(".opencode-agent-panel__session-modified")?.textContent).toBe("1m");
-    expect(handle.rowEl.lastElementChild?.classList.contains("opencode-agent-panel__session-modified")).toBe(true);
+    expect(handle.rowEl.querySelector(".opencode-sessions-panel__status")?.classList.contains("tree-item-icon")).toBe(true);
+    expect(handle.rowEl.querySelector(".opencode-sessions-panel__notification")).not.toBeNull();
+    expect(handle.rowEl.querySelector(".opencode-sessions-panel__session-modified")?.textContent).toBe("1m");
+    expect(handle.rowEl.lastElementChild?.classList.contains("opencode-sessions-panel__session-modified")).toBe(true);
     expect(handle.rowEl.querySelector(".opencode-status-badge--working")?.getAttribute("data-working-animation")).toBe("pulse");
     const workingIndicator = handle.rowEl.querySelector(".opencode-status-badge--working span");
     expect(workingIndicator?.children).toHaveLength(3);
@@ -135,7 +135,7 @@ describe("agents-panel row components", () => {
       workingAnimation: "pulse",
     });
 
-    expect(handle.rowEl.querySelector(".opencode-agent-panel__notification")).toBeNull();
+    expect(handle.rowEl.querySelector(".opencode-sessions-panel__notification")).toBeNull();
   });
 
   it("renders the trailing collapse indicator after the folder title", () => {
@@ -146,14 +146,14 @@ describe("agents-panel row components", () => {
       showNewSessionAction: false,
     });
     const title = handle.rowEl.querySelector(".nav-folder-title-content");
-    const indicator = handle.rowEl.querySelector(".opencode-agent-panel__collapse-indicator");
+    const indicator = handle.rowEl.querySelector(".opencode-sessions-panel__collapse-indicator");
 
     expect(indicator).not.toBeNull();
     expect(indicator?.previousElementSibling).toBe(title);
     expect(handle.rowEl.querySelector(".collapse-icon")).toBeNull();
   });
 
-  it("lets AgentPanelView compose a custom session-row component", async () => {
+  it("lets SessionsPanelView compose a custom session-row component", async () => {
     const openSessionTab = vi.fn();
     const service = {
       health: vi.fn(async () => undefined),
@@ -178,7 +178,7 @@ describe("agents-panel row components", () => {
       openSessionTab,
     } as unknown as OpenCodePlugin;
     const customSession = {
-      render: (container: HTMLElement, props: { session: AgentPanelSession }) => {
+      render: (container: HTMLElement, props: { session: SessionsPanelSession }) => {
         const itemEl = container.createDiv({ cls: "custom-session" });
         const wrapper = itemEl.createDiv({ cls: "custom-session__wrapper" });
         const rowEl = wrapper.createDiv({ text: props.session.title, cls: "custom-session__row" });
@@ -193,21 +193,21 @@ describe("agents-panel row components", () => {
       },
     };
     const customProject = {
-      render: (container: HTMLElement, props: { project: AgentPanelProject; collapsed: boolean }) => {
+      render: (container: HTMLElement, props: { project: SessionsPanelProject; collapsed: boolean }) => {
         const itemEl = container.createDiv({ cls: "custom-project" });
         const rowEl = itemEl.createDiv({ text: props.project.name, cls: "custom-project__row" });
         const childrenEl = props.collapsed ? undefined : itemEl.createDiv({ cls: "custom-project__children" });
         return { itemEl, rowEl, childrenEl };
       },
     };
-    const view = new AgentPanelView({ app: {} } as never, plugin, { project: customProject, session: customSession });
+    const view = new SessionsPanelView({ app: {} } as never, plugin, { project: customProject, session: customSession });
 
     await view.onOpen();
     const row = view.contentEl.querySelector<HTMLElement>(".custom-session__row")!;
     await view.refresh({ showLoading: false });
     view.contentEl.querySelector<HTMLElement>(".custom-session__row")?.click();
 
-    expect(view.contentEl.querySelector(".opencode-agent-panel__session")).toBeNull();
+    expect(view.contentEl.querySelector(".opencode-sessions-panel__session")).toBeNull();
     expect(view.contentEl.querySelector(".custom-session__row")).toBe(row);
     expect(openSessionTab).toHaveBeenCalledWith("session-1", "Extract panel rows");
   });

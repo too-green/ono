@@ -3,7 +3,7 @@ import {
   DEFAULT_OPENCODE_SETTINGS,
   OPENCODE_DATA_SCHEMA_VERSION,
   OpenCodeSettingTab,
-  normalizeAgentPanelSessionSort,
+  normalizeSessionsPanelSessionSort,
   normalizeContextBarSettings,
   normalizeDebugLogging,
   normalizeFolderCollapseDisplay,
@@ -26,7 +26,7 @@ import type { OpenCodeEventSubscription } from "./src/services/opencode-events";
 import type { JsonObject, OpenCodeEvent, OpenCodeHealth, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./src/services/opencode-types";
 import { SessionNotificationService, isElementVisibleInFocusedWindow, type SessionNotificationTestKind } from "./src/services/session-notifications";
 import { confirmSessionArchive, requestRetryAction, requestSessionTitle, type SessionArchiveNode } from "./src/session-actions";
-import { AgentPanelView, VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./src/views/AgentPanelView";
+import { SessionsPanelView, VIEW_TYPE_OPENCODE_SESSIONS_PANEL } from "./src/views/SessionsPanelView";
 import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView";
 import { loadFolderSuggestions, NewSessionFolderModal } from "./src/views/NewSessionFolderModal";
 import { normalizeWorkingAnimation } from "./src/session-state";
@@ -98,7 +98,7 @@ export default class OpenCodePlugin extends Plugin {
     });
     this.syncNotificationEventSubscriptions();
 
-    this.registerView(VIEW_TYPE_OPENCODE_AGENT_PANEL, (leaf) => new AgentPanelView(leaf, this));
+    this.registerView(VIEW_TYPE_OPENCODE_SESSIONS_PANEL, (leaf) => new SessionsPanelView(leaf, this));
     this.registerView(VIEW_TYPE_OPENCODE_SESSION, (leaf) => new SessionView(leaf, this));
     this.addSettingTab(new OpenCodeSettingTab(this.app, this));
     this.app.workspace.onLayoutReady(() => {
@@ -109,19 +109,21 @@ export default class OpenCodePlugin extends Plugin {
 
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
-        this.syncAgentPanelToActiveSessionLeaf(leaf);
+        this.syncSessionsPanelToActiveSessionLeaf(leaf);
       }),
     );
 
-    this.addRibbonIcon("bot", "OpenCode agents", () => {
-      void this.activateAgentPanel();
+    this.addRibbonIcon("bot", "OpenCode sessions", () => {
+      void this.activateSessionsPanel();
     });
 
+    // Legacy stable command id: Obsidian persists user hotkeys under this id, so it stays
+    // unchanged even though the command name and view now say "sessions panel".
     this.addCommand({
       id: "opencode-open-agent-panel",
-      name: "Open agents panel",
+      name: "Open sessions panel",
       hotkeys: [{ modifiers: ["Mod", "Shift"], key: "A" }],
-      callback: () => void this.activateAgentPanel(),
+      callback: () => void this.activateSessionsPanel(),
     });
 
     this.addCommand({
@@ -217,7 +219,7 @@ export default class OpenCodePlugin extends Plugin {
     if (this.sessionStatePruneTimer !== undefined) window.clearTimeout(this.sessionStatePruneTimer);
     this.sessionStatePruneTimer = undefined;
     logger.setDebugEnabled(false);
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_SESSIONS_PANEL);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_SESSION);
     this.app.workspace.detachLeavesOfType(LEGACY_DIFF_PANEL_VIEW_TYPE);
     this.closeNotificationEventSubscriptions();
@@ -288,7 +290,7 @@ export default class OpenCodePlugin extends Plugin {
     return undefined;
   }
 
-  /** Returns user-opened absolute directories; referenced by the agents panel refresh loop. */
+  /** Returns user-opened absolute directories; referenced by the sessions panel refresh loop. */
   getOpenedDirectories(): string[] {
     return [...this.settings.openedDirectories];
   }
@@ -300,7 +302,7 @@ export default class OpenCodePlugin extends Plugin {
     await this.addOpenedDirectory(directory);
   }
 
-  /** Opens an OpenCode session in a main Obsidian tab; referenced by AgentPanelView. */
+  /** Opens an OpenCode session in a main Obsidian tab; referenced by SessionsPanelView. */
   async openSessionTab(sessionId: string, sessionTitle?: string): Promise<void> {
     await this.ensureSessionAutoApproveDefault(sessionId);
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION).find((leaf) => this.sessionIdFromLeaf(leaf) === sessionId);
@@ -339,7 +341,7 @@ export default class OpenCodePlugin extends Plugin {
   async forkSessionAndOpen(sessionId: string, directory?: string, messageId?: string): Promise<OpenCodeSession> {
     const forked = await this.forkSession(sessionId, directory, messageId);
     await this.openSessionTab(forked.id, forked.title);
-    await this.refreshAgentPanels({ showLoading: false }).catch((error) => logger.warn("agent-panel", "refresh after fork failed", { error }));
+    await this.refreshSessionsPanels({ showLoading: false }).catch((error) => logger.warn("sessions-panel", "refresh after fork failed", { error }));
     return forked;
   }
 
@@ -373,7 +375,7 @@ export default class OpenCodePlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
       if (leaf.view instanceof SessionView && leaf.view.getState().sessionId === sessionId) leaf.view.applySessionTitle(resolvedTitle);
     }
-    await this.refreshAgentPanels({ showLoading: false });
+    await this.refreshSessionsPanels({ showLoading: false });
   }
 
   /** Confirms and archives a target plus every descendant through v1 PATCH calls. */
@@ -392,10 +394,10 @@ export default class OpenCodePlugin extends Plugin {
         await this.requireOpenCodeService().archiveSession(target.id, archivedAt, target.directory);
         archivedIds.add(target.id);
       }
-      await this.refreshAgentPanels({ showLoading: false });
+      await this.refreshSessionsPanels({ showLoading: false });
       new Notice(targets.length === 1 ? `Archived ${tree.title}.` : `Archived ${tree.title} and ${targets.length - 1} descendant sessions.`);
     } catch (error) {
-      if (archivedIds.size > 0) await this.refreshAgentPanels({ showLoading: false });
+      if (archivedIds.size > 0) await this.refreshSessionsPanels({ showLoading: false });
       const message = error instanceof Error ? error.message : "Unable to archive OpenCode session.";
       new Notice(archivedIds.size > 0 ? `Archived ${archivedIds.size} descendant sessions before archival stopped: ${message}` : message);
     } finally {
@@ -417,16 +419,16 @@ export default class OpenCodePlugin extends Plugin {
     }
   }
 
-  /** Pushes the focused session tab into every open agents panel so its row is revealed. */
-  private syncAgentPanelToActiveSessionLeaf(leaf: WorkspaceLeaf | null): void {
+  /** Pushes the focused session tab into every open sessions panel so its row is revealed. */
+  private syncSessionsPanelToActiveSessionLeaf(leaf: WorkspaceLeaf | null): void {
     const sessionId = this.sessionIdFromLeaf(leaf);
     if (!sessionId) return;
-    for (const panelLeaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL)) {
-      if (panelLeaf.view instanceof AgentPanelView) panelLeaf.view.setActiveSession(sessionId);
+    for (const panelLeaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSIONS_PANEL)) {
+      if (panelLeaf.view instanceof SessionsPanelView) panelLeaf.view.setActiveSession(sessionId);
     }
   }
 
-  /** Returns the session id of the currently focused session tab, if any; referenced by AgentPanelView.onOpen. */
+  /** Returns the session id of the currently focused session tab, if any; referenced by SessionsPanelView.onOpen. */
   getActiveSessionId(): string | undefined {
     return this.sessionIdFromLeaf(this.app.workspace.activeLeaf);
   }
@@ -459,8 +461,8 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.openedDirectories = [normalized, ...existing];
     await this.saveSettings();
     this.syncNotificationEventSubscriptions();
-    new Notice(`Opened ${normalized} in OpenCode agents panel.`);
-    await this.refreshAgentPanels();
+    new Notice(`Opened ${normalized} in OpenCode sessions panel.`);
+    await this.refreshSessionsPanels();
   }
 
   /** Removes a previously opened directory from the panel's local workspace list. */
@@ -469,7 +471,7 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.openedDirectories = this.settings.openedDirectories.filter((item) => this.pathKey(item) !== key);
     await this.saveSettings();
     this.syncNotificationEventSubscriptions();
-    await this.refreshAgentPanels();
+    await this.refreshSessionsPanels();
   }
 
   /** Loads persisted settings, falling back to localhost:4096 for external OpenCode servers. */
@@ -479,6 +481,14 @@ export default class OpenCodePlugin extends Plugin {
       ? rawData as Partial<OpenCodePluginData>
       : undefined;
     const preferences = data?.preferences && typeof data.preferences === "object" ? data.preferences : {};
+    // One-time migration: the sessions sort choice persisted under the legacy agent-panel
+    // key moves to the sessions-panel key; deleting the old key keeps the next save from
+    // reserializing the stale duplicate.
+    const legacyPreferences = preferences as Record<string, unknown>;
+    if (legacyPreferences.sessionsPanelSessionSort === undefined && legacyPreferences.agentPanelSessionSort !== undefined) {
+      legacyPreferences.sessionsPanelSessionSort = legacyPreferences.agentPanelSessionSort;
+    }
+    delete legacyPreferences.agentPanelSessionSort;
     this.settings = Object.assign({}, DEFAULT_OPENCODE_SETTINGS, preferences);
     this.sessionState = {
       sessions: normalizePersistedSessionStates(data?.sessions),
@@ -500,7 +510,7 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.retryActionSuppressed = normalizeRetryActionSuppressed(this.settings.retryActionSuppressed);
     this.settings.workingAnimation = normalizeWorkingAnimation(this.settings.workingAnimation);
     this.settings.folderCollapseDisplay = normalizeFolderCollapseDisplay(this.settings.folderCollapseDisplay);
-    this.settings.agentPanelSessionSort = normalizeAgentPanelSessionSort(this.settings.agentPanelSessionSort);
+    this.settings.sessionsPanelSessionSort = normalizeSessionsPanelSessionSort(this.settings.sessionsPanelSessionSort);
     this.settings.contextBar = normalizeContextBarSettings(this.settings.contextBar);
     this.settings.debugLogging = normalizeDebugLogging(this.settings.debugLogging);
     this.settings.customToolDisplays = Array.isArray(this.settings.customToolDisplays)
@@ -558,7 +568,7 @@ export default class OpenCodePlugin extends Plugin {
     await this.saveSettings();
     if (this.opencode) this.opencode.updateConfig(this.settings.server);
     else this.opencode = new OpenCodeService(this.settings.server);
-    await this.refreshAgentPanels();
+    await this.refreshSessionsPanels();
     await this.refreshSessionViews();
   }
 
@@ -955,21 +965,21 @@ export default class OpenCodePlugin extends Plugin {
     }
   }
 
-  /** Opens or focuses the OpenCode agents panel and reveals the focused session's row. */
-  private async activateAgentPanel(): Promise<void> {
+  /** Opens or focuses the OpenCode sessions panel and reveals the focused session's row. */
+  private async activateSessionsPanel(): Promise<void> {
     // Capture the focused session before revealing the panel can change the active leaf.
     const activeSessionId = this.getActiveSessionId();
-    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL);
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSIONS_PANEL);
     let leaf: WorkspaceLeaf | null = leaves[0] ?? null;
 
     if (!leaf) {
       leaf = this.app.workspace.getLeftLeaf(false);
-      await leaf?.setViewState({ type: VIEW_TYPE_OPENCODE_AGENT_PANEL, active: true });
+      await leaf?.setViewState({ type: VIEW_TYPE_OPENCODE_SESSIONS_PANEL, active: true });
     }
 
     if (leaf) this.app.workspace.revealLeaf(leaf);
 
-    if (leaf?.view instanceof AgentPanelView) {
+    if (leaf?.view instanceof SessionsPanelView) {
       if (activeSessionId) leaf.view.setActiveSession(activeSessionId);
       // Focus the panel container so arrow-key navigation works immediately, mirroring
       // Obsidian's "Reveal current file in navigation" rather than "Show file explorer".
@@ -977,19 +987,19 @@ export default class OpenCodePlugin extends Plugin {
     }
   }
 
-  /** Refreshes every visible agents panel after local or server-side session changes. */
-  async refreshAgentPanels(options?: { showLoading?: boolean }): Promise<void> {
+  /** Refreshes every visible sessions panel after local or server-side session changes. */
+  async refreshSessionsPanels(options?: { showLoading?: boolean }): Promise<void> {
     await Promise.all(
-      this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL).map(async (leaf) => {
-        if (leaf.view instanceof AgentPanelView) await leaf.view.refresh(options);
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSIONS_PANEL).map(async (leaf) => {
+        if (leaf.view instanceof SessionsPanelView) await leaf.view.refresh(options);
       }),
     );
   }
 
-  /** Pushes one live session status into visible agent panels without waiting for their full refresh. */
+  /** Pushes one live session status into visible sessions panels without waiting for their full refresh. */
   notifySessionStatusChanged(sessionId: string, statusType: string): void {
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL)) {
-      if (leaf.view instanceof AgentPanelView) leaf.view.applyLiveSessionStatus(sessionId, statusType);
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSIONS_PANEL)) {
+      if (leaf.view instanceof SessionsPanelView) leaf.view.applyLiveSessionStatus(sessionId, statusType);
     }
   }
 
@@ -1010,8 +1020,8 @@ export default class OpenCodePlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
       if (leaf.view instanceof SessionView) leaf.view.ingestPermissionRequest(request);
     }
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_AGENT_PANEL)) {
-      if (leaf.view instanceof AgentPanelView) leaf.view.ingestPermissionRequest(request);
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSIONS_PANEL)) {
+      if (leaf.view instanceof SessionsPanelView) leaf.view.ingestPermissionRequest(request);
     }
   }
 

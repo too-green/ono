@@ -8,22 +8,23 @@ import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSessio
 import { isAssistantAbortError } from "../services/assistant-error";
 import { hashRenderState } from "./session/render-signature";
 import {
-  AGENT_PANEL_SESSION_SORT_LABELS,
-  normalizeAgentPanelSessionSort,
+  SESSIONS_PANEL_SESSION_SORT_LABELS,
+  normalizeSessionsPanelSessionSort,
   normalizeFolderCollapseDisplay,
-  type AgentPanelSessionSort,
+  type SessionsPanelSessionSort,
 } from "../settings";
 import {
-  createDefaultAgentPanelRowComponents,
-  type AgentPanelProject,
-  type AgentPanelRowComponents,
-  type AgentPanelSession,
-  type AgentPanelSessionRowHandle,
-  type AgentPanelWorktree,
-} from "./agent-panel/rows";
-import { sortAgentPanelSessions } from "./agent-panel/session-sort";
+  createDefaultSessionsPanelRowComponents,
+  type SessionsPanelProject,
+  type SessionsPanelRowComponents,
+  type SessionsPanelSession,
+  type SessionsPanelSessionRowHandle,
+  type SessionsPanelWorktree,
+} from "./sessions-panel/rows";
+import { sortSessionsPanelSessions } from "./sessions-panel/session-sort";
 
-export const VIEW_TYPE_OPENCODE_AGENT_PANEL = "opencode-agent-panel";
+/** Legacy stable value: existing installs persist workspace leaves under this view type string. */
+export const VIEW_TYPE_OPENCODE_SESSIONS_PANEL = "opencode-agent-panel";
 
 interface OpenCodeProjectMeta {
   id: string;
@@ -37,34 +38,34 @@ interface OpenedDirectoryContext {
   project?: JsonObject;
 }
 
-interface AgentPanelVisibleRow {
+interface SessionsPanelVisibleRow {
   key: string;
   kind: "project" | "worktree" | "session";
   element: HTMLElement;
-  session?: AgentPanelSession;
+  session?: SessionsPanelSession;
   directory?: string;
 }
 
-interface AgentPanelTreeReconcileContext {
-  nextRows: Map<string, AgentPanelVisibleRow>;
-  previousSessionHandles: Map<string, AgentPanelSessionRowHandle>;
+interface SessionsPanelTreeReconcileContext {
+  nextRows: Map<string, SessionsPanelVisibleRow>;
+  previousSessionHandles: Map<string, SessionsPanelSessionRowHandle>;
   preservedRowElements: Map<string, HTMLElement>;
   preservedSessionIds: Set<string>;
 }
 
-export class AgentPanelView extends ItemView {
+export class SessionsPanelView extends ItemView {
   private collapsed = new Set<string>();
   private activeSessionId?: string;
   private highlightedKey?: string;
   private eventSubscriptions: OpenCodeEventSubscription[] = [];
   private eventSubscriptionDirectoriesKey = "";
-  private visibleRows: AgentPanelVisibleRow[] = [];
+  private visibleRows: SessionsPanelVisibleRow[] = [];
   private rowParentKey = new Map<string, string | undefined>();
   private loading = false;
   private refreshQueued = false;
   private refreshTimer?: number;
   private lastRenderedTreeSignature = "";
-  private lastTree: AgentPanelProject[] = [];
+  private lastTree: SessionsPanelProject[] = [];
   private sessionAncestorMap = new Map<string, string[]>();
   private lastKnownSessionStatuses = new Map<string, string>();
   private erroredSessionIds = new Set<string>();
@@ -76,26 +77,26 @@ export class AgentPanelView extends ItemView {
   private transientLoadFailure = false;
   private refreshRetryDelay = 1_000;
   private opened = false;
-  private readonly rowComponents: AgentPanelRowComponents;
-  private readonly sessionRowHandles = new Map<string, AgentPanelSessionRowHandle>();
+  private readonly rowComponents: SessionsPanelRowComponents;
+  private readonly sessionRowHandles = new Map<string, SessionsPanelSessionRowHandle>();
 
   constructor(
     leaf: WorkspaceLeaf,
     private readonly plugin: OpenCodePlugin,
-    rowComponents: Partial<AgentPanelRowComponents> = {},
+    rowComponents: Partial<SessionsPanelRowComponents> = {},
   ) {
     super(leaf);
-    this.rowComponents = { ...createDefaultAgentPanelRowComponents(), ...rowComponents };
+    this.rowComponents = { ...createDefaultSessionsPanelRowComponents(), ...rowComponents };
   }
 
   /** Returns the stable Obsidian view type used by plugin registration. */
   getViewType(): string {
-    return VIEW_TYPE_OPENCODE_AGENT_PANEL;
+    return VIEW_TYPE_OPENCODE_SESSIONS_PANEL;
   }
 
   /** Returns the display label shown in Obsidian sidebars and tabs. */
   getDisplayText(): string {
-    return "OpenCode agents";
+    return "OpenCode sessions";
   }
 
   /** Returns the Lucide icon used by the sidebar tab and ribbon command. */
@@ -107,7 +108,7 @@ export class AgentPanelView extends ItemView {
   async onOpen(): Promise<void> {
     this.opened = true;
     this.contentEl.addClass("opencode-sidebar-panel");
-    this.contentEl.addClass("opencode-sidebar-panel--agents");
+    this.contentEl.addClass("opencode-sidebar-panel--sessions");
     this.contentEl.tabIndex = 0;
     this.contentEl.addEventListener("keydown", this.handleKeydown);
     this.syncEventSubscriptions(this.plugin.getOpenedDirectories());
@@ -128,7 +129,7 @@ export class AgentPanelView extends ItemView {
     this.erroredSessionIds.clear();
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = undefined;
-    this.contentEl.removeClass("opencode-sidebar-panel", "opencode-sidebar-panel--agents");
+    this.contentEl.removeClass("opencode-sidebar-panel", "opencode-sidebar-panel--sessions");
     this.contentEl.removeAttribute("tabindex");
     this.contentEl.empty();
   }
@@ -263,8 +264,8 @@ export class AgentPanelView extends ItemView {
       const nextRequestAttentionIds = this.collectRequestAttentionIds(tree);
       if (this.transientLoadFailure) this.requestAttentionSessionIds.forEach((sessionId) => nextRequestAttentionIds.add(sessionId));
       this.requestAttentionSessionIds = nextRequestAttentionIds;
-      const treeSignature = JSON.stringify([this.plugin.settings.folderCollapseDisplay, this.plugin.settings.agentPanelSessionSort, tree]);
-      if (treeSignature === this.lastRenderedTreeSignature && this.contentEl.querySelector(".opencode-agent-panel__tree")) return;
+      const treeSignature = JSON.stringify([this.plugin.settings.folderCollapseDisplay, this.plugin.settings.sessionsPanelSessionSort, tree]);
+      if (treeSignature === this.lastRenderedTreeSignature && this.contentEl.querySelector(".opencode-sessions-panel__tree")) return;
       this.lastRenderedTreeSignature = treeSignature;
       this.renderTree(tree);
     } catch (error) {
@@ -299,7 +300,7 @@ export class AgentPanelView extends ItemView {
     openedContexts: OpenedDirectoryContext[],
     sessionDirectoryById: Map<string, string>,
     requestOwnerIds: Set<string>,
-  ): Promise<AgentPanelProject[]> {
+  ): Promise<SessionsPanelProject[]> {
     const sessionsByProject = new Map<string, Map<string, OpenCodeSession[]>>();
     const knownProjects = new Map<string, OpenCodeProjectMeta>();
     const openedByProject = new Map<string, Set<string>>();
@@ -354,13 +355,13 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Builds visible top-level session rows and excludes child/subagent sessions. */
-  private async buildSessionNodes(sessions: OpenCodeSession[], statuses: JsonObject, requestOwnerIds: Set<string>): Promise<AgentPanelSession[]> {
+  private async buildSessionNodes(sessions: OpenCodeSession[], statuses: JsonObject, requestOwnerIds: Set<string>): Promise<SessionsPanelSession[]> {
     const roots = sessions.filter((session) => !this.readString(session, ["parentID", "parentId"]));
     return roots.map((session) => this.buildSessionNode(session, statuses, requestOwnerIds));
   }
 
   /** Builds one top-level session row from the list snapshot without fetching descendants. */
-  private buildSessionNode(session: OpenCodeSession, statuses: JsonObject, requestOwnerIds: Set<string>): AgentPanelSession {
+  private buildSessionNode(session: OpenCodeSession, statuses: JsonObject, requestOwnerIds: Set<string>): SessionsPanelSession {
     const id = session.id;
     const directory = this.effectiveDirectoryForSession(session);
     const requiresAttention = requestOwnerIds.has(id);
@@ -425,7 +426,7 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Collects owner and ancestor ids whose rows must retain attention over live status events. */
-  private collectRequestAttentionIds(projects: AgentPanelProject[]): Set<string> {
+  private collectRequestAttentionIds(projects: SessionsPanelProject[]): Set<string> {
     const ids = new Set<string>();
     projects.forEach((project) => project.worktrees.forEach((worktree) => worktree.sessions.forEach((session) => {
       if (session.requiresAttention) ids.add(session.id);
@@ -439,9 +440,9 @@ export class AgentPanelView extends ItemView {
     this.cancelInlineRename(this.contentEl);
     this.contentEl.empty();
     this.renderHeader();
-    const state = this.contentEl.createDiv({ cls: "opencode-agent-panel__state" });
-    state.createDiv({ cls: "opencode-agent-panel__spinner" });
-    state.createDiv({ text: "Loading OpenCode sessions…", cls: "opencode-agent-panel__state-text" });
+    const state = this.contentEl.createDiv({ cls: "opencode-sessions-panel__state" });
+    state.createDiv({ cls: "opencode-sessions-panel__spinner" });
+    state.createDiv({ text: "Loading OpenCode sessions…", cls: "opencode-sessions-panel__state-text" });
   }
 
   /** Renders the disconnected state specified for missing or stopped OpenCode servers. */
@@ -450,19 +451,19 @@ export class AgentPanelView extends ItemView {
     this.cancelInlineRename(this.contentEl);
     this.contentEl.empty();
     this.renderHeader();
-    const state = this.contentEl.createDiv({ cls: "opencode-agent-panel__state" });
-    state.createDiv({ text: "opencode server not running.", cls: "opencode-agent-panel__state-title" });
-    state.createDiv({ text: "Start it with `opencode serve` in a terminal.", cls: "opencode-agent-panel__state-text" });
+    const state = this.contentEl.createDiv({ cls: "opencode-sessions-panel__state" });
+    state.createDiv({ text: "opencode server not running.", cls: "opencode-sessions-panel__state-title" });
+    state.createDiv({ text: "Start it with `opencode serve` in a terminal.", cls: "opencode-sessions-panel__state-text" });
     const retry = state.createEl("button", { text: "Retry connection", cls: "mod-cta" });
     retry.addEventListener("click", () => void this.refresh());
-    if (error instanceof Error) state.createDiv({ text: error.message, cls: "opencode-agent-panel__error-detail" });
+    if (error instanceof Error) state.createDiv({ text: error.message, cls: "opencode-sessions-panel__error-detail" });
   }
 
   /** Renders the full project tree using Obsidian's native nav/tree class vocabulary. */
-  private renderTree(projects: AgentPanelProject[]): void {
+  private renderTree(projects: SessionsPanelProject[]): void {
     this.lastTree = projects;
     this.sessionAncestorMap = this.buildSessionAncestorMap(projects);
-    const currentNav = this.contentEl.querySelector<HTMLElement>(":scope > .opencode-agent-panel__tree");
+    const currentNav = this.contentEl.querySelector<HTMLElement>(":scope > .opencode-sessions-panel__tree");
     const previousScrollTop = currentNav?.scrollTop ?? 0;
     const previousHighlightedKey = this.highlightedKey;
     const previousHighlightIndex = this.visibleRows.findIndex((row) => row.key === previousHighlightedKey);
@@ -473,8 +474,8 @@ export class AgentPanelView extends ItemView {
     const staging = document.createElement("div");
     this.renderHeader(staging);
 
-    const nav = staging.createDiv({ cls: "nav-files-container node-insert-event opencode-sidebar-panel__content opencode-agent-panel__tree" });
-    const root = nav.createDiv({ cls: "tree-item nav-folder opencode-agent-panel__root" });
+    const nav = staging.createDiv({ cls: "nav-files-container node-insert-event opencode-sidebar-panel__content opencode-sessions-panel__tree" });
+    const root = nav.createDiv({ cls: "tree-item nav-folder opencode-sessions-panel__root" });
 
     if (projects.length === 0) {
       this.renderEmptyTree(nav);
@@ -485,14 +486,14 @@ export class AgentPanelView extends ItemView {
 
     const nextRows = new Map(this.visibleRows.map((row) => [row.key, row]));
     const nextSessionHandles = new Map(this.sessionRowHandles);
-    const context: AgentPanelTreeReconcileContext = {
+    const context: SessionsPanelTreeReconcileContext = {
       nextRows,
       previousSessionHandles,
       preservedRowElements: new Map(),
       preservedSessionIds: new Set(),
     };
-    const nextHeader = staging.querySelector<HTMLElement>(":scope > .opencode-agent-panel__header")!;
-    const currentHeader = this.contentEl.querySelector<HTMLElement>(":scope > .opencode-agent-panel__header");
+    const nextHeader = staging.querySelector<HTMLElement>(":scope > .opencode-sessions-panel__header")!;
+    const currentHeader = this.contentEl.querySelector<HTMLElement>(":scope > .opencode-sessions-panel__header");
     let committedHeader = nextHeader;
     if (currentHeader && currentHeader.dataset.renderSignature === nextHeader.dataset.renderSignature) committedHeader = currentHeader;
     else if (currentHeader) currentHeader.replaceWith(nextHeader);
@@ -500,8 +501,8 @@ export class AgentPanelView extends ItemView {
 
     let committedNav: HTMLElement = nav;
     if (currentNav) {
-      const currentRoot = currentNav.querySelector<HTMLElement>(":scope > .opencode-agent-panel__root");
-      const nextRoot = nav.querySelector<HTMLElement>(":scope > .opencode-agent-panel__root");
+      const currentRoot = currentNav.querySelector<HTMLElement>(":scope > .opencode-sessions-panel__root");
+      const nextRoot = nav.querySelector<HTMLElement>(":scope > .opencode-sessions-panel__root");
       if (currentRoot && nextRoot) {
         this.reconcileTreeContainer(currentRoot, nextRoot, context);
         currentRoot.className = nextRoot.className;
@@ -546,7 +547,7 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Reconciles keyed project, worktree, and session items without replacing the scroll owner. */
-  private reconcileTreeContainer(current: HTMLElement, next: HTMLElement, context: AgentPanelTreeReconcileContext): void {
+  private reconcileTreeContainer(current: HTMLElement, next: HTMLElement, context: SessionsPanelTreeReconcileContext): void {
     const currentItems = new Map(
       Array.from(current.children)
         .filter((child): child is HTMLElement => child instanceof HTMLElement && !!child.dataset.opencodeTreeKey)
@@ -608,7 +609,7 @@ export class AgentPanelView extends ItemView {
 
   /** Cancels an inline session rename before an unavoidable keyed branch replacement. */
   private cancelInlineRename(container: HTMLElement): void {
-    const input = container.querySelector<HTMLInputElement>(".opencode-agent-panel__rename-input");
+    const input = container.querySelector<HTMLInputElement>(".opencode-sessions-panel__rename-input");
     if (input) input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   }
 
@@ -616,7 +617,7 @@ export class AgentPanelView extends ItemView {
   private recordPreservedTreeItem(
     key: string,
     item: HTMLElement,
-    context: AgentPanelTreeReconcileContext,
+    context: SessionsPanelTreeReconcileContext,
     sessionId?: string,
   ): void {
     const row = item.querySelector<HTMLElement>(`[data-opencode-row-key="${CSS.escape(key)}"]`);
@@ -626,18 +627,18 @@ export class AgentPanelView extends ItemView {
 
   /** Renders the panel header with native clickable-icon affordances. */
   private renderHeader(container = this.contentEl): void {
-    const sortValue = normalizeAgentPanelSessionSort(this.plugin.settings.agentPanelSessionSort);
-    const header = container.createDiv({ cls: "opencode-sidebar-panel__header opencode-agent-panel__header" });
+    const sortValue = normalizeSessionsPanelSessionSort(this.plugin.settings.sessionsPanelSessionSort);
+    const header = container.createDiv({ cls: "opencode-sidebar-panel__header opencode-sessions-panel__header" });
     header.dataset.renderSignature = hashRenderState(JSON.stringify(sortValue));
-    header.createDiv({ text: "OpenCode", cls: "opencode-agent-panel__title" });
-    const actions = header.createDiv({ cls: "opencode-agent-panel__actions" });
+    header.createDiv({ text: "OpenCode sessions", cls: "opencode-sessions-panel__title" });
+    const actions = header.createDiv({ cls: "opencode-sessions-panel__actions" });
     const openDirectory = actions.createEl("button", { attr: { "aria-label": "Open directory in OpenCode" }, cls: "clickable-icon" });
     setIcon(openDirectory, "folder-plus");
     openDirectory.addEventListener("click", () => void this.plugin.openDirectoryWithPicker());
     const sort = actions.createEl("button", {
       attr: {
-        "aria-label": `Sort sessions: ${AGENT_PANEL_SESSION_SORT_LABELS[sortValue]}`,
-        title: `Sort sessions: ${AGENT_PANEL_SESSION_SORT_LABELS[sortValue]}`,
+        "aria-label": `Sort sessions: ${SESSIONS_PANEL_SESSION_SORT_LABELS[sortValue]}`,
+        title: `Sort sessions: ${SESSIONS_PANEL_SESSION_SORT_LABELS[sortValue]}`,
       },
       cls: "clickable-icon",
     });
@@ -650,9 +651,9 @@ export class AgentPanelView extends ItemView {
 
   /** Opens the header menu containing every supported session sort order. */
   private showSessionSortMenu(event: MouseEvent): void {
-    const current = normalizeAgentPanelSessionSort(this.plugin.settings.agentPanelSessionSort);
+    const current = normalizeSessionsPanelSessionSort(this.plugin.settings.sessionsPanelSessionSort);
     const menu = new Menu();
-    const options = Object.entries(AGENT_PANEL_SESSION_SORT_LABELS) as Array<[AgentPanelSessionSort, string]>;
+    const options = Object.entries(SESSIONS_PANEL_SESSION_SORT_LABELS) as Array<[SessionsPanelSessionSort, string]>;
     options.forEach(([value, label], index) => {
       if (index === 2 || index === 4) menu.addSeparator();
       menu.addItem((item) =>
@@ -666,9 +667,9 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Persists a sort selection and immediately reorders the cached session tree. */
-  private async setSessionSort(sort: AgentPanelSessionSort): Promise<void> {
-    if (sort === normalizeAgentPanelSessionSort(this.plugin.settings.agentPanelSessionSort)) return;
-    this.plugin.settings.agentPanelSessionSort = sort;
+  private async setSessionSort(sort: SessionsPanelSessionSort): Promise<void> {
+    if (sort === normalizeSessionsPanelSessionSort(this.plugin.settings.sessionsPanelSessionSort)) return;
+    this.plugin.settings.sessionsPanelSessionSort = sort;
     this.lastRenderedTreeSignature = "";
     this.rerenderTree();
     await this.plugin.saveSettings();
@@ -676,15 +677,15 @@ export class AgentPanelView extends ItemView {
 
   /** Renders an empty connected tree when OpenCode has no sessions yet. */
   private renderEmptyTree(container: HTMLElement): void {
-    const state = container.createDiv({ cls: "opencode-agent-panel__state" });
-    state.createDiv({ text: "No directories opened yet.", cls: "opencode-agent-panel__state-title" });
-    state.createDiv({ text: "Open a directory to let the OpenCode server resolve its project/worktree.", cls: "opencode-agent-panel__state-text" });
+    const state = container.createDiv({ cls: "opencode-sessions-panel__state" });
+    state.createDiv({ text: "No directories opened yet.", cls: "opencode-sessions-panel__state-title" });
+    state.createDiv({ text: "Open a directory to let the OpenCode server resolve its project/worktree.", cls: "opencode-sessions-panel__state-text" });
     const open = state.createEl("button", { text: "Open directory…", cls: "mod-cta" });
     open.addEventListener("click", () => void this.plugin.openDirectoryWithPicker());
   }
 
   /** Renders one project branch with a create action when it represents one worktree. */
-  private renderProject(container: HTMLElement, project: AgentPanelProject, parentKey?: string): void {
+  private renderProject(container: HTMLElement, project: SessionsPanelProject, parentKey?: string): void {
     const key = `project:${project.id}`;
     this.rowParentKey.set(key, parentKey);
     const collapsed = this.collapsed.has(key);
@@ -714,7 +715,7 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Renders the optional worktree/directory level when a project has multiple roots. */
-  private renderWorktree(container: HTMLElement, worktree: AgentPanelWorktree, parentKey?: string): void {
+  private renderWorktree(container: HTMLElement, worktree: SessionsPanelWorktree, parentKey?: string): void {
     const key = `worktree:${worktree.id}`;
     this.rowParentKey.set(key, parentKey);
     const collapsed = this.collapsed.has(key);
@@ -734,12 +735,12 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Returns one grouping's sessions in the user-selected display order. */
-  private sessionsForDisplay(sessions: AgentPanelSession[]): AgentPanelSession[] {
-    return sortAgentPanelSessions(sessions, normalizeAgentPanelSessionSort(this.plugin.settings.agentPanelSessionSort));
+  private sessionsForDisplay(sessions: SessionsPanelSession[]): SessionsPanelSession[] {
+    return sortSessionsPanelSessions(sessions, normalizeSessionsPanelSessionSort(this.plugin.settings.sessionsPanelSessionSort));
   }
 
   /** Renders one top-level session row with left status and right notification slots. */
-  private renderSession(container: HTMLElement, session: AgentPanelSession, parentKey?: string): void {
+  private renderSession(container: HTMLElement, session: SessionsPanelSession, parentKey?: string): void {
     const key = `session:${session.id}`;
     this.rowParentKey.set(key, parentKey);
     const row = this.rowComponents.session.render(container, {
@@ -762,7 +763,7 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Annotates one item shell for keyed reconciliation independently of descendant state. */
-  private annotateTreeItem(item: HTMLElement, key: string, kind: AgentPanelVisibleRow["kind"], state: unknown): void {
+  private annotateTreeItem(item: HTMLElement, key: string, kind: SessionsPanelVisibleRow["kind"], state: unknown): void {
     item.dataset.opencodeTreeKey = key;
     item.dataset.opencodeTreeKind = kind;
     item.dataset.opencodeTreeSignature = hashRenderState(JSON.stringify(state));
@@ -852,7 +853,7 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Selects a session row and opens its read-only Obsidian session tab. */
-  private selectSession(session: AgentPanelSession): void {
+  private selectSession(session: SessionsPanelSession): void {
     this.activeSessionId = session.id;
     this.highlightedKey = `session:${session.id}`;
     this.renderActiveOnly();
@@ -861,7 +862,7 @@ export class AgentPanelView extends ItemView {
 
   /**
    * Mirrors the focused session tab into the panel; referenced by OpenCodePlugin's
-   * active-leaf-change handler and the "Open agents panel" command so the panel
+   * active-leaf-change handler and the "Open sessions panel" command so the panel
    * behaves like Obsidian's "Reveal current file in navigation" instead of just
    * "Show file explorer". Expands collapsed project/worktree ancestors so the row is revealed,
    * then applies is-active and the keyboard highlight.
@@ -893,7 +894,7 @@ export class AgentPanelView extends ItemView {
    * independent of collapsed state so setActiveSession can expand ancestors of
    * sessions that are currently hidden inside collapsed project/worktree nodes.
    */
-  private buildSessionAncestorMap(projects: AgentPanelProject[]): Map<string, string[]> {
+  private buildSessionAncestorMap(projects: SessionsPanelProject[]): Map<string, string[]> {
     const map = new Map<string, string[]>();
     for (const project of projects) {
       const projectKey = `project:${project.id}`;
@@ -909,7 +910,7 @@ export class AgentPanelView extends ItemView {
   /**
    * Moves DOM focus onto the panel container so the focus-gated keydown handler
    * receives arrow-key navigation immediately; referenced by the OpenCodePlugin
-   * "Open agents panel" command to mirror Obsidian's "Reveal current file in navigation".
+   * "Open sessions panel" command to mirror Obsidian's "Reveal current file in navigation".
    */
   focusContent(): void {
     this.contentEl.focus();
@@ -949,18 +950,18 @@ export class AgentPanelView extends ItemView {
   /** Refreshes the row state after a local-only active selection changes. */
   private renderActiveOnly(): void {
     this.sessionRowHandles.forEach((row) => row.updateActive(false));
-    this.contentEl.querySelectorAll(".opencode-agent-panel__row-highlighted").forEach((row) => row.removeClass("opencode-agent-panel__row-highlighted"));
+    this.contentEl.querySelectorAll(".opencode-sessions-panel__row-highlighted").forEach((row) => row.removeClass("opencode-sessions-panel__row-highlighted"));
     if (!this.activeSessionId) return;
     this.sessionRowHandles.get(this.activeSessionId)?.updateActive(true);
     this.applyHighlight();
   }
 
   /** Registers a visible tree row for keyboard navigation and highlight management. */
-  private registerRow(key: string, kind: "project" | "worktree" | "session", element: HTMLElement, session?: AgentPanelSession, directory?: string): void {
+  private registerRow(key: string, kind: "project" | "worktree" | "session", element: HTMLElement, session?: SessionsPanelSession, directory?: string): void {
     this.visibleRows.push({ key, kind, element, session, directory });
     element.dataset.opencodeRowKey = key;
     if (!this.highlightedKey) this.highlightedKey = key;
-    if (this.highlightedKey === key) element.addClass("opencode-agent-panel__row-highlighted");
+    if (this.highlightedKey === key) element.addClass("opencode-sessions-panel__row-highlighted");
   }
 
   /** Handles focus-gated tree keyboard navigation modeled after Obsidian's file explorer. */
@@ -1016,9 +1017,9 @@ export class AgentPanelView extends ItemView {
 
   /** Applies the current keyboard highlight using native-ish selected-row styling. */
   private applyHighlight(): void {
-    this.contentEl.querySelectorAll(".opencode-agent-panel__row-highlighted").forEach((row) => row.removeClass("opencode-agent-panel__row-highlighted"));
+    this.contentEl.querySelectorAll(".opencode-sessions-panel__row-highlighted").forEach((row) => row.removeClass("opencode-sessions-panel__row-highlighted"));
     const row = this.visibleRows.find((candidate) => candidate.key === this.highlightedKey);
-    row?.element.addClass("opencode-agent-panel__row-highlighted");
+    row?.element.addClass("opencode-sessions-panel__row-highlighted");
     row?.element.scrollIntoView({ block: "nearest" });
   }
 
@@ -1062,7 +1063,7 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Opens one keyboard-highlighted session and mirrors its active state in the panel. */
-  private openHighlightedSession(session: AgentPanelSession): void {
+  private openHighlightedSession(session: SessionsPanelSession): void {
     this.activeSessionId = session.id;
     this.renderActiveOnly();
     void this.plugin.openSessionTab(session.id, session.title);
@@ -1249,7 +1250,7 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Opens a native Obsidian context menu for future project-scoped actions. */
-  private showProjectMenu(event: MouseEvent, project: AgentPanelProject): void {
+  private showProjectMenu(event: MouseEvent, project: SessionsPanelProject): void {
     event.preventDefault();
     const menu = new Menu();
     menu.addItem((item) => item.setTitle("Refresh").setIcon("refresh-cw").onClick(() => void this.refresh()));
@@ -1267,7 +1268,7 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Opens the session action menu for a sidebar row. */
-  private showSessionMenu(event: MouseEvent, session: AgentPanelSession): void {
+  private showSessionMenu(event: MouseEvent, session: SessionsPanelSession): void {
     event.preventDefault();
     const menu = new Menu();
     menu.addItem((item) =>
@@ -1293,11 +1294,11 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Replaces a session row title with the file-explorer-style inline rename field. */
-  private beginInlineRename(session: AgentPanelSession): void {
+  private beginInlineRename(session: SessionsPanelSession): void {
     const title = this.sessionRowHandles.get(session.id)?.titleEl;
     if (!title || title.querySelector("input")) return;
     const input = document.createElement("input");
-    input.className = "opencode-agent-panel__rename-input";
+    input.className = "opencode-sessions-panel__rename-input";
     input.type = "text";
     input.value = session.title;
     title.replaceChildren(input);
@@ -1340,14 +1341,14 @@ export class AgentPanelView extends ItemView {
   }
 
   /** Toggles local notification muting for a root row; subagent sessions are not panel rows. */
-  private async toggleSessionMute(session: AgentPanelSession): Promise<void> {
+  private async toggleSessionMute(session: SessionsPanelSession): Promise<void> {
     session.muted = !session.muted;
     await this.plugin.rememberSessionMute(session.id, session.muted, false);
     await this.refresh({ showLoading: false });
   }
 
   /** Forks a sidebar session from its latest turn and opens the new session tab. */
-  private async forkSession(session: AgentPanelSession): Promise<void> {
+  private async forkSession(session: SessionsPanelSession): Promise<void> {
     try {
       await this.plugin.forkSessionAndOpen(session.id, session.directory);
     } catch (error) {

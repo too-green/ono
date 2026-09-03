@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type OpenCodePlugin from "../../main";
-import { AgentPanelView } from "./AgentPanelView";
+import { SessionsPanelView } from "./SessionsPanelView";
 
 type DomOptions = { text?: string; cls?: string; attr?: Record<string, string> };
 
-/** Installs the Obsidian HTMLElement helpers used by the agents sidebar view. */
+/** Installs the Obsidian HTMLElement helpers used by the sessions sidebar view. */
 function installObsidianDomMethods(): void {
   const create = function (this: HTMLElement, tag: string, options: DomOptions = {}): HTMLElement {
     const element = document.createElement(tag);
@@ -26,7 +26,7 @@ function installObsidianDomMethods(): void {
   });
 }
 
-describe("AgentPanelView lifecycle", () => {
+describe("SessionsPanelView lifecycle", () => {
   beforeEach(() => {
     installObsidianDomMethods();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
@@ -40,7 +40,7 @@ describe("AgentPanelView lifecycle", () => {
     vi.useRealTimers();
   });
 
-  it("does not resubscribe when a pending agents refresh resolves after close", async () => {
+  it("does not resubscribe when a pending sessions refresh resolves after close", async () => {
     let resolveHealth!: () => void;
     const close = vi.fn();
     const service = {
@@ -48,12 +48,12 @@ describe("AgentPanelView lifecycle", () => {
       subscribeToEvents: vi.fn(() => ({ close })),
     };
     const plugin = {
-      settings: { agentPanelSessionSort: "created-desc" },
+      settings: { sessionsPanelSessionSort: "created-desc" },
       getOpenedDirectories: () => ["/workspace"],
       getActiveSessionId: () => undefined,
       requireOpenCodeService: () => service,
     } as unknown as OpenCodePlugin;
-    const view = new AgentPanelView({ app: {} } as never, plugin);
+    const view = new SessionsPanelView({ app: {} } as never, plugin);
 
     const opening = view.onOpen();
     expect(service.subscribeToEvents).toHaveBeenCalledOnce();
@@ -99,7 +99,7 @@ describe("AgentPanelView lifecycle", () => {
       openSessionTab,
       openNewSessionTab,
     } as unknown as OpenCodePlugin;
-    const view = new AgentPanelView({ app: {} } as never, plugin);
+    const view = new SessionsPanelView({ app: {} } as never, plugin);
 
     await view.onOpen();
 
@@ -107,9 +107,9 @@ describe("AgentPanelView lifecycle", () => {
     expect(view.contentEl.querySelector('[data-session-id="child"]')).toBeNull();
     expect(view.contentEl.querySelector('button[aria-label^="Sort sessions:"]')).not.toBeNull();
     expect(listSessionChildren).not.toHaveBeenCalled();
-    expect(view.contentEl.querySelector(".opencode-agent-panel__new-session")).toBeNull();
+    expect(view.contentEl.querySelector(".opencode-sessions-panel__new-session")).toBeNull();
 
-    const create = view.contentEl.querySelector<HTMLButtonElement>(".opencode-agent-panel__new-session-action")!;
+    const create = view.contentEl.querySelector<HTMLButtonElement>(".opencode-sessions-panel__new-session-action")!;
     create.click();
     expect(openNewSessionTab).toHaveBeenCalledWith("/workspace");
 
@@ -156,7 +156,7 @@ describe("AgentPanelView lifecycle", () => {
     };
     const plugin = {
       settings: {
-        agentPanelSessionSort: "created-desc",
+        sessionsPanelSessionSort: "created-desc",
         workingAnimation: "pulse",
         folderCollapseDisplay: "inset",
       },
@@ -174,24 +174,24 @@ describe("AgentPanelView lifecycle", () => {
       rememberSessionUnread: vi.fn(async () => undefined),
       renameSession: vi.fn(async () => undefined),
     } as unknown as OpenCodePlugin;
-    const view = new AgentPanelView({ app: {} } as never, plugin);
+    const view = new SessionsPanelView({ app: {} } as never, plugin);
     await view.onOpen();
-    const tree = view.contentEl.querySelector<HTMLElement>(".opencode-agent-panel__tree")!;
+    const tree = view.contentEl.querySelector<HTMLElement>(".opencode-sessions-panel__tree")!;
     const row = view.contentEl.querySelector<HTMLElement>('[data-session-id="session-1"]')!;
     const item = row.parentElement!;
     tree.scrollTop = 140;
     view.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     view.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    const input = row.querySelector<HTMLInputElement>(".opencode-agent-panel__rename-input")!;
+    const input = row.querySelector<HTMLInputElement>(".opencode-sessions-panel__rename-input")!;
     input.value = "Draft rename";
 
     updatedAt = 2_000;
     await view.refresh({ showLoading: false });
 
-    expect(view.contentEl.querySelector(".opencode-agent-panel__tree")).toBe(tree);
+    expect(view.contentEl.querySelector(".opencode-sessions-panel__tree")).toBe(tree);
     expect(view.contentEl.querySelector('[data-session-id="session-1"]')).toBe(row);
     expect(row.parentElement).toBe(item);
-    expect(row.querySelector(".opencode-agent-panel__rename-input")).toBe(input);
+    expect(row.querySelector(".opencode-sessions-panel__rename-input")).toBe(input);
     expect(input.value).toBe("Draft rename");
     expect(tree.scrollTop).toBe(140);
 
@@ -206,7 +206,7 @@ describe("AgentPanelView lifecycle", () => {
     onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "idle" } } });
     vi.advanceTimersByTime(300);
 
-    expect(view.contentEl.querySelector(".opencode-agent-panel__tree")).toBe(tree);
+    expect(view.contentEl.querySelector(".opencode-sessions-panel__tree")).toBe(tree);
     expect(tree.scrollTop).toBe(140);
     expect(row.querySelector(".opencode-status-badge--working")).toBeNull();
     expect(listSessions).toHaveBeenCalledTimes(refreshCount);

@@ -6,7 +6,7 @@ import { OpenCodeService } from "./services/opencode-service";
 import type { OpenCodeHealth } from "./services/opencode-types";
 import { logger } from "./logger";
 import { DEFAULT_OPENCODE_SETTINGS, OPENCODE_DATA_SCHEMA_VERSION, type OpenCodePluginData, type OpenCodePluginSettings, type PersistedSessionState } from "./settings";
-import { VIEW_TYPE_OPENCODE_AGENT_PANEL } from "./views/AgentPanelView";
+import { VIEW_TYPE_OPENCODE_SESSIONS_PANEL } from "./views/SessionsPanelView";
 import { VIEW_TYPE_OPENCODE_SESSION } from "./views/SessionView";
 
 /** Returns isolated mutable settings records for plugin method tests. */
@@ -45,7 +45,7 @@ describe("OpenCodePlugin unload lifecycle", () => {
     plugin.onunload();
 
     expect(order).toEqual([
-      VIEW_TYPE_OPENCODE_AGENT_PANEL,
+      VIEW_TYPE_OPENCODE_SESSIONS_PANEL,
       VIEW_TYPE_OPENCODE_SESSION,
       LEGACY_DIFF_PANEL_VIEW_TYPE,
       "close-subscription",
@@ -109,7 +109,7 @@ describe("OpenCodePlugin server connection settings", () => {
     const getSecret = vi.fn(() => "hunter2");
     const updateConfig = vi.fn();
     const saveSettings = vi.fn(async () => undefined);
-    const refreshAgentPanels = vi.fn(async () => undefined);
+    const refreshSessionsPanels = vi.fn(async () => undefined);
     const refreshSessionViews = vi.fn(async () => undefined);
     const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
     Object.assign(plugin, {
@@ -119,7 +119,7 @@ describe("OpenCodePlugin server connection settings", () => {
       forgottenSessionIds: new Set(["stale"]),
       opencode: { updateConfig },
       saveSettings,
-      refreshAgentPanels,
+      refreshSessionsPanels,
       refreshSessionViews,
     });
 
@@ -138,7 +138,7 @@ describe("OpenCodePlugin server connection settings", () => {
       pluginSessionState({}, { draft: { composer: { text: "keep" } } }),
     );
     expect((plugin as unknown as { forgottenSessionIds: Set<string> }).forgottenSessionIds.size).toBe(0);
-    expect(refreshAgentPanels).toHaveBeenCalledOnce();
+    expect(refreshSessionsPanels).toHaveBeenCalledOnce();
     expect(refreshSessionViews).toHaveBeenCalledOnce();
   });
 
@@ -151,7 +151,7 @@ describe("OpenCodePlugin server connection settings", () => {
       settings: pluginSettings({ server: { baseUrl: "http://127.0.0.1:4096", username: "admin", passwordSecretName: "opencode-pw", password: "hunter2" } }),
       opencode: { updateConfig },
       saveSettings: vi.fn(async () => undefined),
-      refreshAgentPanels: vi.fn(async () => undefined),
+      refreshSessionsPanels: vi.fn(async () => undefined),
       refreshSessionViews: vi.fn(async () => undefined),
     });
 
@@ -171,7 +171,7 @@ describe("OpenCodePlugin server connection settings", () => {
       settings: pluginSettings(),
       opencode: { updateConfig },
       saveSettings: vi.fn(async () => undefined),
-      refreshAgentPanels: vi.fn(async () => undefined),
+      refreshSessionsPanels: vi.fn(async () => undefined),
       refreshSessionViews: vi.fn(async () => undefined),
     });
 
@@ -261,16 +261,16 @@ describe("OpenCodePlugin fork workflow", () => {
     const forked = { id: "fork-2", title: "Research (fork #2)" };
     const forkSession = vi.fn(async () => forked);
     const openSessionTab = vi.fn(async () => undefined);
-    const refreshAgentPanels = vi.fn(async () => undefined);
+    const refreshSessionsPanels = vi.fn(async () => undefined);
     const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
-    Object.assign(plugin, { forkSession, openSessionTab, refreshAgentPanels });
+    Object.assign(plugin, { forkSession, openSessionTab, refreshSessionsPanels });
 
     await expect(plugin.forkSessionAndOpen("root", "/workspace", "next-message")).resolves.toBe(forked);
 
     expect(forkSession).toHaveBeenCalledWith("root", "/workspace", "next-message");
     expect(openSessionTab).toHaveBeenCalledWith("fork-2", "Research (fork #2)");
-    expect(refreshAgentPanels).toHaveBeenCalledWith({ showLoading: false });
-    expect(openSessionTab.mock.invocationCallOrder[0]).toBeLessThan(refreshAgentPanels.mock.invocationCallOrder[0]);
+    expect(refreshSessionsPanels).toHaveBeenCalledWith({ showLoading: false });
+    expect(openSessionTab.mock.invocationCallOrder[0]).toBeLessThan(refreshSessionsPanels.mock.invocationCallOrder[0]);
   });
 });
 
@@ -383,7 +383,7 @@ describe("OpenCodePlugin session-state retention", () => {
         archiveSession,
       },
       saveSettings,
-      refreshAgentPanels: vi.fn(async () => undefined),
+      refreshSessionsPanels: vi.fn(async () => undefined),
     });
 
     await plugin.requestSessionArchive("root", "/workspace");
@@ -493,6 +493,33 @@ describe("OpenCodePlugin session-state retention", () => {
 });
 
 describe("OpenCodePlugin data schema", () => {
+  it("migrates the legacy agents-panel sort preference without reserializing its old key", async () => {
+    const saveData = vi.fn(async () => undefined);
+    const preferences = { ...pluginSettings() } as Record<string, unknown>;
+    delete preferences.sessionsPanelSessionSort;
+    preferences.agentPanelSessionSort = "title-asc";
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      app: { secretStorage: { getSecret: vi.fn() } },
+      loadData: vi.fn(async () => ({
+        schemaVersion: OPENCODE_DATA_SCHEMA_VERSION,
+        preferences,
+        sessions: {},
+        drafts: {},
+      })),
+      saveData,
+    });
+
+    await (plugin as unknown as { loadSettings(): Promise<void> }).loadSettings();
+    await plugin.saveSettings();
+
+    expect(plugin.settings.sessionsPanelSessionSort).toBe("title-asc");
+    expect(saveData).toHaveBeenCalledWith(expect.objectContaining({
+      preferences: expect.objectContaining({ sessionsPanelSessionSort: "title-asc" }),
+    }));
+    expect(JSON.stringify(saveData.mock.calls)).not.toContain("agentPanelSessionSort");
+  });
+
   it("replaces unversioned plugin data instead of retaining legacy maps", async () => {
     const saveData = vi.fn(async () => undefined);
     const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;

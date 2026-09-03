@@ -54,7 +54,7 @@ interface VaultWithConfig {
   getConfig?: (key: string) => unknown;
 }
 
-/** Renders one OpenCode session in an Obsidian tab; opened from AgentPanelView session rows. */
+/** Renders one OpenCode session in an Obsidian tab; opened from SessionsPanelView session rows. */
 export class SessionView extends ItemView {
   private model = new SessionViewModel();
   private scroll!: ScrollController;
@@ -1013,7 +1013,7 @@ export class SessionView extends ItemView {
     if (!this.model.sessionId || this.plugin.isSessionUnread(this.model.sessionId) === unread) return;
     void this.plugin.rememberSessionUnread(this.model.sessionId, unread).then(() => {
       this.refreshSessionStateChrome();
-      void this.plugin.refreshAgentPanels({ showLoading: false });
+      void this.plugin.refreshSessionsPanels({ showLoading: false });
     });
   }
 

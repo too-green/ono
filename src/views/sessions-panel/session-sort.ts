@@ -1,8 +1,8 @@
-import type { AgentPanelSessionSort } from "../../settings";
-import type { AgentPanelSession } from "./rows";
+import type { SessionsPanelSessionSort } from "../../settings";
+import type { SessionsPanelSession } from "./rows";
 
-/** Returns sessions ordered by the persisted agents-panel sort selection. */
-export function sortAgentPanelSessions(sessions: AgentPanelSession[], sort: AgentPanelSessionSort): AgentPanelSession[] {
+/** Returns sessions ordered by the persisted sessions-panel sort selection. */
+export function sortSessionsPanelSessions(sessions: SessionsPanelSession[], sort: SessionsPanelSessionSort): SessionsPanelSession[] {
   return [...sessions].sort((left, right) => {
     const direction = sort.endsWith("-asc") ? 1 : -1;
     let compared = 0;

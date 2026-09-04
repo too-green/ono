@@ -1,4 +1,4 @@
-.opencode-sidebar-panel {
+.view-content.opencode-sidebar-panel {
   color: var(--text-normal);
   /* The workspace leaf owns the sidebar surface, including translucent-window compositing. */
   display: flex;
@@ -6,7 +6,8 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  padding: var(--size-4-1) 0;
+  padding-block: var(--size-4-1);
+  padding-inline: 0;
 }
 
 .opencode-sidebar-panel__header {
@@ -43,7 +44,7 @@
 }
 
 .opencode-sessions-panel__tree {
-  padding: 0 var(--size-4-1);
+  padding: 0 var(--size-4-3);
 }
 
 .opencode-sidebar-panel--sessions .tree-item-self {

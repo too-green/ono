@@ -13,6 +13,7 @@ import type {
   OpenCodeMessagePage,
   OpenCodeListToolsParams,
   OpenCodeMessageBundle,
+  OpenCodeMoveSessionInput,
   OpenCodePermissionReply,
   OpenCodePermissionRequest,
   OpenCodePromptInput,
@@ -31,6 +32,7 @@ import type {
 
 const WORKTREE_PATH = "/experimental/worktree";
 const WORKTREE_RESET_PATH = "/experimental/worktree/reset";
+const MOVE_SESSION_PATH = "/experimental/control-plane/move-session";
 
 export interface OpenCodeServerConfig {
   baseUrl: string;
@@ -163,6 +165,11 @@ export class OpenCodeService {
   /** Sets v1 session archival metadata; recursive descendant traversal remains a client responsibility. */
   archiveSession(sessionId: string, archivedAt: number, directory?: string): Promise<OpenCodeSession> {
     return this.updateSession(sessionId, { time: { archived: archivedAt } }, directory);
+  }
+
+  /** Moves one session to another directory through the experimental control-plane endpoint. */
+  moveSession(input: OpenCodeMoveSessionInput): Promise<void> {
+    return this.http.post<void>(MOVE_SESSION_PATH, input);
   }
 
   /** Sends a non-blocking prompt through `POST /session/:id/prompt_async`; referenced by the composer. */

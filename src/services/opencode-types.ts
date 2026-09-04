@@ -68,6 +68,12 @@ export interface OpenCodeUpdateSessionInput {
   time?: { archived?: number };
 }
 
+export interface OpenCodeMoveSessionInput {
+  sessionID: string;
+  destination: { directory: string };
+  moveChanges?: boolean;
+}
+
 export interface OpenCodeMessageBundle extends JsonObject {
   info: JsonObject;
   parts: JsonObject[];
@@ -121,6 +127,7 @@ export interface OpenCodePromptInput {
   agent?: string;
   model?: { providerID: string; modelID: string };
   variant?: string;
+  noReply?: boolean;
   parts: OpenCodePromptPartInput[];
 }
 

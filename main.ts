@@ -375,7 +375,7 @@ export default class OpenCodePlugin extends Plugin {
         : status?.state === "pending" ? " OpenCode startup is continuing in the background." : "";
       new Notice(`Created worktree ${created.name} in ${creationDuration}.${startupSuffix}`, 5_000);
     } catch (error) {
-      const message = this.worktreeErrorMessage(error, "Unable to create worktree.");
+      const message = this.openCodeErrorMessage(error, "Unable to create worktree.");
       const created = createdName
         ? `Created worktree ${createdName}${creationDuration ? ` in ${creationDuration}` : ""}, but could not open it in the sessions panel: ${message}`
         : message;
@@ -411,7 +411,7 @@ export default class OpenCodePlugin extends Plugin {
       await this.removeOpenedDirectories([worktreeDirectory]);
       new Notice(`Removed worktree ${this.basename(worktreeDirectory)}.`);
     } catch (error) {
-      new Notice(this.worktreeErrorMessage(error, "Unable to remove worktree."));
+      new Notice(this.openCodeErrorMessage(error, "Unable to remove worktree."));
     } finally {
       this.finishWorktreeOperation(operationKey);
     }
@@ -443,7 +443,7 @@ export default class OpenCodePlugin extends Plugin {
       await this.refreshSessionsPanels({ showLoading: false });
       new Notice(`Reset worktree ${this.basename(worktreeDirectory)}.`);
     } catch (error) {
-      new Notice(this.worktreeErrorMessage(error, "Unable to reset worktree."));
+      new Notice(this.openCodeErrorMessage(error, "Unable to reset worktree."));
     } finally {
       this.finishWorktreeOperation(operationKey);
     }
@@ -530,6 +530,40 @@ export default class OpenCodePlugin extends Plugin {
       if (leaf.view instanceof SessionView && leaf.view.getState().sessionId === sessionId) leaf.view.applySessionTitle(resolvedTitle);
     }
     await this.refreshSessionsPanels({ showLoading: false });
+  }
+
+  /** Moves one session directory without transferring files; referenced by sessions-panel drag-and-drop. */
+  async moveSessionToDirectory(sessionId: string, sourceDirectory: string, destinationDirectory: string): Promise<void> {
+    const service = this.requireOpenCodeService();
+    try {
+      const statuses = await service.getSessionStatus();
+      const status = statuses[sessionId];
+      const type = status && typeof status === "object" && !Array.isArray(status) ? (status as JsonObject).type : undefined;
+      if (isActiveSessionStatus(typeof type === "string" ? type : undefined)) throw new Error("Abort the session before moving it.");
+      await service.moveSession({
+        sessionID: sessionId,
+        destination: { directory: destinationDirectory },
+        moveChanges: false,
+      });
+    } catch (error) {
+      throw new Error(this.openCodeErrorMessage(error, "Unable to move OpenCode session."));
+    }
+
+    void service.sendPromptAsync(sessionId, {
+      noReply: true,
+      parts: [{
+        type: "text",
+        text: `<system-reminder>The user has changed the current working directory to "${destinationDirectory}". This is still the same project but at a possibly new location; take this into account when working with any files from now on.</system-reminder>`,
+        synthetic: true,
+      }],
+    }, destinationDirectory).catch((error) => logger.debug("session", "move reminder failed", { error }));
+
+    this.directoryContexts.invalidate(sourceDirectory);
+    this.directoryContexts.invalidate(destinationDirectory);
+    await Promise.allSettled([
+      this.refreshSessionsPanels({ showLoading: false }),
+      this.refreshSessionViews(),
+    ]);
   }
 
   /** Confirms and archives a target plus every descendant through v1 PATCH calls. */
@@ -681,8 +715,8 @@ export default class OpenCodePlugin extends Plugin {
     return candidateKey === rootKey || candidateKey.startsWith(prefix);
   }
 
-  /** Extracts an actionable OpenCode worktree error message without exposing arbitrary response text. */
-  private worktreeErrorMessage(error: unknown, fallback: string): string {
+  /** Extracts an actionable OpenCode API error message without exposing arbitrary response text. */
+  private openCodeErrorMessage(error: unknown, fallback: string): string {
     if (error instanceof OpenCodeHttpError) {
       try {
         const body = JSON.parse(error.responseText) as { data?: { message?: unknown } };

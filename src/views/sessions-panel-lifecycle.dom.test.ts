@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Menu } from "obsidian";
+import { Menu, Notice } from "obsidian";
 
 import type OpenCodePlugin from "../../main";
 import { SessionsPanelView } from "./SessionsPanelView";
@@ -34,12 +34,28 @@ function installObsidianDomMethods(): void {
   });
 }
 
+/** Dispatches a cancellable native-style drag event with mutable transfer state. */
+function dispatchDrag(element: HTMLElement, type: string, sessionId = "ses_123"): void {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "dataTransfer", {
+    value: {
+      types: ["application/x-opencode-session-id"],
+      getData: vi.fn(() => sessionId),
+      setData: vi.fn(),
+      effectAllowed: "move",
+      dropEffect: "move",
+    },
+  });
+  element.dispatchEvent(event);
+}
+
 describe("SessionsPanelView lifecycle", () => {
   beforeEach(() => {
     installObsidianDomMethods();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
     vi.stubGlobal("CSS", { escape: (value: string) => value });
     menus().length = 0;
+    (Notice as unknown as { history: unknown[] }).history = [];
   });
 
   afterEach(() => {
@@ -337,5 +353,100 @@ describe("SessionsPanelView lifecycle", () => {
     openedDirectories = ["/repo/a"];
     await view.refresh({ showLoading: false });
     expect(view.contentEl.querySelectorAll(".opencode-sessions-panel__worktree")).toHaveLength(1);
+  });
+
+  it("moves sessions onto same-project folders and rejects cross-project drops", async () => {
+    vi.useFakeTimers();
+    const moveSessionToDirectory = vi.fn(async () => undefined);
+    const openedDirectories = ["/repo", "/repo/feature", "/other"];
+    const projects = [
+      { id: "project-a", name: "Repository", worktree: "/repo", vcs: "git", sandboxes: ["/repo/feature"] },
+      { id: "project-b", name: "Other", worktree: "/other", vcs: "git", sandboxes: [] },
+    ];
+    const service = {
+      health: vi.fn(async () => undefined),
+      subscribeToEvents: vi.fn(() => ({ close: vi.fn() })),
+      listProjects: vi.fn(async () => projects),
+      listSessions: vi.fn(async ({ directory }: { directory: string }) => directory === "/repo"
+        ? [{ id: "ses_123", title: "Movable", directory: "/repo/packages/app", projectID: "project-a" }]
+        : []),
+      getSessionStatus: vi.fn(async () => ({})),
+      listPermissionRequests: vi.fn(async () => []),
+      listQuestionRequests: vi.fn(async () => []),
+    };
+    const getProject = vi.fn(async (directory: string) => projects.find((project) => project.worktree === directory || project.sandboxes.includes(directory))!);
+    const plugin = {
+      settings: { sessionsPanelSessionSort: "created-desc", workingAnimation: "pulse", folderCollapseDisplay: "inset" },
+      getOpenedDirectories: () => openedDirectories,
+      getActiveSessionId: () => undefined,
+      requireOpenCodeService: () => service,
+      directoryContexts: { getProject },
+      cacheSessionHierarchy: vi.fn(),
+      routePermissionRequest: vi.fn(),
+      shouldSuppressPermissionRequest: vi.fn(() => false),
+      getSessionNotificationState: vi.fn(() => ({ muted: false, isSubagent: false })),
+      isSessionUnread: vi.fn(() => false),
+      getWorktreeStatus: vi.fn(() => undefined),
+      openDirectoryWithPicker: vi.fn(),
+      moveSessionToDirectory,
+    } as unknown as OpenCodePlugin;
+    const view = new SessionsPanelView({ app: {} } as never, plugin);
+    await view.onOpen();
+
+    const session = view.contentEl.querySelector<HTMLElement>('[data-session-id="ses_123"]')!;
+    const sourceWorktree = Array.from(view.contentEl.querySelectorAll<HTMLElement>(".opencode-sessions-panel__worktree"))
+      .find((item) => item.querySelector<HTMLElement>(".nav-folder-title")?.title === "/repo")!;
+    const featureRow = Array.from(view.contentEl.querySelectorAll<HTMLElement>(".opencode-sessions-panel__worktree"))
+      .find((item) => item.querySelector<HTMLElement>(".nav-folder-title")?.title === "/repo/feature")!;
+    featureRow.querySelector<HTMLElement>(".nav-folder-title")!.click();
+    const collapsedFeature = Array.from(view.contentEl.querySelectorAll<HTMLElement>(".opencode-sessions-panel__worktree"))
+      .find((item) => item.querySelector<HTMLElement>(".nav-folder-title")?.title === "/repo/feature")!;
+
+    dispatchDrag(session, "dragstart");
+    dispatchDrag(sourceWorktree, "dragenter");
+    dispatchDrag(sourceWorktree, "dragover");
+    expect(sourceWorktree.classList.contains("opencode-sessions-panel__folder--drop-target")).toBe(false);
+    dispatchDrag(sourceWorktree, "drop");
+    expect(moveSessionToDirectory).not.toHaveBeenCalled();
+
+    dispatchDrag(session, "dragstart");
+    dispatchDrag(collapsedFeature, "dragenter");
+    dispatchDrag(collapsedFeature, "dragover");
+    expect(collapsedFeature.classList.contains("opencode-sessions-panel__folder--drop-target")).toBe(true);
+    expect(collapsedFeature.querySelector(".nav-folder-title")?.getAttribute("aria-expanded")).toBe("false");
+
+    vi.advanceTimersByTime(1_200);
+    const expandedFeature = Array.from(view.contentEl.querySelectorAll<HTMLElement>(".opencode-sessions-panel__worktree"))
+      .find((item) => item.querySelector<HTMLElement>(".nav-folder-title")?.title === "/repo/feature")!;
+    expect(expandedFeature.classList.contains("opencode-sessions-panel__folder--drop-target")).toBe(true);
+    expect(expandedFeature.querySelector(".nav-folder-title")?.getAttribute("aria-expanded")).toBe("true");
+
+    dispatchDrag(expandedFeature, "drop");
+    await vi.waitFor(() => expect(moveSessionToDirectory).toHaveBeenCalledWith("ses_123", "/repo/packages/app", "/repo/feature"));
+
+    const otherProject = Array.from(view.contentEl.querySelectorAll<HTMLElement>(".opencode-sessions-panel__project"))
+      .find((item) => item.textContent?.includes("Other"))!;
+    dispatchDrag(session, "dragstart");
+    dispatchDrag(otherProject, "dragenter");
+    dispatchDrag(otherProject, "dragover");
+    expect(otherProject.classList.contains("opencode-sessions-panel__folder--drop-invalid")).toBe(true);
+    dispatchDrag(otherProject, "dragleave");
+    expect(otherProject.classList.contains("opencode-sessions-panel__folder--drop-invalid")).toBe(false);
+    dispatchDrag(otherProject, "dragenter");
+    dispatchDrag(otherProject, "dragover");
+    dispatchDrag(otherProject, "drop");
+    expect(moveSessionToDirectory).toHaveBeenCalledTimes(1);
+
+    view.applyLiveSessionStatus("ses_123", "busy");
+    dispatchDrag(session, "dragstart");
+    dispatchDrag(expandedFeature, "dragenter");
+    dispatchDrag(expandedFeature, "dragover");
+    dispatchDrag(expandedFeature, "drop");
+    expect(moveSessionToDirectory).toHaveBeenCalledTimes(1);
+    expect((Notice as unknown as { history: Array<{ message: unknown }> }).history.at(-1)?.message)
+      .toBe("Abort the session before moving it.");
+
+    dispatchDrag(session, "dragend");
+    expect(view.contentEl.querySelector(".opencode-sessions-panel__folder--drop-invalid")).toBeNull();
   });
 });

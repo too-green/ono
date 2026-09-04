@@ -26,6 +26,17 @@ import { sortSessionsPanelSessions } from "./sessions-panel/session-sort";
 
 /** Legacy stable value: existing installs persist workspace leaves under this view type string. */
 export const VIEW_TYPE_OPENCODE_SESSIONS_PANEL = "opencode-agent-panel";
+const SESSION_DROP_EXPAND_DELAY_MS = 1_200;
+const SESSION_DRAG_MIME = "application/x-opencode-session-id";
+
+type SessionDropTargetState = "valid" | "invalid" | "noop";
+
+interface SessionsPanelSessionDrag {
+  sessionId: string;
+  sourceDirectory: string;
+  sourceContainerDirectory: string;
+  projectId: string;
+}
 
 interface OpenCodeProjectMeta {
   id: string;
@@ -81,6 +92,12 @@ export class SessionsPanelView extends ItemView {
   private opened = false;
   private readonly rowComponents: SessionsPanelRowComponents;
   private readonly sessionRowHandles = new Map<string, SessionsPanelSessionRowHandle>();
+  private movingSessionIds = new Set<string>();
+  private sessionDrag?: SessionsPanelSessionDrag;
+  private sessionDropTargetKey?: string;
+  private sessionDropTargetState?: SessionDropTargetState;
+  private sessionDropExpandTimer?: number;
+  private sessionDropDepth = 0;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -126,6 +143,7 @@ export class SessionsPanelView extends ItemView {
   async onClose(): Promise<void> {
     this.opened = false;
     this.refreshQueued = false;
+    this.clearSessionDragState();
     this.contentEl.removeEventListener("keydown", this.handleKeydown);
     this.closeEventSubscriptions();
     this.erroredSessionIds.clear();
@@ -177,6 +195,8 @@ export class SessionsPanelView extends ItemView {
       type === "session.created" ||
       type === "session.updated" ||
       type === "session.deleted" ||
+      type === "session.moved" ||
+      type === "session.next.moved" ||
       type === "permission.asked" ||
       type === "permission.replied" ||
       type === "question.asked" ||
@@ -722,6 +742,7 @@ export class SessionsPanelView extends ItemView {
     if (creationDirectory && row.newSessionButtonEl) this.bindNewSessionAction(row.newSessionButtonEl, creationDirectory);
     row.rowEl.addEventListener("click", () => this.toggleCollapsed(key));
     row.rowEl.addEventListener("contextmenu", (event) => this.showProjectMenu(event, project));
+    if (creationDirectory) this.bindSessionDropTarget(row.itemEl, key, project.id, creationDirectory);
 
     if (collapsed || !row.childrenEl) return;
     if (showWorktreeRows) {
@@ -750,6 +771,7 @@ export class SessionsPanelView extends ItemView {
     if (row.newSessionButtonEl) this.bindNewSessionAction(row.newSessionButtonEl, worktree.path);
     row.rowEl.addEventListener("click", () => this.toggleCollapsed(key));
     row.rowEl.addEventListener("contextmenu", (event) => this.showWorktreeMenu(event, project, worktree));
+    this.bindSessionDropTarget(row.itemEl, key, project.id, worktree.path);
 
     if (collapsed || !row.childrenEl) return;
     for (const session of this.sessionsForDisplay(worktree.sessions)) this.renderSession(row.childrenEl, session, key);
@@ -773,6 +795,7 @@ export class SessionsPanelView extends ItemView {
     row.rowEl.dataset.sessionId = session.id;
     this.sessionRowHandles.set(session.id, row);
     this.registerRow(key, "session", row.rowEl, session);
+    this.bindSessionDragSource(row.rowEl, session.id);
     row.rowEl.addEventListener("click", () => {
       const current = this.visibleRows.find((candidate) => candidate.session?.id === session.id)?.session;
       if (current) this.selectSession(current);
@@ -780,6 +803,181 @@ export class SessionsPanelView extends ItemView {
     row.rowEl.addEventListener("contextmenu", (event) => {
       const current = this.visibleRows.find((candidate) => candidate.session?.id === session.id)?.session;
       if (current) this.showSessionMenu(event, current);
+    });
+  }
+
+  /** Makes one session row draggable while resolving current tree state at drag time. */
+  private bindSessionDragSource(row: HTMLElement, sessionId: string): void {
+    row.draggable = true;
+    if (this.sessionDrag?.sessionId === sessionId) {
+      row.addClass("opencode-sessions-panel__session--dragging");
+      row.setAttribute("aria-grabbed", "true");
+    }
+    row.addEventListener("dragstart", (event) => this.handleSessionDragStart(row, sessionId, event));
+    row.addEventListener("dragend", () => this.clearSessionDragState());
+  }
+
+  /** Starts a session move drag and publishes its ID through the native data transfer. */
+  private handleSessionDragStart(row: HTMLElement, sessionId: string, event: DragEvent): void {
+    if (event.target instanceof HTMLInputElement || this.movingSessionIds.has(sessionId)) {
+      event.preventDefault();
+      return;
+    }
+    const session = this.visibleRows.find((candidate) => candidate.session?.id === sessionId)?.session;
+    const location = this.locationForSession(sessionId);
+    if (!session || !location) {
+      event.preventDefault();
+      return;
+    }
+    this.sessionDrag = {
+      sessionId,
+      sourceDirectory: session.directory,
+      sourceContainerDirectory: location.directory,
+      projectId: location.projectId,
+    };
+    row.addClass("opencode-sessions-panel__session--dragging");
+    row.setAttribute("aria-grabbed", "true");
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData(SESSION_DRAG_MIME, sessionId);
+    }
+  }
+
+  /** Binds one project/worktree shell as a move destination for session drags. */
+  private bindSessionDropTarget(item: HTMLElement, key: string, projectId: string, directory: string): void {
+    if (this.sessionDropTargetKey === key && this.sessionDropTargetState) this.paintSessionDropTarget(item, this.sessionDropTargetState);
+    item.addEventListener("dragenter", (event) => this.handleSessionDragEnter(item, key, projectId, directory, event));
+    item.addEventListener("dragover", (event) => this.handleSessionDragOver(item, key, projectId, directory, event));
+    item.addEventListener("dragleave", (event) => this.handleSessionDragLeave(item, key, event));
+    item.addEventListener("drop", (event) => this.handleSessionDrop(key, projectId, directory, event));
+  }
+
+  /** Tracks nested drag entries so Chromium child crossings do not clear folder feedback. */
+  private handleSessionDragEnter(item: HTMLElement, key: string, projectId: string, directory: string, event: DragEvent): void {
+    if (!this.updateSessionDropTarget(item, key, projectId, directory, event)) return;
+    this.sessionDropDepth += 1;
+  }
+
+  /** Keeps destination feedback active while the native drag remains over a folder. */
+  private handleSessionDragOver(item: HTMLElement, key: string, projectId: string, directory: string, event: DragEvent): void {
+    this.updateSessionDropTarget(item, key, projectId, directory, event);
+  }
+
+  /** Shows valid/error feedback and schedules file-explorer-style hover expansion. */
+  private updateSessionDropTarget(item: HTMLElement, key: string, projectId: string, directory: string, event: DragEvent): boolean {
+    if (!this.sessionDrag || !event.dataTransfer || !Array.from(event.dataTransfer.types).includes(SESSION_DRAG_MIME)) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    const state = this.sessionDropState(projectId, directory);
+    if (event.dataTransfer) event.dataTransfer.dropEffect = state === "valid" ? "move" : "none";
+    if (this.sessionDropTargetKey !== key) {
+      this.clearSessionDropTarget();
+      this.sessionDropTargetKey = key;
+    }
+    this.sessionDropTargetState = state;
+    this.paintSessionDropTarget(item, state);
+    if (state === "valid" && this.collapsed.has(key) && this.sessionDropExpandTimer === undefined) {
+      this.sessionDropExpandTimer = window.setTimeout(() => {
+        this.sessionDropExpandTimer = undefined;
+        if (!this.sessionDrag || this.sessionDropTargetKey !== key || !this.collapsed.delete(key)) return;
+        this.rerenderTree();
+      }, SESSION_DROP_EXPAND_DELAY_MS);
+    }
+    return true;
+  }
+
+  /** Clears destination feedback once the pointer exits the complete folder rectangle. */
+  private handleSessionDragLeave(item: HTMLElement, key: string, event: DragEvent): void {
+    event.stopPropagation();
+    if (this.sessionDropTargetKey !== key) return;
+    this.sessionDropDepth = Math.max(0, this.sessionDropDepth - 1);
+    if (this.sessionDropDepth === 0) this.clearSessionDropTarget();
+  }
+
+  /** Moves only the session binding when a valid same-project destination is dropped. */
+  private handleSessionDrop(key: string, projectId: string, directory: string, event: DragEvent): void {
+    if (!this.sessionDrag) return;
+    if (!event.dataTransfer || event.dataTransfer.getData(SESSION_DRAG_MIME) !== this.sessionDrag.sessionId) {
+      this.clearSessionDragState();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const drag = this.sessionDrag;
+    const valid = this.sessionDropTargetKey === key && this.sessionDropState(projectId, directory) === "valid";
+    const active = valid && this.isWorkingSession(drag.sessionId);
+    this.clearSessionDragState();
+    if (active) {
+      new Notice("Abort the session before moving it.");
+      return;
+    }
+    if (valid) void this.moveSessionAfterDrop(drag, directory);
+  }
+
+  /** Executes one validated move and surfaces endpoint failures without changing files. */
+  private async moveSessionAfterDrop(drag: SessionsPanelSessionDrag, directory: string): Promise<void> {
+    if (this.movingSessionIds.has(drag.sessionId)) return;
+    this.movingSessionIds.add(drag.sessionId);
+    try {
+      await this.plugin.moveSessionToDirectory(drag.sessionId, drag.sourceDirectory, directory);
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Unable to move OpenCode session.");
+    } finally {
+      this.movingSessionIds.delete(drag.sessionId);
+    }
+  }
+
+  /** Classifies a folder as a valid destination, another project, or the current directory. */
+  private sessionDropState(projectId: string, directory: string): SessionDropTargetState {
+    if (!this.sessionDrag || this.pathKey(directory) === this.pathKey(this.sessionDrag.sourceContainerDirectory)) return "noop";
+    return projectId === this.sessionDrag.projectId ? "valid" : "invalid";
+  }
+
+  /** Finds the rendered project and folder containing a session without inferring either from its path. */
+  private locationForSession(sessionId: string): { projectId: string; directory: string } | undefined {
+    for (const project of this.lastTree) {
+      const worktree = project.worktrees.find((candidate) => candidate.sessions.some((session) => session.id === sessionId));
+      if (worktree) return { projectId: project.id, directory: worktree.path };
+    }
+    return undefined;
+  }
+
+  /** Returns whether the latest panel status requires aborting before a move. */
+  private isWorkingSession(sessionId: string): boolean {
+    for (const project of this.lastTree) {
+      for (const worktree of project.worktrees) {
+        const status = worktree.sessions.find((session) => session.id === sessionId)?.status;
+        if (status) return status === "working" || status === "retry";
+      }
+    }
+    return false;
+  }
+
+  /** Applies semantic accent or error feedback to a complete destination section. */
+  private paintSessionDropTarget(item: HTMLElement, state: SessionDropTargetState): void {
+    item.removeClass("opencode-sessions-panel__folder--drop-target", "opencode-sessions-panel__folder--drop-invalid");
+    if (state === "valid") item.addClass("opencode-sessions-panel__folder--drop-target");
+    if (state === "invalid") item.addClass("opencode-sessions-panel__folder--drop-invalid");
+  }
+
+  /** Clears the active destination and any pending hover expansion. */
+  private clearSessionDropTarget(): void {
+    if (this.sessionDropExpandTimer !== undefined) window.clearTimeout(this.sessionDropExpandTimer);
+    this.sessionDropExpandTimer = undefined;
+    this.sessionDropTargetKey = undefined;
+    this.sessionDropTargetState = undefined;
+    this.sessionDropDepth = 0;
+    this.contentEl.querySelectorAll(".opencode-sessions-panel__folder--drop-target, .opencode-sessions-panel__folder--drop-invalid")
+      .forEach((item) => item.removeClass("opencode-sessions-panel__folder--drop-target", "opencode-sessions-panel__folder--drop-invalid"));
+  }
+
+  /** Resets drag source, destination, and accessibility state after drop or cancellation. */
+  private clearSessionDragState(): void {
+    this.clearSessionDropTarget();
+    this.sessionDrag = undefined;
+    this.contentEl.querySelectorAll(".opencode-sessions-panel__session--dragging").forEach((row) => {
+      row.removeClass("opencode-sessions-panel__session--dragging");
+      row.removeAttribute("aria-grabbed");
     });
   }
 

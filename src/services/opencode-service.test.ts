@@ -64,3 +64,33 @@ describe("OpenCodeService v1 worktree API", () => {
     ]);
   });
 });
+
+describe("OpenCodeService session move API", () => {
+  it("posts a no-file-transfer move to the experimental control plane", async () => {
+    vi.mocked(requestUrl).mockResolvedValue({
+      status: 204,
+      headers: {},
+      json: undefined,
+      text: "",
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const service = new OpenCodeService({ baseUrl: "https://remote.example" });
+
+    await expect(service.moveSession({
+      sessionID: "ses_123",
+      destination: { directory: "/repo/feature" },
+      moveChanges: false,
+    })).resolves.toBeUndefined();
+
+    expect(requestUrl).toHaveBeenCalledWith(expect.objectContaining({
+      url: "https://remote.example/experimental/control-plane/move-session",
+      method: "POST",
+      body: JSON.stringify({
+        sessionID: "ses_123",
+        destination: { directory: "/repo/feature" },
+        moveChanges: false,
+      }),
+    }));
+    service.dispose();
+  });
+});

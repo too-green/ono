@@ -143,6 +143,57 @@ describe("OpenCodePlugin worktree workflows", () => {
   });
 });
 
+describe("OpenCodePlugin session move workflow", () => {
+  it("moves only the session, sends the CWD reminder, and refreshes open views", async () => {
+    const moveSession = vi.fn(async () => undefined);
+    const sendPromptAsync = vi.fn(async () => undefined);
+    const getSessionStatus = vi.fn(async () => ({ ses_123: { type: "idle" } }));
+    const invalidate = vi.fn();
+    const refreshSessionsPanels = vi.fn(async () => undefined);
+    const refreshSessionViews = vi.fn(async () => undefined);
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      opencode: { getSessionStatus, moveSession, sendPromptAsync },
+      directoryContexts: { invalidate },
+      refreshSessionsPanels,
+      refreshSessionViews,
+    });
+
+    await plugin.moveSessionToDirectory("ses_123", "/repo", "/repo/feature");
+
+    expect(moveSession).toHaveBeenCalledWith({
+      sessionID: "ses_123",
+      destination: { directory: "/repo/feature" },
+      moveChanges: false,
+    });
+    expect(sendPromptAsync).toHaveBeenCalledWith("ses_123", expect.objectContaining({
+      noReply: true,
+      parts: [expect.objectContaining({ type: "text", synthetic: true })],
+    }), "/repo/feature");
+    expect(invalidate.mock.calls).toEqual([["/repo"], ["/repo/feature"]]);
+    expect(refreshSessionsPanels).toHaveBeenCalledWith({ showLoading: false });
+    expect(refreshSessionViews).toHaveBeenCalledOnce();
+  });
+
+  it("requires an active session to be aborted before moving", async () => {
+    const moveSession = vi.fn(async () => undefined);
+    const sendPromptAsync = vi.fn(async () => undefined);
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      opencode: {
+        getSessionStatus: vi.fn(async () => ({ ses_123: { type: "busy" } })),
+        moveSession,
+        sendPromptAsync,
+      },
+    });
+
+    await expect(plugin.moveSessionToDirectory("ses_123", "/repo", "/repo/feature"))
+      .rejects.toThrow("Abort the session before moving it.");
+    expect(moveSession).not.toHaveBeenCalled();
+    expect(sendPromptAsync).not.toHaveBeenCalled();
+  });
+});
+
 describe("OpenCodePlugin unload lifecycle", () => {
   it("detaches every plugin view before disposing the service", () => {
     const order: string[] = [];

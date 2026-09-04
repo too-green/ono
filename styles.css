@@ -71,6 +71,31 @@
   box-shadow: inset 0 0 0 var(--border-width) var(--background-modifier-border-hover);
 }
 
+.opencode-sessions-panel__project,
+.opencode-sessions-panel__worktree {
+  border-radius: var(--radius-s);
+  transition: background-color var(--anim-duration-fast) ease-out, box-shadow var(--anim-duration-fast) ease-out;
+}
+
+.opencode-sessions-panel__folder--drop-target {
+  background-color: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+  box-shadow: inset 0 0 0 var(--border-width) color-mix(in srgb, var(--interactive-accent) 48%, transparent);
+}
+
+.opencode-sessions-panel__folder--drop-invalid {
+  background-color: color-mix(in srgb, var(--text-error) 14%, transparent);
+  box-shadow: inset 0 0 0 var(--border-width) color-mix(in srgb, var(--text-error) 48%, transparent);
+}
+
+.opencode-sessions-panel__session > .tree-item-self {
+  cursor: grab;
+}
+
+.opencode-sessions-panel__session > .tree-item-self.opencode-sessions-panel__session--dragging {
+  cursor: grabbing;
+  opacity: 0.5;
+}
+
 .opencode-sidebar-panel--sessions .tree-item-inner {
   overflow: hidden;
   text-overflow: ellipsis;

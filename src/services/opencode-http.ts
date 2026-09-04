@@ -76,11 +76,11 @@ export class OpenCodeHttpClient {
     });
   }
 
-  /** Performs a JSON DELETE request; referenced by session unshare. */
-  async delete<T>(path: string, query?: object): Promise<T> {
+  /** Performs a JSON DELETE request with an optional body; referenced by session and worktree mutations. */
+  async delete<T>(path: string, query?: object, payload?: unknown): Promise<T> {
     return this.observeRequest("DELETE", path, async () => {
-      if (!this.config.fetchImpl) return this.deleteWithObsidianRequestUrl<T>(path, query);
-      return this.deleteWithFetch<T>(path, query);
+      if (!this.config.fetchImpl) return this.deleteWithObsidianRequestUrl<T>(path, query, payload);
+      return this.deleteWithFetch<T>(path, query, payload);
     });
   }
 
@@ -162,8 +162,8 @@ export class OpenCodeHttpClient {
   }
 
   /** Performs DELETE through Obsidian's network helper to avoid renderer CORS failures. */
-  private async deleteWithObsidianRequestUrl<T>(path: string, query?: object): Promise<T> {
-    const headers: Record<string, string> = {};
+  private async deleteWithObsidianRequestUrl<T>(path: string, query?: object, payload?: unknown): Promise<T> {
+    const headers: Record<string, string> = payload === undefined ? {} : { "content-type": "application/json" };
     new Headers(this.headers()).forEach((value, key) => {
       headers[key] = value;
     });
@@ -172,6 +172,7 @@ export class OpenCodeHttpClient {
       url: this.url(path, query),
       method: "DELETE",
       headers,
+      body: payload === undefined ? undefined : JSON.stringify(payload),
     });
 
     if (response.status < 200 || response.status >= 300) {
@@ -223,10 +224,11 @@ export class OpenCodeHttpClient {
   }
 
   /** Performs DELETE with an injected fetch implementation for tests or non-Obsidian contexts. */
-  private async deleteWithFetch<T>(path: string, query?: object): Promise<T> {
+  private async deleteWithFetch<T>(path: string, query?: object, payload?: unknown): Promise<T> {
     const response = await this.fetchImpl(this.url(path, query), {
       method: "DELETE",
-      headers: this.headers(),
+      headers: this.headers(payload === undefined ? undefined : { "content-type": "application/json" }),
+      body: payload === undefined ? undefined : JSON.stringify(payload),
     });
 
     if (!response.ok) {

@@ -94,6 +94,8 @@ const SAFE_EVENT_TYPES = new Set([
   "tui.prompt.append",
   "tui.toast.show",
   "vcs.branch.updated",
+  "worktree.failed",
+  "worktree.ready",
 ]);
 
 /** Emits privacy-safe plugin diagnostics to the Obsidian developer console. */

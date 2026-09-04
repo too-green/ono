@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Notice } from "obsidian";
 
 import OpenCodePlugin, { LEGACY_DIFF_PANEL_VIEW_TYPE } from "../main.ts";
 import { OpenCodeHttpError } from "./services/opencode-http";
@@ -8,6 +9,7 @@ import { logger } from "./logger";
 import { DEFAULT_OPENCODE_SETTINGS, OPENCODE_DATA_SCHEMA_VERSION, type OpenCodePluginData, type OpenCodePluginSettings, type PersistedSessionState } from "./settings";
 import { VIEW_TYPE_OPENCODE_SESSIONS_PANEL } from "./views/SessionsPanelView";
 import { VIEW_TYPE_OPENCODE_SESSION } from "./views/SessionView";
+import * as WorktreeModals from "./views/WorktreeModals";
 
 /** Returns isolated mutable settings records for plugin method tests. */
 function pluginSettings(overrides: Partial<OpenCodePluginSettings> = {}): OpenCodePluginSettings {
@@ -24,7 +26,121 @@ function pluginSessionState(sessions: Record<string, PersistedSessionState> = {}
 
 afterEach(() => {
   logger.setDebugEnabled(false);
+  (Notice as unknown as { history: unknown[] }).history = [];
   vi.restoreAllMocks();
+});
+
+describe("OpenCodePlugin worktree workflows", () => {
+  /** Builds the minimal plugin state shared by destructive worktree workflow tests. */
+  function worktreePlugin(statuses: Record<string, unknown> = {}) {
+    const remove = vi.fn(async () => true);
+    const reset = vi.fn(async () => true);
+    const create = vi.fn(async () => ({ name: "feature", branch: "feature", directory: "/repo/feature" }));
+    const archiveSession = vi.fn(async (sessionId: string) => ({ id: sessionId }));
+    const sessions = [{ id: "session-1", directory: "/repo/feature/packages/app", time: {} }];
+    const getSessionStatus = vi.fn(async () => statuses);
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      app: { workspace: { getLeavesOfType: vi.fn(() => []) } },
+      settings: pluginSettings({ openedDirectories: ["/repo", "/repo/feature"] }),
+      worktrees: { create, remove, reset },
+      earlyReadyWorktreeKeys: new Set<string>(),
+      pendingWorktreeCreateCount: 0,
+      worktreeOperationKeys: new Set<string>(),
+      worktreeOperationStates: new Map<string, string>(),
+      worktreeStatuses: new Map<string, unknown>(),
+      worktreeStatusTimers: new Map<string, number>(),
+      directoryContexts: { invalidate: vi.fn() },
+      requireOpenCodeService: () => ({
+        listSessions: vi.fn(async () => sessions),
+        getSessionStatus,
+        archiveSession,
+      }),
+      forgetSessionState: vi.fn(async () => undefined),
+      removeOpenedDirectories: vi.fn(async () => undefined),
+      refreshSessionsPanels: vi.fn(async () => undefined),
+    });
+    const addOpenedDirectory = vi.fn(async (_directory: string, options: { showLoading?: boolean } = {}) => {
+      await plugin.refreshSessionsPanels({ showLoading: options.showLoading });
+    });
+    Object.assign(plugin, { addOpenedDirectory });
+    return { plugin, create, remove, reset, archiveSession, getSessionStatus, addOpenedDirectory };
+  }
+
+  it("keeps the panel interactive and reports server creation latency for five seconds", async () => {
+    const { plugin, create, addOpenedDirectory } = worktreePlugin();
+    (plugin as unknown as { earlyReadyWorktreeKeys: Set<string> }).earlyReadyWorktreeKeys.add("/repo/feature");
+    vi.spyOn(WorktreeModals, "requestWorktreeCreation").mockResolvedValue({ name: "feature" });
+    vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(2_500);
+
+    await plugin.requestWorktreeCreate("/repo");
+
+    expect(create).toHaveBeenCalledWith("/repo", { name: "feature" });
+    expect(addOpenedDirectory).toHaveBeenCalledWith("/repo/feature", { notice: false, showLoading: false, backgroundRefresh: true });
+    expect(plugin.refreshSessionsPanels).toHaveBeenCalledOnce();
+    expect(plugin.refreshSessionsPanels).toHaveBeenCalledWith({ showLoading: false });
+    expect((Notice as unknown as { history: unknown[] }).history.at(-1)).toEqual({ message: "Created worktree feature in 1.5s.", duration: 5_000 });
+  });
+
+  it("blocks destructive worktree actions while a directory session is active", async () => {
+    const { plugin, remove } = worktreePlugin({ "session-1": { type: "busy" } });
+    const confirm = vi.spyOn(WorktreeModals, "confirmWorktreeAction").mockResolvedValue(true);
+
+    await plugin.requestWorktreeRemove("/repo", "/repo/feature");
+
+    expect(confirm).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("removes worktrees only after confirmation and cleans their local registration", async () => {
+    const { plugin, remove } = worktreePlugin({ "session-1": { type: "idle" } });
+    vi.spyOn(WorktreeModals, "confirmWorktreeAction").mockResolvedValue(true);
+
+    await plugin.requestWorktreeRemove("/repo", "/repo/feature");
+
+    expect(remove).toHaveBeenCalledWith("/repo", "/repo/feature");
+    expect(plugin.forgetSessionState).toHaveBeenCalledWith(new Set(["session-1"]));
+    expect(plugin.removeOpenedDirectories).toHaveBeenCalledWith(["/repo/feature"]);
+  });
+
+  it("rechecks activity after confirmation before removing a worktree", async () => {
+    const { plugin, remove, getSessionStatus } = worktreePlugin();
+    getSessionStatus
+      .mockResolvedValueOnce({ "session-1": { type: "idle" } })
+      .mockResolvedValueOnce({ "session-1": { type: "busy" } });
+    vi.spyOn(WorktreeModals, "confirmWorktreeAction").mockResolvedValue(true);
+
+    await plugin.requestWorktreeRemove("/repo", "/repo/feature");
+
+    expect(getSessionStatus).toHaveBeenCalledTimes(2);
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("exposes a removing status until the server operation settles", async () => {
+    const { plugin, remove } = worktreePlugin();
+    let finishRemove: ((removed: boolean) => void) | undefined;
+    remove.mockImplementation(() => new Promise<boolean>((resolve) => { finishRemove = resolve; }));
+    vi.spyOn(WorktreeModals, "confirmWorktreeAction").mockResolvedValue(true);
+
+    const action = plugin.requestWorktreeRemove("/repo", "/repo/feature");
+    await vi.waitFor(() => expect(plugin.getWorktreeStatus("/repo/feature")).toEqual({ state: "removing" }));
+
+    finishRemove?.(true);
+    await action;
+
+    expect(plugin.getWorktreeStatus("/repo/feature")).toBeUndefined();
+  });
+
+  it("archives existing v1 sessions after a confirmed worktree reset", async () => {
+    const { plugin, reset, archiveSession } = worktreePlugin({ "session-1": { type: "idle" } });
+    vi.spyOn(WorktreeModals, "confirmWorktreeAction").mockResolvedValue(true);
+
+    await plugin.requestWorktreeReset("/repo", "/repo/feature");
+
+    expect(reset).toHaveBeenCalledWith("/repo", "/repo/feature");
+    expect(archiveSession).toHaveBeenCalledWith("session-1", expect.any(Number), "/repo/feature/packages/app");
+    expect(plugin.forgetSessionState).toHaveBeenCalledWith(new Set(["session-1"]));
+  });
 });
 
 describe("OpenCodePlugin unload lifecycle", () => {

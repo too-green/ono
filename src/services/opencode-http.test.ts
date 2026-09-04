@@ -53,6 +53,39 @@ describe("OpenCodeHttpClient basic authentication", () => {
   });
 });
 
+describe("OpenCodeHttpClient DELETE bodies", () => {
+  it("sends JSON payloads through Obsidian requestUrl", async () => {
+    const client = new OpenCodeHttpClient({ baseUrl: "https://remote.example/api" });
+
+    await client.delete("/experimental/worktree", { directory: "/repo" }, { directory: "/repo/feature" });
+
+    expect(vi.mocked(requestUrl).mock.calls[0][0]).toMatchObject({
+      url: "https://remote.example/experimental/worktree?directory=%2Frepo",
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ directory: "/repo/feature" }),
+    });
+  });
+
+  it("sends JSON payloads through injected fetch", async () => {
+    const fetchImpl = vi.fn(async () => new Response("true", {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+    const client = new OpenCodeHttpClient({ baseUrl: "https://remote.example", fetchImpl });
+
+    await client.delete("/experimental/worktree", { directory: "/repo" }, { directory: "/repo/feature" });
+
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0];
+    expect(url).toBe("https://remote.example/experimental/worktree?directory=%2Frepo");
+    expect(init).toMatchObject({
+      method: "DELETE",
+      body: JSON.stringify({ directory: "/repo/feature" }),
+    });
+    expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+  });
+});
+
 describe("OpenCodeHttpClient diagnostics", () => {
   it("logs successful request metadata without query data", async () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);

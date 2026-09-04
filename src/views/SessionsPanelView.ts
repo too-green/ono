@@ -15,6 +15,7 @@ import {
 } from "../settings";
 import {
   createDefaultSessionsPanelRowComponents,
+  worktreeStatePresentation,
   type SessionsPanelProject,
   type SessionsPanelRowComponents,
   type SessionsPanelSession,
@@ -29,6 +30,7 @@ export const VIEW_TYPE_OPENCODE_SESSIONS_PANEL = "opencode-agent-panel";
 interface OpenCodeProjectMeta {
   id: string;
   name: string;
+  git: boolean;
   worktree?: string;
   sandboxes: string[];
 }
@@ -308,12 +310,15 @@ export class SessionsPanelView extends ItemView {
     for (const project of projects) {
       const id = this.readString(project, ["id", "ID", "projectID"]);
       if (!id) continue;
+      const existing = knownProjects.get(id);
       const worktree = this.readString(project, ["worktree", "directory", "path"]);
+      const sandboxes = this.readStringArray(project, "sandboxes");
       knownProjects.set(id, {
         id,
-        worktree,
-        name: this.readString(project, ["name", "title"]) ?? (worktree ? this.basename(worktree) : id),
-        sandboxes: this.readStringArray(project, "sandboxes"),
+        git: this.readString(project, ["vcs"]) === "git" || existing?.git === true,
+        worktree: worktree ?? existing?.worktree,
+        name: this.readString(project, ["name", "title"]) ?? existing?.name ?? (worktree ? this.basename(worktree) : id),
+        sandboxes: sandboxes.length > 0 ? sandboxes : existing?.sandboxes ?? [],
       });
     }
 
@@ -324,7 +329,7 @@ export class SessionsPanelView extends ItemView {
       worktrees.set(worktree.id, worktrees.get(worktree.id) ?? []);
       sessionsByProject.set(project.id, worktrees);
       openedByProject.set(project.id, (openedByProject.get(project.id) ?? new Set()).add(context.directory));
-      if (!knownProjects.has(project.id)) knownProjects.set(project.id, { id: project.id, name: project.name, worktree: worktree.path, sandboxes: [] });
+      if (!knownProjects.has(project.id)) knownProjects.set(project.id, { id: project.id, name: project.name, git: false, worktree: worktree.path, sandboxes: [] });
     }
 
     for (const session of sessions) {
@@ -333,24 +338,37 @@ export class SessionsPanelView extends ItemView {
       const worktrees = sessionsByProject.get(project.id) ?? new Map<string, OpenCodeSession[]>();
       worktrees.set(worktree.id, [...(worktrees.get(worktree.id) ?? []), session]);
       sessionsByProject.set(project.id, worktrees);
-      if (!knownProjects.has(project.id)) knownProjects.set(project.id, { id: project.id, name: project.name, worktree: worktree.path, sandboxes: [] });
+      if (!knownProjects.has(project.id)) knownProjects.set(project.id, { id: project.id, name: project.name, git: false, worktree: worktree.path, sandboxes: [] });
     }
 
     const entries = [...sessionsByProject.entries()].sort(([left], [right]) => left.localeCompare(right));
     return Promise.all(
-      entries.map(async ([projectId, worktreeMap]) => ({
-        id: projectId,
-        name: knownProjects.get(projectId)?.name ?? projectId,
-        openedDirectories: [...(openedByProject.get(projectId) ?? new Set())],
-        worktrees: await Promise.all(
-          [...worktreeMap.entries()].sort(([left], [right]) => left.localeCompare(right)).map(async ([worktreeId, worktreeSessions]) => ({
-            id: worktreeId,
-            name: this.basename(worktreeId),
-            path: worktreeId,
-            sessions: await this.buildSessionNodes(worktreeSessions, statuses, requestOwnerIds),
-          })),
-        ),
-      })),
+      entries.map(async ([projectId, worktreeMap]) => {
+        const meta = knownProjects.get(projectId);
+        const rootDirectory = meta?.worktree ?? "";
+        return {
+          id: projectId,
+          name: meta?.name ?? projectId,
+          git: meta?.git === true && rootDirectory.length > 0,
+          rootDirectory,
+          openedDirectories: [...(openedByProject.get(projectId) ?? new Set())],
+          managedWorktreeDirectories: meta?.sandboxes ?? [],
+          worktrees: await Promise.all(
+            [...worktreeMap.entries()].sort(([left], [right]) => left.localeCompare(right)).map(async ([worktreeId, worktreeSessions]) => {
+              const startup = this.plugin.getWorktreeStatus?.(worktreeId);
+              return {
+                id: worktreeId,
+                name: this.basename(worktreeId),
+                path: worktreeId,
+                primary: this.pathKey(worktreeId) === this.pathKey(rootDirectory),
+                startupState: startup?.state,
+                startupMessage: startup?.message,
+                sessions: await this.buildSessionNodes(worktreeSessions, statuses, requestOwnerIds),
+              };
+            }),
+          ),
+        };
+      }),
     );
   }
 
@@ -689,7 +707,9 @@ export class SessionsPanelView extends ItemView {
     const key = `project:${project.id}`;
     this.rowParentKey.set(key, parentKey);
     const collapsed = this.collapsed.has(key);
-    const creationDirectory = project.worktrees.length === 1 ? project.worktrees[0]?.path : undefined;
+    const onlyWorktree = project.worktrees.length === 1 ? project.worktrees[0] : undefined;
+    const showWorktreeRows = project.worktrees.length > 1 || onlyWorktree?.primary === false;
+    const creationDirectory = showWorktreeRows ? undefined : onlyWorktree?.path;
     const row = this.rowComponents.project.render(container, {
       project,
       collapsed,
@@ -704,8 +724,8 @@ export class SessionsPanelView extends ItemView {
     row.rowEl.addEventListener("contextmenu", (event) => this.showProjectMenu(event, project));
 
     if (collapsed || !row.childrenEl) return;
-    if (project.worktrees.length > 1) {
-      for (const worktree of project.worktrees) this.renderWorktree(row.childrenEl, worktree, key);
+    if (showWorktreeRows) {
+      for (const worktree of project.worktrees) this.renderWorktree(row.childrenEl, project, worktree, key);
       return;
     }
 
@@ -715,7 +735,7 @@ export class SessionsPanelView extends ItemView {
   }
 
   /** Renders the optional worktree/directory level when a project has multiple roots. */
-  private renderWorktree(container: HTMLElement, worktree: SessionsPanelWorktree, parentKey?: string): void {
+  private renderWorktree(container: HTMLElement, project: SessionsPanelProject, worktree: SessionsPanelWorktree, parentKey?: string): void {
     const key = `worktree:${worktree.id}`;
     this.rowParentKey.set(key, parentKey);
     const collapsed = this.collapsed.has(key);
@@ -724,11 +744,12 @@ export class SessionsPanelView extends ItemView {
       collapsed,
       collapseDisplay: normalizeFolderCollapseDisplay(this.plugin.settings.folderCollapseDisplay),
     });
-    this.annotateTreeItem(row.itemEl, key, "worktree", [worktree.id, worktree.name, worktree.path, collapsed, this.plugin.settings.folderCollapseDisplay]);
+    this.annotateTreeItem(row.itemEl, key, "worktree", [worktree.id, worktree.name, worktree.path, worktree.primary, worktree.startupState, worktree.startupMessage, collapsed, this.plugin.settings.folderCollapseDisplay]);
     this.annotateTreeChildren(row.childrenEl, key);
     this.registerRow(key, "worktree", row.rowEl, undefined, worktree.path);
     if (row.newSessionButtonEl) this.bindNewSessionAction(row.newSessionButtonEl, worktree.path);
     row.rowEl.addEventListener("click", () => this.toggleCollapsed(key));
+    row.rowEl.addEventListener("contextmenu", (event) => this.showWorktreeMenu(event, project, worktree));
 
     if (collapsed || !row.childrenEl) return;
     for (const session of this.sessionsForDisplay(worktree.sessions)) this.renderSession(row.childrenEl, session, key);
@@ -1249,21 +1270,67 @@ export class SessionsPanelView extends ItemView {
     return normalized.split("/").filter(Boolean).pop() ?? normalized;
   }
 
-  /** Opens a native Obsidian context menu for future project-scoped actions. */
+  /** Opens the native project menu for project-wide close and worktree discovery/creation. */
   private showProjectMenu(event: MouseEvent, project: SessionsPanelProject): void {
     event.preventDefault();
     const menu = new Menu();
     menu.addItem((item) => item.setTitle("Refresh").setIcon("refresh-cw").onClick(() => void this.refresh()));
     menu.addItem((item) => item.setTitle(`Project: ${project.name}`).setDisabled(true));
-    for (const directory of project.openedDirectories) {
-      menu.addItem((item) =>
-        item
-          .setTitle(project.openedDirectories.length === 1 ? "Close directory" : `Close ${this.basename(directory)}`)
-          .setIcon("x")
-          .onClick(() => void this.plugin.removeOpenedDirectory(directory)),
-      );
+    if (project.git) {
+      menu.addSeparator();
+      const opened = new Set(project.openedDirectories.map((directory) => this.pathKey(directory)));
+      const unopened = project.managedWorktreeDirectories.filter((directory) => !opened.has(this.pathKey(directory)));
+      const creating = this.plugin.isWorktreeOperationInProgress?.(project.rootDirectory) === true;
+      menu.addItem((item) => item
+        .setTitle("Open existing worktree...")
+        .setIcon("folder-open")
+        .setDisabled(unopened.length === 0)
+        .onClick(() => void this.plugin.openExistingWorktree(project.rootDirectory)));
+      menu.addItem((item) => item
+        .setTitle("Create worktree...")
+        .setIcon("git-branch-plus")
+        .setDisabled(creating)
+        .onClick(() => void this.plugin.requestWorktreeCreate(project.rootDirectory)));
     }
-    menu.addItem((item) => item.setTitle("Set icon…").setIcon("image").setDisabled(true));
+    menu.addSeparator();
+    menu.addItem((item) => item
+      .setTitle("Close project")
+      .setIcon("x")
+      .onClick(() => void this.plugin.removeOpenedDirectories(project.openedDirectories)));
+    menu.showAtMouseEvent(event);
+  }
+
+  /** Opens close/reset/remove actions for one visible worktree directory row. */
+  private showWorktreeMenu(event: MouseEvent, project: SessionsPanelProject, worktree: SessionsPanelWorktree): void {
+    event.preventDefault();
+    const menu = new Menu();
+    if (worktree.startupState) {
+      const presentation = worktreeStatePresentation(worktree.startupState);
+      menu.addItem((item) => item
+        .setTitle(presentation.label)
+        .setIcon(presentation.icon)
+        .setDisabled(true));
+      menu.addSeparator();
+    }
+    menu.addItem((item) => item
+      .setTitle("Close directory")
+      .setIcon("x")
+      .onClick(() => void this.plugin.removeOpenedDirectory(worktree.path)));
+    if (project.git && !worktree.primary) {
+      const busy = this.plugin.isWorktreeOperationInProgress?.(worktree.path) === true ||
+        worktree.startupState === "pending" || worktree.sessions.some((session) => session.status === "working" || session.status === "retry");
+      menu.addSeparator();
+      menu.addItem((item) => item
+        .setTitle("Reset worktree...")
+        .setIcon("rotate-ccw")
+        .setDisabled(busy)
+        .onClick(() => void this.plugin.requestWorktreeReset(project.rootDirectory, worktree.path)));
+      menu.addItem((item) => item
+        .setTitle("Remove worktree...")
+        .setIcon("trash-2")
+        .setDisabled(busy)
+        .onClick(() => void this.plugin.requestWorktreeRemove(project.rootDirectory, worktree.path)));
+    }
     menu.showAtMouseEvent(event);
   }
 

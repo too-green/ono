@@ -5,7 +5,7 @@ import { OpenCodeEventStream, type OpenCodeEventHandlers } from "./opencode-even
 import type { OpenCodeHttpClient } from "./opencode-http";
 
 interface EventStreamHarness {
-  connections: Map<string, { abort: AbortController; handlers: Set<OpenCodeEventHandlers>; directory?: string }>;
+  connections: Map<string, { abort: AbortController; handlers: Set<OpenCodeEventHandlers>; directory?: string; global?: boolean }>;
   emitChunk(key: string, chunk: string): void;
   readLoop(key: string, controller: AbortController): Promise<void>;
   reset(http: OpenCodeHttpClient): void;
@@ -86,6 +86,19 @@ describe("OpenCodeEventStream diagnostics", () => {
     logger.setDebugEnabled(true);
     stream.emitChunk("", 'data: {"type":"message.part.delta","properties":{"delta":"private token"}}');
     expect(debug).not.toHaveBeenCalled();
+  });
+
+  it("unwraps global event envelopes and forwards their directory", () => {
+    const onEvent = vi.fn();
+    const stream = new OpenCodeEventStream({} as OpenCodeHttpClient) as unknown as EventStreamHarness;
+    stream.connections.set("\u0000global", { abort: new AbortController(), handlers: new Set([{ onEvent }]), global: true });
+
+    stream.emitChunk("\u0000global", 'data: {"directory":"/repo/feature","payload":{"type":"worktree.ready","properties":{"name":"feature"}}}');
+
+    expect(onEvent).toHaveBeenCalledWith(
+      { type: "worktree.ready", properties: { name: "feature" } },
+      "/repo/feature",
+    );
   });
 
   it("backs off after a clean EOF instead of reconnecting in a tight loop", async () => {

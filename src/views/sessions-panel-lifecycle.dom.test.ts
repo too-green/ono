@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Menu } from "obsidian";
 
 import type OpenCodePlugin from "../../main";
 import { SessionsPanelView } from "./SessionsPanelView";
 
 type DomOptions = { text?: string; cls?: string; attr?: Record<string, string> };
+type TestMenuItem = { title: string; disabled: boolean; callback?: () => unknown };
+type TestMenu = { items: Array<TestMenuItem | "separator"> };
+
+/** Returns menus captured by the Obsidian test stub. */
+function menus(): TestMenu[] {
+  return (Menu as unknown as { instances: TestMenu[] }).instances;
+}
 
 /** Installs the Obsidian HTMLElement helpers used by the sessions sidebar view. */
 function installObsidianDomMethods(): void {
@@ -31,6 +39,7 @@ describe("SessionsPanelView lifecycle", () => {
     installObsidianDomMethods();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
     vi.stubGlobal("CSS", { escape: (value: string) => value });
+    menus().length = 0;
   });
 
   afterEach(() => {
@@ -231,5 +240,102 @@ describe("SessionsPanelView lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
     expect(view.contentEl.textContent).toContain("opencode server not running");
+  });
+
+  it("exposes project and worktree management from their respective context menus", async () => {
+    let openedDirectories = ["/repo", "/repo/a"];
+    const removeOpenedDirectory = vi.fn(async () => undefined);
+    const removeOpenedDirectories = vi.fn(async () => undefined);
+    const openExistingWorktree = vi.fn(async () => undefined);
+    const requestWorktreeCreate = vi.fn(async () => undefined);
+    const requestWorktreeReset = vi.fn(async () => undefined);
+    const requestWorktreeRemove = vi.fn(async () => undefined);
+    const service = {
+      health: vi.fn(async () => undefined),
+      subscribeToEvents: vi.fn(() => ({ close: vi.fn() })),
+      listProjects: vi.fn(async () => [{ id: "project", name: "Repository", worktree: "/repo", vcs: "git", sandboxes: ["/repo/a", "/repo/b"] }]),
+      getCurrentProject: vi.fn(async () => ({ id: "project", name: "Repository", worktree: "/repo", vcs: "git" })),
+      listSessions: vi.fn(async () => []),
+      getSessionStatus: vi.fn(async () => ({})),
+      listPermissionRequests: vi.fn(async () => []),
+      listQuestionRequests: vi.fn(async () => []),
+    };
+    const plugin = {
+      settings: { workingAnimation: "pulse", folderCollapseDisplay: "inset" },
+      getOpenedDirectories: () => openedDirectories,
+      getActiveSessionId: () => undefined,
+      requireOpenCodeService: () => service,
+      directoryContexts: { getProject: service.getCurrentProject },
+      cacheSessionHierarchy: vi.fn(),
+      routePermissionRequest: vi.fn(),
+      shouldSuppressPermissionRequest: vi.fn(() => false),
+      getSessionNotificationState: vi.fn(() => ({ muted: false, isSubagent: false })),
+      isSessionUnread: vi.fn(() => false),
+      getWorktreeStatus: vi.fn(() => undefined),
+      isWorktreeOperationInProgress: vi.fn(() => false),
+      removeOpenedDirectory,
+      removeOpenedDirectories,
+      openExistingWorktree,
+      requestWorktreeCreate,
+      requestWorktreeReset,
+      requestWorktreeRemove,
+    } as unknown as OpenCodePlugin;
+    const view = new SessionsPanelView({ app: {} } as never, plugin);
+    await view.onOpen();
+
+    view.contentEl.querySelector<HTMLElement>(".opencode-sessions-panel__project .nav-folder-title")
+      ?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    const projectMenu = menus().at(-1)!;
+    const projectItems = projectMenu.items.filter((item): item is TestMenuItem => item !== "separator");
+    expect(projectItems.map((item) => item.title)).toContain("Open existing worktree...");
+    expect(projectItems.find((item) => item.title === "Open existing worktree...")?.disabled).toBe(false);
+    projectItems.find((item) => item.title === "Create worktree...")?.callback?.();
+    projectItems.find((item) => item.title === "Close project")?.callback?.();
+
+    const worktreeRows = view.contentEl.querySelectorAll<HTMLElement>(".opencode-sessions-panel__worktree .nav-folder-title");
+    worktreeRows[0]?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    const primaryItems = menus().at(-1)!.items.filter((item): item is TestMenuItem => item !== "separator");
+    expect(primaryItems.map((item) => item.title)).toEqual(["Close directory"]);
+
+    worktreeRows[1]?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    const worktreeMenu = menus().at(-1)!;
+    const worktreeItems = worktreeMenu.items.filter((item): item is TestMenuItem => item !== "separator");
+    expect(worktreeItems.map((item) => item.title)).toEqual(["Close directory", "Reset worktree...", "Remove worktree..."]);
+    worktreeItems.find((item) => item.title === "Close directory")?.callback?.();
+    worktreeItems.find((item) => item.title === "Reset worktree...")?.callback?.();
+    worktreeItems.find((item) => item.title === "Remove worktree...")?.callback?.();
+
+    expect(requestWorktreeCreate).toHaveBeenCalledWith("/repo");
+    expect(removeOpenedDirectories).toHaveBeenCalledWith(["/repo", "/repo/a"]);
+    expect(removeOpenedDirectory).toHaveBeenCalledWith("/repo/a");
+    expect(requestWorktreeReset).toHaveBeenCalledWith("/repo", "/repo/a");
+    expect(requestWorktreeRemove).toHaveBeenCalledWith("/repo", "/repo/a");
+
+    const menuHarness = view as unknown as {
+      showProjectMenu(event: MouseEvent, project: {
+        id: string;
+        name: string;
+        git: boolean;
+        rootDirectory: string;
+        openedDirectories: string[];
+        managedWorktreeDirectories: string[];
+        worktrees: never[];
+      }): void;
+    };
+    menuHarness.showProjectMenu(new MouseEvent("contextmenu"), {
+      id: "project",
+      name: "Repository",
+      git: true,
+      rootDirectory: "/repo",
+      openedDirectories: ["/repo", "/repo/a", "/repo/b"],
+      managedWorktreeDirectories: ["/repo/a", "/repo/b"],
+      worktrees: [],
+    });
+    const exhaustedItems = menus().at(-1)!.items.filter((item): item is TestMenuItem => item !== "separator");
+    expect(exhaustedItems.find((item) => item.title === "Open existing worktree...")?.disabled).toBe(true);
+
+    openedDirectories = ["/repo/a"];
+    await view.refresh({ showLoading: false });
+    expect(view.contentEl.querySelectorAll(".opencode-sessions-panel__worktree")).toHaveLength(1);
   });
 });

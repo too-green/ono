@@ -4,6 +4,7 @@ import type {
   JsonObject,
   OpenCodeCommandInput,
   OpenCodeCreateSessionInput,
+  OpenCodeCreateWorktreeInput,
   OpenCodeFindFilesParams,
   OpenCodeFindTextParams,
   OpenCodeHealth,
@@ -24,7 +25,12 @@ import type {
   OpenCodeTodo,
   OpenCodeUpdateSessionInput,
   OpenCodeVcsInfo,
+  OpenCodeWorktree,
+  OpenCodeWorktreeDirectoryInput,
 } from "./opencode-types";
+
+const WORKTREE_PATH = "/experimental/worktree";
+const WORKTREE_RESET_PATH = "/experimental/worktree/reset";
 
 export interface OpenCodeServerConfig {
   baseUrl: string;
@@ -64,6 +70,11 @@ export class OpenCodeService {
     return this.events.subscribe(handlers, directory);
   }
 
+  /** Subscribes to server-wide v1 events; referenced by worktree creation readiness handling. */
+  subscribeToGlobalEvents(handlers: OpenCodeEventHandlers): OpenCodeEventSubscription {
+    return this.events.subscribeGlobal(handlers);
+  }
+
   /** Lists known projects from `GET /project`; optional directory triggers OpenCode's backend resolver. */
   listProjects(directory?: string): Promise<JsonObject[]> {
     return this.http.get<JsonObject[]>("/project", { directory });
@@ -82,6 +93,26 @@ export class OpenCodeService {
   /** Reads directory-scoped VCS metadata from `GET /vcs`; referenced by draft and folder context. */
   getVcs(directory?: string): Promise<OpenCodeVcsInfo> {
     return this.http.get<OpenCodeVcsInfo>("/vcs", { directory });
+  }
+
+  /** Lists sandbox directories through v1 `GET /experimental/worktree`. */
+  listWorktrees(directory: string): Promise<string[]> {
+    return this.http.get<string[]>(WORKTREE_PATH, { directory });
+  }
+
+  /** Creates a sandbox through v1 `POST /experimental/worktree`. */
+  createWorktree(directory: string, input?: OpenCodeCreateWorktreeInput): Promise<OpenCodeWorktree> {
+    return this.http.post<OpenCodeWorktree>(WORKTREE_PATH, input ?? {}, { directory });
+  }
+
+  /** Removes a sandbox and its branch through v1 `DELETE /experimental/worktree`. */
+  removeWorktree(directory: string, input: OpenCodeWorktreeDirectoryInput): Promise<boolean> {
+    return this.http.delete<boolean>(WORKTREE_PATH, { directory }, input);
+  }
+
+  /** Resets a sandbox to the default branch through v1 `POST /experimental/worktree/reset`. */
+  resetWorktree(directory: string, input: OpenCodeWorktreeDirectoryInput): Promise<boolean> {
+    return this.http.post<boolean>(WORKTREE_RESET_PATH, input, { directory });
   }
 
   /** Reads OpenCode config metadata from `GET /config`. */

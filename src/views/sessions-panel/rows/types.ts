@@ -1,6 +1,8 @@
 import type { SessionVisualStatus, WorkingAnimation } from "../../../session-state";
 import type { FolderCollapseDisplay } from "../../../settings";
 
+export type WorktreeState = "pending" | "failed" | "removing" | "resetting";
+
 /** Session data available to every sessions-panel session-row implementation. */
 export interface SessionsPanelSession {
   id: string;
@@ -18,6 +20,9 @@ export interface SessionsPanelWorktree {
   id: string;
   name: string;
   path: string;
+  primary: boolean;
+  startupState?: WorktreeState;
+  startupMessage?: string;
   sessions: SessionsPanelSession[];
 }
 
@@ -25,7 +30,10 @@ export interface SessionsPanelWorktree {
 export interface SessionsPanelProject {
   id: string;
   name: string;
+  git: boolean;
+  rootDirectory: string;
   openedDirectories: string[];
+  managedWorktreeDirectories: string[];
   worktrees: SessionsPanelWorktree[];
 }
 

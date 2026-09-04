@@ -10,7 +10,11 @@ export class MarkdownRenderer {
 }
 
 export class Notice {
-  constructor(_message?: unknown) {}
+  static history: Array<{ message: unknown; duration?: number }> = [];
+
+  constructor(message?: unknown, duration?: number) {
+    Notice.history.push({ message, duration });
+  }
 }
 
 export class Component {
@@ -85,7 +89,48 @@ export class ItemView extends Component {
   }
 }
 
-export class Menu {}
+export class MenuItem {
+  title = "";
+  icon = "";
+  disabled = false;
+  checked = false;
+  callback?: () => unknown;
+
+  /** Records a menu title and preserves Obsidian's fluent API in tests. */
+  setTitle(title: string) { this.title = title; return this; }
+  /** Records a menu icon and preserves Obsidian's fluent API in tests. */
+  setIcon(icon: string) { this.icon = icon; return this; }
+  /** Records disabled state and preserves Obsidian's fluent API in tests. */
+  setDisabled(disabled: boolean) { this.disabled = disabled; return this; }
+  /** Records checked state and preserves Obsidian's fluent API in tests. */
+  setChecked(checked: boolean) { this.checked = checked; return this; }
+  /** Records the click handler and preserves Obsidian's fluent API in tests. */
+  onClick(callback: () => unknown) { this.callback = callback; return this; }
+}
+
+export class Menu {
+  static instances: Menu[] = [];
+  readonly items: Array<MenuItem | "separator"> = [];
+  shownAt?: MouseEvent;
+
+  constructor() {
+    Menu.instances.push(this);
+  }
+
+  /** Adds one configurable menu item to the test menu. */
+  addItem(configure: (item: MenuItem) => unknown) {
+    const item = new MenuItem();
+    configure(item);
+    this.items.push(item);
+    return this;
+  }
+
+  /** Adds one separator marker to the test menu. */
+  addSeparator() { this.items.push("separator"); return this; }
+
+  /** Records where the menu would be shown in Obsidian. */
+  showAtMouseEvent(event: MouseEvent) { this.shownAt = event; return this; }
+}
 
 export const Platform = { isMacOS: false, isWin: false, isMobile: false };
 
@@ -97,7 +142,16 @@ export class Modal {
 
   constructor(_app?: unknown) {}
 
-  open() {}
+  /** Mirrors Obsidian's fluent modal title setter in tests. */
+  setTitle(title: string) { this.titleEl.textContent = title; return this; }
+  /** Invokes the modal lifecycle hook in tests. */
+  open() { this.onOpen(); }
+  /** Invokes the modal close lifecycle hook in tests. */
+  close() { this.onClose(); }
+  /** Default no-op open hook overridden by concrete modals. */
+  onOpen() {}
+  /** Default no-op close hook overridden by concrete modals. */
+  onClose() {}
 }
 
 export class SuggestModal<T> extends Modal {

@@ -29,6 +29,21 @@ export interface OpenCodeVcsInfo extends JsonObject {
   default_branch?: string;
 }
 
+export interface OpenCodeWorktree extends JsonObject {
+  name: string;
+  branch?: string;
+  directory: string;
+}
+
+export interface OpenCodeCreateWorktreeInput {
+  name?: string;
+  startCommand?: string;
+}
+
+export interface OpenCodeWorktreeDirectoryInput {
+  directory: string;
+}
+
 export interface OpenCodeTodo extends JsonObject {
   id?: string;
   content: string;

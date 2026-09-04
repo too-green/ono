@@ -45,13 +45,17 @@ const worktree: SessionsPanelWorktree = {
   id: "/workspace",
   name: "workspace",
   path: "/workspace",
+  primary: true,
   sessions: [session],
 };
 
 const project: SessionsPanelProject = {
   id: "project-1",
   name: "OpenCode plugin",
+  git: true,
+  rootDirectory: "/workspace",
   openedDirectories: ["/workspace"],
+  managedWorktreeDirectories: [],
   worktrees: [worktree],
 };
 
@@ -90,6 +94,19 @@ describe("sessions-panel row components", () => {
     expect(handle.childrenEl).toBeUndefined();
     expect(handle.newSessionButtonEl).toBeInstanceOf(HTMLButtonElement);
     expect(handle.rowEl.classList.contains("opencode-sessions-panel__folder-row--size")).toBe(true);
+  });
+
+  it("shows destructive worktree operations directly on the row", () => {
+    const handle = new WorktreeRow().render(document.body, {
+      worktree: { ...worktree, startupState: "removing" },
+      collapsed: true,
+      collapseDisplay: "size",
+    });
+
+    const state = handle.rowEl.querySelector(".opencode-sessions-panel__worktree-state");
+    expect(state?.textContent).toContain("Removing worktree...");
+    expect(state?.getAttribute("aria-label")).toBe("Removing worktree...");
+    expect(state?.classList.contains("is-pending")).toBe(true);
   });
 
   it("exposes stable session title and live-status operations", () => {

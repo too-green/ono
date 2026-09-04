@@ -10,7 +10,7 @@ export interface OpenCodeEventSubscription {
 }
 
 export interface OpenCodeEventHandlers {
-  onEvent(event: OpenCodeEvent): void;
+  onEvent(event: OpenCodeEvent, directory?: string): void;
   onOpen?(): void;
   onError?(error: unknown): void;
   onReconnect?(attempt: number, delayMs: number): void;
@@ -20,7 +20,7 @@ const RETRY_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
 const STABLE_CONNECTION_MS = 30_000;
 
 export class OpenCodeEventStream {
-  private readonly connections = new Map<string, { abort: AbortController; handlers: Set<OpenCodeEventHandlers>; directory?: string }>();
+  private readonly connections = new Map<string, { abort: AbortController; handlers: Set<OpenCodeEventHandlers>; directory?: string; global?: boolean }>();
   private http: OpenCodeHttpClient;
 
   constructor(http: OpenCodeHttpClient) {
@@ -33,6 +33,25 @@ export class OpenCodeEventStream {
     let connection = this.connections.get(key);
     if (!connection) {
       connection = { abort: new AbortController(), handlers: new Set(), directory };
+      this.connections.set(key, connection);
+      void this.readLoop(key, connection.abort);
+    }
+    connection.handlers.add(handlers);
+    return {
+      close: () => {
+        const active = this.connections.get(key);
+        active?.handlers.delete(handlers);
+        if (active && active.handlers.size === 0) this.stopConnection(key);
+      },
+    };
+  }
+
+  /** Adds a subscriber to the server-wide v1 event stream used by cross-directory worktree events. */
+  subscribeGlobal(handlers: OpenCodeEventHandlers): OpenCodeEventSubscription {
+    const key = "\u0000global";
+    let connection = this.connections.get(key);
+    if (!connection) {
+      connection = { abort: new AbortController(), handlers: new Set(), global: true };
       this.connections.set(key, connection);
       void this.readLoop(key, connection.abort);
     }
@@ -94,7 +113,9 @@ export class OpenCodeEventStream {
   /** Reads and parses one `/event` SSE response from the OpenCode server. */
   private async readOnce(key: string, controller: AbortController): Promise<number> {
     const connection = this.connections.get(key);
-    const url = this.http.url("/event", { directory: connection?.directory });
+    const url = connection?.global
+      ? this.http.url("/global/event")
+      : this.http.url("/event", { directory: connection?.directory });
     logger.debug("sse", "connecting");
     const startedAt = Date.now();
     await this.readWithNodeHttp(key, url, controller);
@@ -174,17 +195,23 @@ export class OpenCodeEventStream {
       .map((line) => line.slice(5).trimStart())
       .join("\n");
     if (!data) return;
-    let event: OpenCodeEvent;
+    let payload: unknown;
     try {
-      event = JSON.parse(data) as OpenCodeEvent;
+      payload = JSON.parse(data);
     } catch (error) {
       logger.warn("sse", "event parse failed", { error });
       return;
     }
+    const connection = this.connections.get(key);
+    const envelope = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : undefined;
+    const rawEvent = connection?.global ? envelope?.payload : payload;
+    if (!rawEvent || typeof rawEvent !== "object" || Array.isArray(rawEvent)) return;
+    const event = rawEvent as OpenCodeEvent;
+    const directory = connection?.global && typeof envelope?.directory === "string" ? envelope.directory : connection?.directory;
     if (logger.isDebugEnabled() && event.type !== "server.heartbeat" && event.type !== "message.part.delta") {
       logger.debug("sse", "event received", { eventType: event.type });
     }
-    this.forEachHandler(key, (handler) => handler.onEvent(event));
+    this.forEachHandler(key, (handler) => handler.onEvent(event, directory));
   }
 
   /** Iterates over a snapshot so handlers may unsubscribe while processing an event. */

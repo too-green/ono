@@ -144,6 +144,40 @@
   color: var(--text-muted);
 }
 
+.opencode-sessions-panel__worktree-state {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 var(--icon-s);
+  justify-content: center;
+}
+
+.opencode-sessions-panel__worktree-state svg {
+  height: var(--icon-xs);
+  width: var(--icon-xs);
+}
+
+.opencode-sessions-panel__worktree-state.is-pending {
+  color: var(--text-muted);
+}
+
+.opencode-sessions-panel__worktree-state.is-pending svg {
+  animation: opencode-sessions-panel-spin 1s linear infinite;
+}
+
+.opencode-sessions-panel__worktree-state.is-operation {
+  flex-basis: auto;
+  gap: var(--size-2-1);
+  white-space: nowrap;
+}
+
+.opencode-sessions-panel__worktree-state-label {
+  font-size: var(--font-ui-smaller);
+}
+
+.opencode-sessions-panel__worktree-state.is-failed {
+  color: var(--text-error);
+}
+
 /* Muted sessions signal suppressed notifications, so the bell stays error-red. */
 .opencode-sessions-panel__notification {
   color: var(--color-red);
@@ -3567,6 +3601,12 @@ input.opencode-model-menu__search:focus {
 }
 
 /* -- New-session folder picker -- */
+
+.opencode-worktree-modal__note {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  margin: 0 0 var(--size-4-2);
+}
 
 .opencode-folder-modal__row {
   align-items: center;

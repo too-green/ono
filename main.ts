@@ -29,7 +29,7 @@ import { confirmSessionArchive, requestRetryAction, requestSessionTitle, type Se
 import { SessionsPanelView, VIEW_TYPE_OPENCODE_SESSIONS_PANEL } from "./src/views/SessionsPanelView";
 import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView";
 import { loadFolderSuggestions, NewSessionFolderModal } from "./src/views/NewSessionFolderModal";
-import { normalizeWorkingAnimation } from "./src/session-state";
+import { isActiveSessionStatus, normalizeWorkingAnimation } from "./src/session-state";
 import { PermissionCoordinator } from "./src/permission-coordinator";
 import type { SessionAutoApproveState } from "./src/session-auto-approve";
 import { SessionHierarchy } from "./src/session-hierarchy";
@@ -40,6 +40,8 @@ import { logServiceError, OpenCodeHttpError } from "./src/services/opencode-http
 import { logger } from "./src/logger";
 import { eligibleRetryActionKey, safeRetryActionLink, type SessionRetryAction } from "./src/session-retry-action";
 import { DirectoryContextStore } from "./src/services/directory-context-store";
+import { WorktreeManagementService } from "./src/services/worktree-management-service";
+import { confirmWorktreeAction, ExistingWorktreeModal, requestWorktreeCreation } from "./src/views/WorktreeModals";
 
 export const LEGACY_DIFF_PANEL_VIEW_TYPE = "opencode-diff-panel";
 
@@ -47,9 +49,17 @@ export default class OpenCodePlugin extends Plugin {
   settings: OpenCodePluginSettings = DEFAULT_OPENCODE_SETTINGS;
   opencode?: OpenCodeService;
   readonly directoryContexts = new DirectoryContextStore(() => this.requireOpenCodeService());
+  readonly worktrees = new WorktreeManagementService(() => this.requireOpenCodeService());
   private archivingSessionIds = new Set<string>();
   private notificationService?: SessionNotificationService;
   private notificationEventSubscriptions = new Map<string, OpenCodeEventSubscription>();
+  private worktreeEventSubscription?: OpenCodeEventSubscription;
+  private worktreeStatuses = new Map<string, { state: "pending" | "failed"; message?: string }>();
+  private worktreeStatusTimers = new Map<string, number>();
+  private earlyReadyWorktreeKeys = new Set<string>();
+  private pendingWorktreeCreateCount = 0;
+  private worktreeOperationKeys = new Set<string>();
+  private worktreeOperationStates = new Map<string, "removing" | "resetting">();
   private debugLoggingSaveQueue: Promise<void> = Promise.resolve();
   private settingsSaveQueue: Promise<void> = Promise.resolve();
   private sessionStatePruneQueue: Promise<void> = Promise.resolve();
@@ -83,6 +93,9 @@ export default class OpenCodePlugin extends Plugin {
     this.unloading = false;
     await this.loadSettings();
     this.opencode = new OpenCodeService(this.settings.server);
+    this.worktreeEventSubscription = this.opencode.subscribeToGlobalEvents({
+      onEvent: (event, directory) => this.handleWorktreeEvent(event, directory),
+    });
     logger.setDebugEnabled(this.settings.debugLogging);
     logger.debug("lifecycle", "loading", { count: this.settings.openedDirectories.length });
     this.notificationService = new SessionNotificationService({
@@ -225,6 +238,11 @@ export default class OpenCodePlugin extends Plugin {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_SESSION);
     this.app.workspace.detachLeavesOfType(LEGACY_DIFF_PANEL_VIEW_TYPE);
     this.closeNotificationEventSubscriptions();
+    this.worktreeEventSubscription?.close();
+    this.worktreeEventSubscription = undefined;
+    this.worktreeOperationStates?.clear();
+    for (const timer of this.worktreeStatusTimers?.values() ?? []) window.clearTimeout(timer);
+    this.worktreeStatusTimers?.clear();
     this.notificationService?.dispose();
     this.directoryContexts?.clear();
     this.opencode?.dispose();
@@ -300,6 +318,135 @@ export default class OpenCodePlugin extends Plugin {
   /** Returns user-opened absolute directories; referenced by the sessions panel refresh loop. */
   getOpenedDirectories(): string[] {
     return [...this.settings.openedDirectories];
+  }
+
+  /** Returns transient worktree startup state for sessions-panel row rendering. */
+  getWorktreeStatus(directory: string): { state: "pending" | "failed" | "removing" | "resetting"; message?: string } | undefined {
+    const operation = this.worktreeOperationStates.get(this.pathKey(directory));
+    if (operation) return { state: operation };
+    return this.worktreeStatuses.get(this.pathKey(directory));
+  }
+
+  /** Returns whether one worktree or project currently has a mutation in flight. */
+  isWorktreeOperationInProgress(directory: string): boolean {
+    return this.worktreeOperationKeys.has(this.pathKey(directory));
+  }
+
+  /** Opens a server-discovered worktree that is not already present in the sessions panel. */
+  async openExistingWorktree(projectDirectory: string): Promise<void> {
+    try {
+      const opened = new Set(this.getOpenedDirectories().map((directory) => this.pathKey(directory)));
+      const directories = (await this.worktrees.list(projectDirectory)).filter((directory) => !opened.has(this.pathKey(directory)));
+      if (directories.length === 0) {
+        new Notice("No unopened OpenCode-managed worktrees were found.");
+        return;
+      }
+      new ExistingWorktreeModal(this.app, directories, (directory) => void this.addOpenedDirectory(directory)).open();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Unable to list existing worktrees.");
+    }
+  }
+
+  /** Prompts for optional creation settings and opens the server-created worktree in the panel. */
+  async requestWorktreeCreate(projectDirectory: string): Promise<void> {
+    const operationKey = this.pathKey(projectDirectory);
+    if (!this.beginWorktreeOperation(operationKey)) return;
+    let createStarted = false;
+    let createdName: string | undefined;
+    let creationDuration: string | undefined;
+    let panelRefreshScheduled = false;
+    try {
+      const input = await requestWorktreeCreation(this.app);
+      if (!input) return;
+      createStarted = true;
+      this.pendingWorktreeCreateCount += 1;
+      const requestStartedAt = Date.now();
+      const created = await this.worktrees.create(projectDirectory, input);
+      creationDuration = this.formatElapsedDuration(Date.now() - requestStartedAt);
+      createdName = created.name;
+      const key = this.pathKey(created.directory);
+      const ready = this.earlyReadyWorktreeKeys.delete(key);
+      if (!ready && !this.worktreeStatuses.has(key)) this.markWorktreePending(created.directory);
+      await this.addOpenedDirectory(created.directory, { notice: false, showLoading: false, backgroundRefresh: true });
+      panelRefreshScheduled = true;
+      const status = this.worktreeStatuses.get(key);
+      const startupSuffix = status?.state === "failed"
+        ? ` Startup failed: ${status.message ?? "Unknown startup error."}`
+        : status?.state === "pending" ? " OpenCode startup is continuing in the background." : "";
+      new Notice(`Created worktree ${created.name} in ${creationDuration}.${startupSuffix}`, 5_000);
+    } catch (error) {
+      const message = this.worktreeErrorMessage(error, "Unable to create worktree.");
+      const created = createdName
+        ? `Created worktree ${createdName}${creationDuration ? ` in ${creationDuration}` : ""}, but could not open it in the sessions panel: ${message}`
+        : message;
+      new Notice(created, 5_000);
+    } finally {
+      if (createStarted) this.pendingWorktreeCreateCount -= 1;
+      this.finishWorktreeOperation(operationKey, { refresh: !panelRefreshScheduled });
+    }
+  }
+
+  /** Removes a worktree after active-session checks and destructive confirmation. */
+  async requestWorktreeRemove(projectDirectory: string, worktreeDirectory: string): Promise<void> {
+    const operationKey = this.pathKey(worktreeDirectory);
+    if (!this.beginWorktreeOperation(operationKey)) return;
+    try {
+      let sessions = await this.loadWorktreeSessions(worktreeDirectory);
+      if (sessions.active) {
+        new Notice("Stop all running sessions in this worktree before removing it.");
+        return;
+      }
+      if (!(await confirmWorktreeAction(this.app, "remove", worktreeDirectory))) return;
+      sessions = await this.loadWorktreeSessions(worktreeDirectory);
+      if (sessions.active) {
+        new Notice("A session started while removal was being confirmed. Stop it and try again.");
+        return;
+      }
+      this.markWorktreeOperation(operationKey, "removing");
+      if (!(await this.worktrees.remove(projectDirectory, worktreeDirectory))) throw new Error("OpenCode did not remove the worktree.");
+      const sessionIds = new Set(sessions.items.map((session) => session.id));
+      await this.forgetSessionState(sessionIds);
+      this.closeSessionTabsForDirectory(worktreeDirectory);
+      this.clearWorktreeStatus(operationKey);
+      await this.removeOpenedDirectories([worktreeDirectory]);
+      new Notice(`Removed worktree ${this.basename(worktreeDirectory)}.`);
+    } catch (error) {
+      new Notice(this.worktreeErrorMessage(error, "Unable to remove worktree."));
+    } finally {
+      this.finishWorktreeOperation(operationKey);
+    }
+  }
+
+  /** Resets a worktree, archives its stale sessions, and closes their tabs after confirmation. */
+  async requestWorktreeReset(projectDirectory: string, worktreeDirectory: string): Promise<void> {
+    const operationKey = this.pathKey(worktreeDirectory);
+    if (!this.beginWorktreeOperation(operationKey)) return;
+    try {
+      let sessions = await this.loadWorktreeSessions(worktreeDirectory);
+      if (sessions.active) {
+        new Notice("Stop all running sessions in this worktree before resetting it.");
+        return;
+      }
+      if (!(await confirmWorktreeAction(this.app, "reset", worktreeDirectory))) return;
+      sessions = await this.loadWorktreeSessions(worktreeDirectory);
+      if (sessions.active) {
+        new Notice("A session started while reset was being confirmed. Stop it and try again.");
+        return;
+      }
+      this.markWorktreeOperation(operationKey, "resetting");
+      if (!(await this.worktrees.reset(projectDirectory, worktreeDirectory))) throw new Error("OpenCode did not reset the worktree.");
+      const archivedIds = await this.archiveWorktreeSessions(sessions.items, worktreeDirectory);
+      await this.forgetSessionState(archivedIds);
+      this.closeSessionTabsForDirectory(worktreeDirectory);
+      this.clearWorktreeStatus(operationKey);
+      this.directoryContexts.invalidate(worktreeDirectory);
+      await this.refreshSessionsPanels({ showLoading: false });
+      new Notice(`Reset worktree ${this.basename(worktreeDirectory)}.`);
+    } catch (error) {
+      new Notice(this.worktreeErrorMessage(error, "Unable to reset worktree."));
+    } finally {
+      this.finishWorktreeOperation(operationKey);
+    }
   }
 
   /** Opens a native desktop directory chooser, then persists and displays the selected directory. */
@@ -426,6 +573,153 @@ export default class OpenCodePlugin extends Plugin {
     }
   }
 
+  /** Detaches server-session and draft tabs bound to a removed or reset worktree. */
+  private closeSessionTabsForDirectory(directory: string): void {
+    const key = this.pathKey(directory);
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSION)) {
+      if (leaf.view instanceof SessionView && this.pathKey(leaf.view.getSessionDirectory() ?? "") === key) void leaf.detach();
+    }
+  }
+
+  /** Tracks asynchronous worktree startup events emitted on the server-wide v1 stream. */
+  private handleWorktreeEvent(event: OpenCodeEvent, directory?: string): void {
+    if (!directory || (event.type !== "worktree.ready" && event.type !== "worktree.failed")) return;
+    const key = this.pathKey(directory);
+    const opened = this.settings.openedDirectories.some((item) => this.pathKey(item) === key);
+    const tracked = opened || this.worktreeStatuses.has(key);
+    if (!tracked && this.pendingWorktreeCreateCount === 0) return;
+    if (event.type === "worktree.ready") {
+      if (!tracked) {
+        this.earlyReadyWorktreeKeys.add(key);
+        while (this.earlyReadyWorktreeKeys.size > 100) {
+          const oldest = this.earlyReadyWorktreeKeys.values().next().value;
+          if (oldest) this.earlyReadyWorktreeKeys.delete(oldest);
+        }
+        return;
+      }
+      this.clearWorktreeStatus(key);
+      new Notice(`Worktree ${this.basename(directory)} is ready.`);
+    } else {
+      const message = typeof event.properties?.message === "string" ? event.properties.message : "Worktree startup failed.";
+      this.clearWorktreeStatus(key);
+      this.worktreeStatuses.set(key, { state: "failed", message });
+      if (tracked) new Notice(message);
+    }
+    this.directoryContexts.invalidate(directory);
+    void this.refreshSessionsPanels({ showLoading: false }).catch((error) => logger.warn("sessions-panel", "worktree event refresh failed", { error }));
+  }
+
+  /** Claims a worktree mutation key so duplicate menu actions cannot overlap. */
+  private beginWorktreeOperation(key: string): boolean {
+    if (this.worktreeOperationKeys.has(key)) {
+      new Notice("A worktree operation is already in progress.");
+      return false;
+    }
+    this.worktreeOperationKeys.add(key);
+    return true;
+  }
+
+  /** Releases a worktree mutation key and refreshes menu-derived panel state. */
+  private finishWorktreeOperation(key: string, options: { refresh?: boolean } = {}): void {
+    this.worktreeOperationKeys.delete(key);
+    this.worktreeOperationStates?.delete(key);
+    if (options.refresh === false) return;
+    void this.refreshSessionsPanels({ showLoading: false }).catch((error) => logger.warn("sessions-panel", "worktree operation refresh failed", { error }));
+  }
+
+  /** Exposes a destructive operation on the worktree row while the server request is active. */
+  private markWorktreeOperation(key: string, state: "removing" | "resetting"): void {
+    this.worktreeOperationStates.set(key, state);
+    void this.refreshSessionsPanels({ showLoading: false }).catch((error) => logger.warn("sessions-panel", "worktree operation state refresh failed", { error }));
+  }
+
+  /** Starts a bounded pending state so a missed ready event cannot disable worktree actions forever. */
+  private markWorktreePending(directory: string): void {
+    const key = this.pathKey(directory);
+    this.clearWorktreeStatus(key);
+    this.worktreeStatuses.set(key, { state: "pending" });
+    const timer = window.setTimeout(() => {
+      if (this.worktreeStatuses.get(key)?.state !== "pending") return;
+      this.worktreeStatusTimers.delete(key);
+      this.worktreeStatuses.set(key, { state: "failed", message: "OpenCode did not report worktree startup completion." });
+      void this.refreshSessionsPanels({ showLoading: false }).catch((error) => logger.warn("sessions-panel", "worktree startup timeout refresh failed", { error }));
+    }, 120_000);
+    this.worktreeStatusTimers.set(key, timer);
+  }
+
+  /** Clears one startup state and its timeout. */
+  private clearWorktreeStatus(key: string): void {
+    this.worktreeStatuses?.delete(key);
+    const timer = this.worktreeStatusTimers?.get(key);
+    if (timer !== undefined) window.clearTimeout(timer);
+    this.worktreeStatusTimers?.delete(key);
+  }
+
+  /** Loads all sessions and their current activity state before a destructive worktree action. */
+  private async loadWorktreeSessions(directory: string): Promise<{ items: OpenCodeSession[]; active: boolean }> {
+    const service = this.requireOpenCodeService();
+    const [projectSessions, statuses] = await Promise.all([
+      service.listSessions({ directory, scope: "project", limit: 1_000 }),
+      service.getSessionStatus(),
+    ]);
+    const items = projectSessions.filter((session) => this.isWithinDirectory(directory, session.directory));
+    const active = items.some((session) => {
+      const status = statuses[session.id];
+      if (!status || typeof status !== "object" || Array.isArray(status)) return false;
+      const type = (status as JsonObject).type;
+      return isActiveSessionStatus(typeof type === "string" ? type : undefined);
+    });
+    return { items, active };
+  }
+
+  /** Returns whether a session directory is the worktree root or one of its descendants. */
+  private isWithinDirectory(root: string, candidate: string | undefined): boolean {
+    if (!candidate) return false;
+    const rootKey = this.pathKey(root);
+    const candidateKey = this.pathKey(candidate);
+    const prefix = rootKey.endsWith("/") ? rootKey : `${rootKey}/`;
+    return candidateKey === rootKey || candidateKey.startsWith(prefix);
+  }
+
+  /** Extracts an actionable OpenCode worktree error message without exposing arbitrary response text. */
+  private worktreeErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof OpenCodeHttpError) {
+      try {
+        const body = JSON.parse(error.responseText) as { data?: { message?: unknown } };
+        if (typeof body.data?.message === "string" && body.data.message.trim()) return body.data.message;
+      } catch {
+        return error.message || fallback;
+      }
+    }
+    return error instanceof Error && error.message ? error.message : fallback;
+  }
+
+  /** Formats worktree request latency compactly for the five-second completion notice. */
+  private formatElapsedDuration(milliseconds: number): string {
+    if (milliseconds < 1_000) return `${Math.max(0, Math.round(milliseconds))}ms`;
+    const seconds = milliseconds / 1_000;
+    return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
+  }
+
+  /** Archives every unarchived v1 session after reset and reports IDs successfully updated. */
+  private async archiveWorktreeSessions(sessions: OpenCodeSession[], directory: string): Promise<Set<string>> {
+    const archivedIds = new Set<string>();
+    const archivedAt = Date.now();
+    for (const session of sessions) {
+      if (typeof session.time?.archived === "number") {
+        archivedIds.add(session.id);
+        continue;
+      }
+      try {
+        await this.requireOpenCodeService().archiveSession(session.id, archivedAt, session.directory ?? directory);
+        archivedIds.add(session.id);
+      } catch (error) {
+        logger.warn("worktree", "session archival after reset failed", { error });
+      }
+    }
+    return archivedIds;
+  }
+
   /** Pushes the focused session tab into every open sessions panel so its row is revealed. */
   private syncSessionsPanelToActiveSessionLeaf(leaf: WorkspaceLeaf | null): void {
     const sessionId = this.sessionIdFromLeaf(leaf);
@@ -462,21 +756,35 @@ export default class OpenCodePlugin extends Plugin {
   }
 
   /** Persists a directory exactly like OpenCode's UI-local opened-project list. */
-  async addOpenedDirectory(directory: string): Promise<void> {
+  async addOpenedDirectory(directory: string, options: { notice?: boolean; showLoading?: boolean; backgroundRefresh?: boolean } = {}): Promise<void> {
     const normalized = this.normalizeDirectory(directory);
     const existing = this.settings.openedDirectories.filter((item) => this.pathKey(item) !== this.pathKey(normalized));
     this.settings.openedDirectories = [normalized, ...existing];
     await this.saveSettings();
     this.syncNotificationEventSubscriptions();
-    new Notice(`Opened ${normalized} in OpenCode sessions panel.`);
-    await this.refreshSessionsPanels();
+    if (options.notice !== false) new Notice(`Opened ${normalized} in OpenCode sessions panel.`);
+    const refresh = this.refreshSessionsPanels({ showLoading: options.showLoading });
+    if (options.backgroundRefresh) {
+      void refresh.catch((error) => logger.warn("sessions-panel", "background directory refresh failed", { error }));
+      return;
+    }
+    await refresh;
   }
 
   /** Removes a previously opened directory from the panel's local workspace list. */
   async removeOpenedDirectory(directory: string): Promise<void> {
-    const key = this.pathKey(directory);
-    this.settings.openedDirectories = this.settings.openedDirectories.filter((item) => this.pathKey(item) !== key);
-    this.directoryContexts?.invalidate(directory);
+    await this.removeOpenedDirectories([directory]);
+  }
+
+  /** Removes several local directory registrations in one save and panel refresh. */
+  async removeOpenedDirectories(directories: Iterable<string>): Promise<void> {
+    const items = [...directories];
+    const targets = new Set(items.map((directory) => this.pathKey(directory)));
+    this.settings.openedDirectories = this.settings.openedDirectories.filter((item) => !targets.has(this.pathKey(item)));
+    for (const directory of items) {
+      this.directoryContexts?.invalidate(directory);
+      this.clearWorktreeStatus(this.pathKey(directory));
+    }
     await this.saveSettings();
     this.syncNotificationEventSubscriptions();
     await this.refreshSessionsPanels();
@@ -575,8 +883,19 @@ export default class OpenCodePlugin extends Plugin {
     };
     await this.saveSettings();
     this.directoryContexts?.clear();
+    this.worktreeStatuses?.clear();
+    this.worktreeOperationStates?.clear();
+    this.earlyReadyWorktreeKeys?.clear();
+    for (const timer of this.worktreeStatusTimers?.values() ?? []) window.clearTimeout(timer);
+    this.worktreeStatusTimers?.clear();
     if (this.opencode) this.opencode.updateConfig(this.settings.server);
-    else this.opencode = new OpenCodeService(this.settings.server);
+    else {
+      this.opencode = new OpenCodeService(this.settings.server);
+      this.worktreeEventSubscription?.close();
+      this.worktreeEventSubscription = this.opencode.subscribeToGlobalEvents({
+        onEvent: (event, directory) => this.handleWorktreeEvent(event, directory),
+      });
+    }
     await this.refreshSessionsPanels();
     await this.refreshSessionViews();
   }
@@ -1107,6 +1426,12 @@ export default class OpenCodePlugin extends Plugin {
   /** Mirrors OpenCode's pathKey behavior for opened-directory deduplication. */
   private pathKey(directory: string): string {
     return this.normalizeDirectory(directory).toLowerCase();
+  }
+
+  /** Returns the final path segment for concise worktree notices. */
+  private basename(directory: string): string {
+    const normalized = this.normalizeDirectory(directory);
+    return normalized.split("/").filter(Boolean).pop() ?? normalized;
   }
 
   /** Performs a read-only health check command for early manual testing. */

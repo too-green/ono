@@ -5,7 +5,6 @@ import type { SessionVisualStatus, WorkingAnimation } from "./session-state";
 const STATUS_ICONS: Partial<Record<SessionVisualStatus, string>> = {
   attention: "megaphone",
   error: "alert-circle",
-  retry: "rotate-cw",
 };
 
 export interface StatusBadgeOptions {
@@ -40,14 +39,16 @@ export function paintStatusBadge(badge: HTMLElement, options: StatusBadgeOptions
   if (badge.dataset.statusSignature === signature) return;
   badge.empty();
   badge.className = `opencode-status-badge opencode-status-badge--${options.status}`;
+  // Retry reuses the working indicator span so the animation variants apply; CSS paints it in error red.
+  if (options.status === "retry") badge.classList.add("opencode-status-badge--working");
   badge.dataset.status = options.status;
   badge.dataset.workingAnimation = options.workingAnimation;
   badge.dataset.statusSignature = signature;
   const icon = STATUS_ICONS[options.status] ?? (options.status === "idle" ? options.idleGlyph : undefined);
   if (icon) setIcon(badge, icon);
   if (options.status === "done") badge.createSpan();
-  // Working variants bounce/puzzle animate three child dots via transform; other variants hide them in CSS.
-  if (options.status === "working") {
+  // Working/retry variants bounce/puzzle animate three child dots via transform; other variants hide them in CSS.
+  if (options.status === "working" || options.status === "retry") {
     const indicator = badge.createSpan();
     for (let index = 0; index < 3; index += 1) indicator.createEl("i");
   }

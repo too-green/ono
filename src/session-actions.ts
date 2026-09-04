@@ -156,7 +156,8 @@ class ArchiveSessionModal extends Modal {
     cancel.addEventListener("click", () => this.finish(false));
     const archive = buttons.createEl("button", { text: "Archive", cls: "mod-warning" });
     archive.addEventListener("click", () => this.finish(true));
-    window.setTimeout(() => cancel.focus(), 0);
+    // Focus the destructive default like Obsidian's delete dialog: Enter confirms, Escape cancels.
+    window.setTimeout(() => archive.focus(), 0);
   }
 
   /** Resolves cancellation when the modal closes without an action. */

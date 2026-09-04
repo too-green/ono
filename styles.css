@@ -66,9 +66,9 @@
   color: var(--nav-item-color-active);
 }
 
+/* Keyboard highlight mirrors core's file-explorer focus ring (.tree-item-self.has-focus): 2px ring, no background tint. */
 .opencode-sidebar-panel--sessions .tree-item-self.opencode-sessions-panel__row-highlighted:not(.is-active) {
-  background-color: var(--background-modifier-hover);
-  box-shadow: inset 0 0 0 var(--border-width) var(--background-modifier-border-hover);
+  box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
 }
 
 .opencode-sessions-panel__project,
@@ -284,7 +284,6 @@
 }
 
 .opencode-status-badge--retry {
-  animation: opencode-session-state-pulse 1.2s ease-in-out infinite;
   color: var(--color-red);
 }
 
@@ -293,6 +292,20 @@
   border-radius: 50%;
   height: var(--opencode-session-done-size, var(--size-2-3));
   width: var(--opencode-session-done-size, var(--size-2-3));
+}
+
+/*
+ * Working indicators: orbit/scanner paint with currentColor so the indicator
+ * inherits the surrounding container's text color (row title, meta bar, tab).
+ * The wrapper rule below neutralizes core's tree-item-icon color only while working.
+ * Retry reuses the working indicator but keeps its own error-red color.
+ */
+.opencode-status-badge--working:not(.opencode-status-badge--retry) {
+  color: inherit;
+}
+
+.opencode-sessions-panel__status:has(.opencode-status-badge--working:not(.opencode-status-badge--retry)) {
+  color: inherit;
 }
 
 /*
@@ -331,7 +344,7 @@
 
 .opencode-status-badge--working[data-working-animation="orbit"] span {
   animation: opencode-session-working-orbit 900ms steps(8) infinite;
-  background: conic-gradient(from 0deg, var(--interactive-accent), transparent 55%);
+  background: conic-gradient(from 0deg, currentColor, transparent 55%);
   border-radius: 50%;
   -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - var(--border-width)), #000 0);
   mask: radial-gradient(farthest-side, transparent calc(100% - var(--border-width)), #000 0);
@@ -353,7 +366,7 @@
 
 .opencode-status-badge--working[data-working-animation="scanner"] span::before {
   animation: opencode-session-working-scanner 1.4s ease-in-out infinite alternate;
-  background: linear-gradient(90deg, transparent, var(--interactive-accent), transparent);
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
   content: "";
   height: 33.333%;
   left: 0;
@@ -391,6 +404,15 @@
 .opencode-status-badge--working[data-working-animation="puzzle"] span i:nth-child(3) {
   animation-delay: 0s;
   animation-name: opencode-session-working-puzzle-c;
+}
+
+/* Retry paints the reused working indicator in error red via currentColor. */
+.opencode-status-badge--retry.opencode-status-badge--working span i {
+  background: currentColor;
+}
+
+.opencode-status-badge--retry[data-working-animation="pulse"] span {
+  background: currentColor;
 }
 
 .opencode-sessions-panel__new-session-action {
@@ -549,7 +571,8 @@
 .view-content.opencode-session-view {
   container-type: size;
   padding: var(--file-margins);
-  padding-bottom: var(--size-4-5);
+  /* 8px floats the island above the leaf edge; the collapsed (navigation=true) status bar strip keeps total workspace clearance comfortable. */
+  padding-bottom: var(--size-4-1);
 }
 
 .opencode-session-view__shell {
@@ -659,7 +682,8 @@
 }
 
 .opencode-session-view__bottom-dock {
-  bottom: var(--size-4-3);
+  /* Matches the container's 8px rest padding so the island sits at one consistent inset whether pinned mid-scroll or at rest. */
+  bottom: var(--size-4-1);
   display: flex;
   flex-direction: column;
   margin-top: var(--size-4-3);
@@ -1101,7 +1125,7 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
 }
 
 .opencode-session-view__composer {
-  background: color-mix(in srgb, var(--background-primary) 94%, transparent);
+  background: var(--background-primary);
   border: var(--border-width) solid var(--background-modifier-border);
   border-radius: var(--radius-l);
   box-shadow: var(--shadow-s);
@@ -1390,8 +1414,9 @@ body.is-focused .workspace-leaf.mod-active .opencode-session-view__island-tab.is
   width: 100%;
 }
 
-.opencode-session-view__composer-input:hover,
-.opencode-session-view__composer-input:focus {
+/* Element-scoped so it out-ties Obsidian's textarea:hover form-field highlight from core and themes. */
+textarea.opencode-session-view__composer-input:hover,
+textarea.opencode-session-view__composer-input:focus {
   background: transparent;
   box-shadow: none;
 }

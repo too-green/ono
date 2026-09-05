@@ -74,10 +74,8 @@ export class SessionViewModel {
   composerSelectionDirty = false;
 
   // ---- shared status / in-flight
-  /** Active session status type string (busy / idle / error / etc.) from session events. */
+  /** Active session status type string (busy / idle / error / etc.) mirrored from the shared status store. */
   sessionStatusType = "idle";
-  /** Monotonic status-event revision that prevents older canonical snapshots from overwriting SSE state. */
-  sessionStatusRevision = 0;
   /** Full active v1 retry payload used by the inline countdown card. */
   sessionRetry?: SessionRetryStatus;
   /** True while the server-side run remains active, including silent work and retry backoff. */

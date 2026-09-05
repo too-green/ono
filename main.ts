@@ -40,6 +40,7 @@ import { logServiceError, OpenCodeHttpError } from "./src/services/opencode-http
 import { logger } from "./src/logger";
 import { eligibleRetryActionKey, safeRetryActionLink, type SessionRetryAction } from "./src/session-retry-action";
 import { DirectoryContextStore } from "./src/services/directory-context-store";
+import { SessionStatusStore } from "./src/services/session-status-store";
 import { WorktreeManagementService } from "./src/services/worktree-management-service";
 import { confirmWorktreeAction, ExistingWorktreeModal, requestWorktreeCreation } from "./src/views/WorktreeModals";
 
@@ -49,10 +50,12 @@ export default class OpenCodePlugin extends Plugin {
   settings: OpenCodePluginSettings = DEFAULT_OPENCODE_SETTINGS;
   opencode?: OpenCodeService;
   readonly directoryContexts = new DirectoryContextStore(() => this.requireOpenCodeService());
+  readonly sessionStatuses = new SessionStatusStore({ onTurnSettled: (sessionId) => void this.rememberTurnSettled(sessionId) });
   readonly worktrees = new WorktreeManagementService(() => this.requireOpenCodeService());
   private archivingSessionIds = new Set<string>();
   private notificationService?: SessionNotificationService;
   private notificationEventSubscriptions = new Map<string, OpenCodeEventSubscription>();
+  private statusHydrations = new Map<string, Promise<void>>();
   private worktreeEventSubscription?: OpenCodeEventSubscription;
   private worktreeStatuses = new Map<string, { state: "pending" | "failed"; message?: string }>();
   private worktreeStatusTimers = new Map<string, number>();
@@ -245,6 +248,7 @@ export default class OpenCodePlugin extends Plugin {
     this.worktreeStatusTimers?.clear();
     this.notificationService?.dispose();
     this.directoryContexts?.clear();
+    this.sessionStatuses?.clear();
     this.opencode?.dispose();
   }
 
@@ -267,6 +271,7 @@ export default class OpenCodePlugin extends Plugin {
       const subscription = this.requireOpenCodeService().subscribeToEvents({
         onOpen: () => {
           this.directoryContexts?.invalidate(directory);
+          this.hydrateDirectoryStatuses(directory);
           this.reconcileSessionStateAfterReconnect();
         },
         onEvent: (event) => this.handleNotificationEvent(event, directory),
@@ -284,6 +289,7 @@ export default class OpenCodePlugin extends Plugin {
   /** Centrally routes request and lifecycle events needed even when no plugin view is mounted. */
   private handleNotificationEvent(event: OpenCodeEvent, directory: string): void {
     this.directoryContexts?.handleEvent(directory, event);
+    this.sessionStatuses?.handleEvent(directory, event);
     const properties = event.properties;
     const info = properties?.info;
     const session = info && typeof info === "object" && !Array.isArray(info) ? info as JsonObject : undefined;
@@ -536,7 +542,7 @@ export default class OpenCodePlugin extends Plugin {
   async moveSessionToDirectory(sessionId: string, sourceDirectory: string, destinationDirectory: string): Promise<void> {
     const service = this.requireOpenCodeService();
     try {
-      const statuses = await service.getSessionStatus();
+      const statuses = await service.getSessionStatus(sourceDirectory);
       const status = statuses[sessionId];
       const type = status && typeof status === "object" && !Array.isArray(status) ? (status as JsonObject).type : undefined;
       if (isActiveSessionStatus(typeof type === "string" ? type : undefined)) throw new Error("Abort the session before moving it.");
@@ -549,6 +555,7 @@ export default class OpenCodePlugin extends Plugin {
       throw new Error(this.openCodeErrorMessage(error, "Unable to move OpenCode session."));
     }
 
+    this.sessionStatuses?.forgetSessions([sessionId]);
     void service.sendPromptAsync(sessionId, {
       noReply: true,
       parts: [{
@@ -694,7 +701,7 @@ export default class OpenCodePlugin extends Plugin {
     const service = this.requireOpenCodeService();
     const [projectSessions, statuses] = await Promise.all([
       service.listSessions({ directory, scope: "project", limit: 1_000 }),
-      service.getSessionStatus(),
+      service.getSessionStatus(directory),
     ]);
     const items = projectSessions.filter((session) => this.isWithinDirectory(directory, session.directory));
     const active = items.some((session) => {
@@ -817,6 +824,7 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.openedDirectories = this.settings.openedDirectories.filter((item) => !targets.has(this.pathKey(item)));
     for (const directory of items) {
       this.directoryContexts?.invalidate(directory);
+      this.sessionStatuses?.forgetDirectory(directory);
       this.clearWorktreeStatus(this.pathKey(directory));
     }
     await this.saveSettings();
@@ -917,6 +925,7 @@ export default class OpenCodePlugin extends Plugin {
     };
     await this.saveSettings();
     this.directoryContexts?.clear();
+    this.sessionStatuses?.clear();
     this.worktreeStatuses?.clear();
     this.worktreeOperationStates?.clear();
     this.earlyReadyWorktreeKeys?.clear();
@@ -1268,6 +1277,49 @@ export default class OpenCodePlugin extends Plugin {
     return this.readSessionState(sessionId)?.muted;
   }
 
+  /**
+   * Hydrates one directory's canonical statuses after startup or stream reconnect, with no
+   * views required; failures preserve the cache, and responses landing after a server swap
+   * or directory removal are dropped via the store's lifecycle generation. Referenced by
+   * syncNotificationEventSubscriptions.
+   */
+  private hydrateDirectoryStatuses(directory: string): void {
+    const store = this.sessionStatuses;
+    if (!store) return;
+    const hydrations = this.statusHydrations ??= new Map<string, Promise<void>>();
+    // Track per generation+directory: a server swap or directory removal bumps the generation, so a
+    // fresh hydration can start while the stale-generation response is still in flight.
+    const key = `${store.generation()}:${this.pathKey(directory)}`;
+    if (hydrations.has(key)) return;
+    const generation = store.generation();
+    const baseline = store.revision();
+    const hydration = this.requireOpenCodeService().getSessionStatus(directory)
+      .then((statuses) => {
+        if (store.generation() !== generation) return;
+        if (statuses && typeof statuses === "object" && !Array.isArray(statuses)) {
+          store.applySnapshot(directory, statuses as JsonObject, baseline);
+        }
+      })
+      .catch((error) => {
+        logServiceError(undefined, "hydrateSessionStatus")(error);
+      })
+      .finally(() => {
+        if (hydrations.get(key) === hydration) hydrations.delete(key);
+      });
+    hydrations.set(key, hydration);
+  }
+
+  /** Marks one centrally detected turn completion unread and refreshes sidebar rows; referenced by SessionStatusStore. */
+  private async rememberTurnSettled(sessionId: string): Promise<void> {
+    if (this.isSessionUnread(sessionId)) return;
+    try {
+      await this.rememberSessionUnread(sessionId, true);
+      await this.refreshSessionsPanels({ showLoading: false });
+    } catch (error) {
+      logger.warn("settings", "turn completion unread save failed", { error });
+    }
+  }
+
   /** Persists whether a session has completed activity the user has not read yet. */
   async rememberSessionUnread(sessionId: string, unread: boolean): Promise<void> {
     await this.mutateSessionState(sessionId, (state) => {
@@ -1356,13 +1408,6 @@ export default class OpenCodePlugin extends Plugin {
         if (leaf.view instanceof SessionsPanelView) await leaf.view.refresh(options);
       }),
     );
-  }
-
-  /** Pushes one live session status into visible sessions panels without waiting for their full refresh. */
-  notifySessionStatusChanged(sessionId: string, statusType: string): void {
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_OPENCODE_SESSIONS_PANEL)) {
-      if (leaf.view instanceof SessionsPanelView) leaf.view.applyLiveSessionStatus(sessionId, statusType);
-    }
   }
 
   /** Resolves one permission centrally, auto-approving inherited policies before any view surfaces it. */

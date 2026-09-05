@@ -75,7 +75,7 @@ describe("StreamController", () => {
       onMessageChanged: vi.fn(),
       onMessageRemoved: vi.fn(),
       onStreamOpen: vi.fn(),
-      onStatusChange: vi.fn(),
+      onSessionStatus: vi.fn(),
       onSessionError: vi.fn(),
       onConnectionChange: vi.fn(),
       onSessionDeleted: vi.fn(),
@@ -286,10 +286,10 @@ describe("StreamController", () => {
     emit(handlers, "todo.updated", { sessionID: "s1", todos: [{ content: "Implement", status: "in_progress", priority: "high" }] });
     expect(deps.onTodosUpdated).toHaveBeenCalledWith([{ content: "Implement", status: "in_progress", priority: "high" }]);
     emit(handlers, "session.status", { sessionID: "s1", status: { type: "busy" } });
-    expect(deps.onStatusChange).toHaveBeenCalledWith({ type: "busy" });
+    expect(deps.onSessionStatus).toHaveBeenCalledWith("s1", { type: "busy" });
     const retry = { type: "retry", attempt: 2, message: "Rate limited", next: 20_000 };
     emit(handlers, "session.status", { sessionID: "s1", status: retry });
-    expect(deps.onStatusChange).toHaveBeenLastCalledWith(retry);
+    expect(deps.onSessionStatus).toHaveBeenLastCalledWith("s1", retry);
     emit(handlers, "session.deleted", { sessionID: "s1", info: { id: "s1" } });
     expect(deps.onSessionDeleted).toHaveBeenCalledOnce();
 
@@ -339,12 +339,15 @@ describe("StreamController", () => {
     expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
 
     emit(handlers, "session.status", { sessionID: "child", status: { type: "busy" } });
-    expect(model.descendantSessions.get("child")?.statusType).toBe("busy");
-    expect(deps.onDescendantsChanged).toHaveBeenCalledTimes(2);
+    expect(deps.onSessionStatus).toHaveBeenCalledWith("child", { type: "busy" });
+    // Descendant runtime status now lives in the shared store; the stream only forwards known descendants.
+    expect(model.descendantSessions.get("child")?.statusType).toBeUndefined();
+    expect(deps.onDescendantsChanged).toHaveBeenCalledOnce();
 
     emit(handlers, "session.updated", { info: { id: "child", title: "Renamed child" } });
-    expect(model.descendantSessions.get("child")).toEqual({ title: "Renamed child", directory: "/workspace", statusType: "busy" });
-    expect(deps.onDescendantsChanged).toHaveBeenCalledTimes(3);
+    expect(model.descendantSessions.get("child")).toEqual({ title: "Renamed child", directory: "/workspace", statusType: undefined });
+    // Descendant status events no longer count as descendant mutations; the shared store listener repaints.
+    expect(deps.onDescendantsChanged).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(499);
     expect(deps.requestCanonicalSync).toHaveBeenCalledOnce();
     vi.advanceTimersByTime(1);

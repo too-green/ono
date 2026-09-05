@@ -4,8 +4,7 @@ import { DELETE_CURRENT_FILE_COMMANDS, RENAME_CURRENT_FILE_COMMANDS, matchesObsi
 import type { OpenCodeEventSubscription } from "../services/opencode-events";
 import { logServiceError } from "../services/opencode-http";
 import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "../services/opencode-types";
-import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
-import { isAssistantAbortError } from "../services/assistant-error";
+import { normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
 import { hashRenderState } from "./session/render-signature";
 import {
   SESSIONS_PANEL_SESSION_SORT_LABELS,
@@ -80,8 +79,7 @@ export class SessionsPanelView extends ItemView {
   private lastRenderedTreeSignature = "";
   private lastTree: SessionsPanelProject[] = [];
   private sessionAncestorMap = new Map<string, string[]>();
-  private lastKnownSessionStatuses = new Map<string, string>();
-  private erroredSessionIds = new Set<string>();
+  private statusUnsubscribe?: () => void;
   private requestAttentionSessionIds = new Set<string>();
   private sessionParentIds = new Map<string, string>();
   private sessionListCache = new Map<string, OpenCodeSession[]>();
@@ -131,6 +129,8 @@ export class SessionsPanelView extends ItemView {
     this.contentEl.tabIndex = 0;
     this.contentEl.addEventListener("keydown", this.handleKeydown);
     this.syncEventSubscriptions(this.plugin.getOpenedDirectories());
+    // Consume the plugin-wide status store so rows repaint without independent event reconciliation.
+    this.statusUnsubscribe = this.plugin.sessionStatuses?.subscribe((sessionId) => this.paintSessionStatus(sessionId));
     // Capture the active session before the async refresh — by the time refresh
     // resolves the panel itself may be the active leaf, making getActiveSessionId
     // return undefined and wiping the reveal.
@@ -143,10 +143,11 @@ export class SessionsPanelView extends ItemView {
   async onClose(): Promise<void> {
     this.opened = false;
     this.refreshQueued = false;
+    this.statusUnsubscribe?.();
+    this.statusUnsubscribe = undefined;
     this.clearSessionDragState();
     this.contentEl.removeEventListener("keydown", this.handleKeydown);
     this.closeEventSubscriptions();
-    this.erroredSessionIds.clear();
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = undefined;
     this.contentEl.removeClass("opencode-sidebar-panel", "opencode-sidebar-panel--sessions");
@@ -233,7 +234,12 @@ export class SessionsPanelView extends ItemView {
       if (!this.opened) return;
       const openedDirectories = this.plugin.getOpenedDirectories();
       this.syncEventSubscriptions(openedDirectories);
-      const [projects, openedContexts, sessionGroups, statuses, permissionGroups, questionGroups] = await Promise.all([
+      // Capture the store revision/generation before the GETs so events landing mid-flight are
+      // preserved on apply and responses from a replaced server or removed directory are dropped.
+      const statusStore = this.plugin.sessionStatuses;
+      const statusBaseline = statusStore?.revision() ?? 0;
+      const statusGeneration = statusStore?.generation() ?? 0;
+      const [projects, openedContexts, sessionGroups, statusResults, permissionGroups, questionGroups] = await Promise.all([
         openedDirectories[0] ? service.listProjects(openedDirectories[0]).catch(logServiceError([], "listProjects")) : Promise.resolve([]),
         Promise.all(
           openedDirectories.map(async (directory): Promise<OpenedDirectoryContext> => ({
@@ -242,7 +248,13 @@ export class SessionsPanelView extends ItemView {
           })),
         ),
         Promise.all(openedDirectories.map((directory) => this.listSessions(directory))),
-        service.getSessionStatus().catch(logServiceError(undefined, "getSessionStatus")),
+        Promise.all(openedDirectories.map(async (directory) => {
+          try {
+            return await service.getSessionStatus(directory);
+          } catch (error) {
+            return logServiceError(undefined, "getSessionStatus")(error);
+          }
+        })),
         Promise.all(openedDirectories.map((directory) => this.listPermissionRequests(directory))),
         Promise.all(openedDirectories.map((directory) => this.listQuestionRequests(directory))),
       ]);
@@ -265,7 +277,15 @@ export class SessionsPanelView extends ItemView {
           return parentId ? [[session.id, parentId] as const] : [];
         }),
       );
-      const statusSnapshot = statuses && typeof statuses === "object" && !Array.isArray(statuses) ? (statuses as JsonObject) : {};
+      // Reconcile only each directory's own response scope; failed GETs resolve to
+      // undefined so the shared cache survives sync failures untouched.
+      if (statusStore && statusStore.generation() === statusGeneration) {
+        statusResults.forEach((statuses, index) => {
+          const directory = openedDirectories[index];
+          if (!directory || !statuses || typeof statuses !== "object" || Array.isArray(statuses)) return;
+          statusStore.applySnapshot(directory, statuses as JsonObject, statusBaseline);
+        });
+      }
       const requestOwnerIds = new Set<string>();
       for (const request of [...permissionGroups.flat().filter((item) => !this.plugin.shouldSuppressPermissionRequest(item.id)), ...questionGroups.flat()]) {
         const sessionId = this.readString(request, ["sessionID", "sessionId"]);
@@ -273,11 +293,9 @@ export class SessionsPanelView extends ItemView {
       }
       if (this.transientLoadFailure) this.requestAttentionSessionIds.forEach((sessionId) => requestOwnerIds.add(sessionId));
       this.propagateRequestAttentionToAncestors(requestOwnerIds, sessions);
-      if (statuses) this.reconcileSessionStatusSnapshot(statusSnapshot);
       const tree = await this.buildProjectTree(
         [...(Array.isArray(projects) ? projects : []), ...openedContexts.flatMap((context) => (context.project ? [context.project] : []))],
         sessions,
-        statusSnapshot,
         openedContexts,
         sessionDirectoryById,
         requestOwnerIds,
@@ -318,7 +336,6 @@ export class SessionsPanelView extends ItemView {
   private async buildProjectTree(
     projects: JsonObject[],
     sessions: OpenCodeSession[],
-    statuses: JsonObject,
     openedContexts: OpenedDirectoryContext[],
     sessionDirectoryById: Map<string, string>,
     requestOwnerIds: Set<string>,
@@ -383,7 +400,7 @@ export class SessionsPanelView extends ItemView {
                 primary: this.pathKey(worktreeId) === this.pathKey(rootDirectory),
                 startupState: startup?.state,
                 startupMessage: startup?.message,
-                sessions: await this.buildSessionNodes(worktreeSessions, statuses, requestOwnerIds),
+                sessions: await this.buildSessionNodes(worktreeSessions, requestOwnerIds),
               };
             }),
           ),
@@ -393,24 +410,23 @@ export class SessionsPanelView extends ItemView {
   }
 
   /** Builds visible top-level session rows and excludes child/subagent sessions. */
-  private async buildSessionNodes(sessions: OpenCodeSession[], statuses: JsonObject, requestOwnerIds: Set<string>): Promise<SessionsPanelSession[]> {
+  private async buildSessionNodes(sessions: OpenCodeSession[], requestOwnerIds: Set<string>): Promise<SessionsPanelSession[]> {
     const roots = sessions.filter((session) => !this.readString(session, ["parentID", "parentId"]));
-    return roots.map((session) => this.buildSessionNode(session, statuses, requestOwnerIds));
+    return roots.map((session) => this.buildSessionNode(session, requestOwnerIds));
   }
 
   /** Builds one top-level session row from the list snapshot without fetching descendants. */
-  private buildSessionNode(session: OpenCodeSession, statuses: JsonObject, requestOwnerIds: Set<string>): SessionsPanelSession {
+  private buildSessionNode(session: OpenCodeSession, requestOwnerIds: Set<string>): SessionsPanelSession {
     const id = session.id;
-    const directory = this.effectiveDirectoryForSession(session);
     const requiresAttention = requestOwnerIds.has(id);
 
     return {
       id,
       title: this.sessionTitle(session),
-      directory,
+      directory: this.effectiveDirectoryForSession(session),
       createdAt: this.sessionTime(session, "created"),
       updatedAt: this.sessionTime(session, "updated"),
-      status: this.visualStatusFor(id, statuses, requiresAttention),
+      status: this.visualStatusFor(id, requiresAttention),
       muted: this.plugin.getSessionNotificationState(session).muted,
       requiresAttention,
     };
@@ -1002,36 +1018,13 @@ export class SessionsPanelView extends ItemView {
     });
   }
 
-  /** Applies a status event immediately so visible rows do not wait for a full sidebar refresh. */
+  /** Applies panel-local overlays from events the shared store does not own (attention requests). */
   private applyLiveSessionEvent(event: OpenCodeEvent): void {
     const properties = event.properties;
     if (!properties) return;
     if (event.type === "question.asked") {
       const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
       if (sessionId) this.applyLiveRequestAttention(sessionId);
-      return;
-    }
-    if (event.type === "session.status") {
-      const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
-      const status = this.readObject(properties, "status");
-      const type = status ? this.readString(status, ["type", "status", "state"]) ?? "idle" : "idle";
-      if (sessionId) this.applyLiveSessionStatus(sessionId, type);
-      return;
-    }
-    if (event.type === "session.error") {
-      const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
-      if (sessionId && !isAssistantAbortError(properties.error)) this.applyLiveSessionStatus(sessionId, "error");
-      return;
-    }
-    if (event.type === "session.deleted") {
-      const info = this.readObject(properties, "info");
-      const sessionId = this.readString(properties, ["sessionID", "sessionId"]) ?? (info ? this.readString(info, ["id"]) : undefined);
-      if (sessionId) this.erroredSessionIds.delete(sessionId);
-      return;
-    }
-    if (event.type === "session.idle") {
-      const sessionId = this.readString(properties, ["sessionID", "sessionId"]);
-      if (sessionId) this.applyLiveSessionStatus(sessionId, "idle");
     }
   }
 
@@ -1053,15 +1046,9 @@ export class SessionsPanelView extends ItemView {
     }
   }
 
-  /** Updates one row from another view's live status event; referenced by OpenCodePlugin.notifySessionStatusChanged. */
-  applyLiveSessionStatus(sessionId: string, type: string): void {
-    const previous = this.lastKnownSessionStatuses.get(sessionId);
-    this.markCompletedSessionUnread(sessionId, previous, type);
-    if (type === "error" || type === "failed") this.erroredSessionIds.add(sessionId);
-    else if (isActiveSessionStatus(type)) this.erroredSessionIds.delete(sessionId);
-    if (type === "idle") this.lastKnownSessionStatuses.delete(sessionId);
-    else this.lastKnownSessionStatuses.set(sessionId, type);
-    const visualStatus = this.visualStatusFor(sessionId, {});
+  /** Repaints one visible session row's status without waiting for a full sidebar refresh; referenced by the store listener. */
+  private paintSessionStatus(sessionId: string): void {
+    const visualStatus = this.visualStatusFor(sessionId);
     for (const project of this.lastTree) {
       for (const worktree of project.worktrees) {
         const session = worktree.sessions.find((candidate) => candidate.id === sessionId);
@@ -1306,38 +1293,12 @@ export class SessionsPanelView extends ItemView {
     return typeof time?.archived === "number";
   }
 
-  /** Converts raw OpenCode status payloads into the panel's visual states. */
-  private visualStatusFor(sessionId: string, statuses: JsonObject, requiresAttention = this.requestAttentionSessionIds.has(sessionId)): SessionVisualStatus {
+  /** Converts the canonical store status plus shared error/attention overlays into the panel's visual states. */
+  private visualStatusFor(sessionId: string, requiresAttention = this.requestAttentionSessionIds.has(sessionId)): SessionVisualStatus {
     if (requiresAttention) return "attention";
-    if (this.erroredSessionIds.has(sessionId)) return "error";
-    const status = statuses[sessionId];
-    const type = status && typeof status === "object" && !Array.isArray(status) ? this.readString(status as JsonObject, ["type", "status", "state"]) : this.lastKnownSessionStatuses.get(sessionId);
+    if (this.plugin.sessionStatuses?.hasSessionError(sessionId)) return "error";
+    const type = this.plugin.sessionStatuses?.statusFor(sessionId)?.type;
     return visualStatusForSession(type, this.plugin.isSessionUnread(sessionId));
-  }
-
-  /** Reconciles busy-to-idle transitions so completed turns remain visible as unread. */
-  private reconcileSessionStatusSnapshot(statuses: JsonObject): void {
-    const next = new Map<string, string>();
-    for (const [sessionId, value] of Object.entries(statuses)) {
-      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-      const type = this.readString(value as JsonObject, ["type", "status", "state"]) ?? "idle";
-      next.set(sessionId, type);
-      if (isActiveSessionStatus(type)) this.erroredSessionIds.delete(sessionId);
-      this.markCompletedSessionUnread(sessionId, this.lastKnownSessionStatuses.get(sessionId), type);
-    }
-    for (const [sessionId, previous] of this.lastKnownSessionStatuses) {
-      if (next.has(sessionId)) continue;
-      if (isActiveSessionStatus(previous)) next.set(sessionId, previous);
-      else this.markCompletedSessionUnread(sessionId, previous, "idle");
-    }
-    this.lastKnownSessionStatuses = next;
-  }
-
-  /** Marks a session unread only when a previously active run has settled. */
-  private markCompletedSessionUnread(sessionId: string, previous: string | undefined, next: string): void {
-    const settled = next === "idle" || next === "done" || next === "complete" || next === "completed";
-    if (!isActiveSessionStatus(previous) || !settled || this.plugin.isSessionUnread(sessionId)) return;
-    void this.plugin.rememberSessionUnread(sessionId, true);
   }
 
   /** Extracts a session title with useful fallbacks for incomplete API payloads. */

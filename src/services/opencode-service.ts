@@ -142,9 +142,9 @@ export class OpenCodeService {
     return this.http.get<OpenCodeSession[]>("/session", params);
   }
 
-  /** Reads status for all sessions from `GET /session/status`. */
-  getSessionStatus(): Promise<JsonObject> {
-    return this.http.get<JsonObject>("/session/status");
+  /** Reads directory-scoped runtime status for all sessions from `GET /session/status`. */
+  getSessionStatus(directory?: string): Promise<JsonObject> {
+    return this.http.get<JsonObject>("/session/status", { directory });
   }
 
   /** Reads one session from `GET /session/:id`. */

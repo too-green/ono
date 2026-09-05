@@ -17,6 +17,7 @@ import type {
   OpenCodeSession,
 } from "../services/opencode-types";
 import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
+import { sessionStatusDirectoryKey } from "../services/session-status-store";
 import { paintStatusBadge, renderStatusBadge } from "../status-badge";
 import * as jsonHelpers from "./session/json-helpers";
 import * as messageHelpers from "./session/message-helpers";
@@ -68,6 +69,7 @@ export class SessionView extends ItemView {
   private stream!: StreamController;
   private sessionBindingVersion = 0;
   private canonicalRequestVersion = 0;
+  private statusUnsubscribe?: () => void;
   private loadingSessionId?: string;
   private nativeTitleEl?: HTMLElement;
   private titleErrorTooltip?: HTMLElement;
@@ -164,7 +166,7 @@ export class SessionView extends ItemView {
           this.plugin.reconcileSessionStateAfterReconnect();
         }
       },
-      onStatusChange: (status) => this.applySessionStatus(status, true),
+      onSessionStatus: (sessionId, status) => this.ingestLiveSessionStatus(sessionId, status),
       onSessionError: (error) => this.applySessionError(error),
       onConnectionChange: (connected) => this.applyConnectionState(connected),
       onSessionDeleted: () => this.applySessionDeleted(),
@@ -345,6 +347,8 @@ export class SessionView extends ItemView {
     this.registerDomEvent(window, "keydown", this.handleNativeSessionHotkeys, { capture: true });
     this.registerEvent(this.app.workspace.on("layout-change", () => this.handleWorkspaceLayoutChange()));
     this.registerEvent(this.app.workspace.on("css-change", () => this.syncReadableLineLength()));
+    // Consume the plugin-wide status store so this tab never reduces status events independently.
+    this.statusUnsubscribe = this.plugin.sessionStatuses?.subscribe((sessionId, _directory, origin) => this.applyStoreStatusChange(sessionId, origin));
     // Body-attached popovers (slash menu, model menu) survive tab switches because they live outside `contentEl`.
     // Hide them when this leaf loses focus so they don't float over a different session's view.
     this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => {
@@ -360,6 +364,8 @@ export class SessionView extends ItemView {
 
   /** Releases event streams and timers when the tab closes. */
   async onClose(): Promise<void> {
+    this.statusUnsubscribe?.();
+    this.statusUnsubscribe = undefined;
     const abandonedDraftId = !this.model.sessionId && this.model.draftId && !this.plugin.isUnloadingSessionViews() ? this.model.draftId : undefined;
     if (abandonedDraftId) {
       await this.plugin.discardSessionDraft(abandonedDraftId).catch((error) => logger.warn("settings", "draft cleanup failed", { error }));
@@ -427,6 +433,9 @@ export class SessionView extends ItemView {
     if (initialLoad) this.resetTimelineState(options);
     this.loadingSessionId = sessionId;
     if (initialLoad) this.renderLoading();
+    // Seed the freshly bound or reopened tab from the shared status cache so it never flashes idle
+    // while the canonical fetch is still in flight.
+    this.applyCachedSessionStatus();
     try {
       const session = await this.fetchCanonicalSession(sessionId, bindingVersion, initialLoad);
       if (!session || this.model.sessionDeleted) return;
@@ -465,7 +474,6 @@ export class SessionView extends ItemView {
     this.model.submittingPrompt = submittingPrompt;
     if (!submittingPrompt) this.model.composerSelectionDirty = false;
     this.model.sessionStatusType = "idle";
-    this.model.sessionStatusRevision = 0;
     this.model.sessionRetry = undefined;
     this.model.sessionBusy = false;
     this.model.sessionError = undefined;
@@ -525,7 +533,8 @@ export class SessionView extends ItemView {
   private async fetchCanonicalSession(sessionId: string, bindingVersion: number, replaceMessages: boolean): Promise<JsonObject | undefined> {
     const requestVersion = ++this.canonicalRequestVersion;
     const descendantRevision = this.model.captureDescendantSessionRevision();
-    const sessionStatusRevision = this.model.sessionStatusRevision;
+    const statusBaseline = this.plugin.sessionStatuses?.revision() ?? 0;
+    const statusGeneration = this.plugin.sessionStatuses?.generation() ?? 0;
     const isCurrentRequest = (): boolean => requestVersion === this.canonicalRequestVersion && this.isCurrentSessionBinding(sessionId, bindingVersion);
     const service = this.plugin.requireOpenCodeService();
     const previousRewindMessageId = this.revertMessageId();
@@ -549,7 +558,8 @@ export class SessionView extends ItemView {
       service.getConfig().catch(logServiceError({}, "getConfig")),
       service.listPermissionRequests(directory).catch(logServiceError(permissionFallback, "listPermissionRequests")),
       service.listQuestionRequests(directory).catch(logServiceError(questionFallback, "listQuestionRequests")),
-      service.getSessionStatus().catch(logServiceError({}, "getSessionStatus")),
+      // A directory-scoped status GET; failure resolves to undefined so the shared cache survives untouched.
+      service.getSessionStatus(directory).catch(logServiceError(undefined, "getSessionStatus")),
       this.loadSessionDescendants(sessionId, directory).catch(logServiceError([], "listSessionDescendants")),
     ]);
     if (!isCurrentRequest()) return undefined;
@@ -558,13 +568,20 @@ export class SessionView extends ItemView {
     this.model.availableModels = models;
     this.model.availableCommands = commands;
     this.model.serverConfig = config;
+    // Reconcile only this directory's response scope; a replaced server or removed
+    // directory bumps the generation, dropping the in-flight response.
+    if (statuses && typeof statuses === "object" && !Array.isArray(statuses) && this.plugin.sessionStatuses?.generation() === statusGeneration) {
+      this.plugin.sessionStatuses.applySnapshot(directory, statuses, statusBaseline);
+    }
+    // Descendants may live outside opened directories; reconcile their own scopes before deriving statuses.
+    await this.syncDescendantStatusScopes(descendants, directory, statusBaseline, statusGeneration);
     this.plugin.cacheSessionHierarchy([session as OpenCodeSession, ...descendants], true);
     await this.plugin.hydrateSessionAutoApproveState(sessionId, directory);
     if (!isCurrentRequest()) return undefined;
     this.model.reconcileDescendantSessions(new Map(descendants.map((item) => [item.id, {
       title: jsonHelpers.readString(item, ["title", "name", "slug"]) ?? item.id,
       directory: this.sessionDirectoryFromSession(item) ?? directory,
-      statusType: jsonHelpers.readString(jsonHelpers.readObject(statuses, item.id) ?? {}, ["type", "status", "state"]) ?? "idle",
+      statusType: this.plugin.sessionStatuses?.statusFor(item.id)?.type ?? "idle",
     }])), descendantRevision);
     this.docks.reconcileRequestScope();
     const visibleSessionIds = new Set([sessionId, ...this.model.descendantSessions.keys()]);
@@ -593,7 +610,7 @@ export class SessionView extends ItemView {
     }
     this.model.historyComplete = effectivePage.complete && !this.model.olderCursor;
     this.applyCanonicalSession(session);
-    this.applySessionStatusSnapshot(statuses, sessionStatusRevision);
+    this.applySessionStatus(this.plugin.sessionStatuses?.statusFor(sessionId)?.payload, false);
     this.hydrateCanonicalSessionError();
     if (this.descendantDiscoveryIncomplete) {
       this.stream.scheduleCanonicalSync(this.descendantDiscoveryRetryDelay);
@@ -604,9 +621,39 @@ export class SessionView extends ItemView {
     return isCurrentRequest() ? session : undefined;
   }
 
+  /**
+   * Fetches and reconciles one status snapshot per distinct descendant directory (reusing the root's
+   * scope) so subagent runtime status stays canonical even outside opened directories; failures skip
+   * their scope and responses from a replaced server or removed directory are dropped.
+   * Referenced by fetchCanonicalSession.
+   */
+  private async syncDescendantStatusScopes(descendants: OpenCodeSession[], rootDirectory: string | undefined, baseline: number, generation: number): Promise<void> {
+    const store = this.plugin.sessionStatuses;
+    if (!store || store.generation() !== generation) return;
+    const rootKey = sessionStatusDirectoryKey(rootDirectory);
+    const directories = new Set<string>();
+    for (const item of descendants) {
+      const own = this.sessionDirectoryFromSession(item);
+      if (own && sessionStatusDirectoryKey(own) !== rootKey) directories.add(own);
+    }
+    if (directories.size === 0) return;
+    const scoped = await Promise.all([...directories].map(async (dir): Promise<{ directory: string; statuses: JsonObject } | undefined> => {
+      try {
+        return { directory: dir, statuses: await this.plugin.requireOpenCodeService().getSessionStatus(dir) };
+      } catch (error) {
+        logServiceError(undefined, "getSessionStatus")(error);
+        return undefined;
+      }
+    }));
+    if (store.generation() !== generation) return;
+    for (const item of scoped) {
+      if (!item || typeof item.statuses !== "object" || Array.isArray(item.statuses)) continue;
+      store.applySnapshot(item.directory, item.statuses, baseline);
+    }
+  }
+
   /** Loads the full descendant tree used by canonical request routing in this session view. */
-  private async loadSessionDescendants(sessionId: string, directory: string | undefined, visited = new Set<string>()): Promise<OpenCodeSession[]> {
-    if (visited.has(sessionId)) return [];
+  private async loadSessionDescendants(sessionId: string, directory: string | undefined, visited = new Set<string>()): Promise<OpenCodeSession[]> {    if (visited.has(sessionId)) return [];
     visited.add(sessionId);
     const fallback = this.descendantChildrenCache.get(sessionId) ?? [];
     const children = await this.plugin.requireOpenCodeService().listSessionChildren(sessionId, directory).catch((error) => {
@@ -655,16 +702,40 @@ export class SessionView extends ItemView {
     this.applyCanonicalSession(session);
   }
 
-  /** Applies the current session's status from the global v1 status snapshot. */
-  private applySessionStatusSnapshot(snapshot: JsonObject, baselineRevision: number): void {
-    if (this.model.sessionStatusRevision !== baselineRevision) return;
-    const status = this.model.sessionId ? jsonHelpers.readObject(snapshot, this.model.sessionId) : undefined;
-    this.applySessionStatus(status);
+  /** Seeds this tab's status chrome from the shared store cache without event side effects. */
+  private applyCachedSessionStatus(): void {
+    const cached = this.model.sessionId ? this.plugin.sessionStatuses?.statusFor(this.model.sessionId) : undefined;
+    if (cached) this.applySessionStatus(cached.payload, false);
   }
 
-  /** Reconciles busy, retry, and idle status events with composer and unread state. */
+  /** Routes one live SSE status event into the shared store so every surface consumes one truth. */
+  private ingestLiveSessionStatus(sessionId: string | undefined, status: JsonObject): void {
+    if (!sessionId) return;
+    if (this.plugin.sessionStatuses) {
+      this.plugin.sessionStatuses.handleStatus(this.model.sessionDirectory, sessionId, status, "event");
+      return;
+    }
+    if (sessionId === this.model.sessionId) this.applySessionStatus(status, true);
+  }
+
+  /** Applies one canonical store change to the bound session or a mounted descendant row. */
+  private applyStoreStatusChange(sessionId: string, origin: "event" | "snapshot"): void {
+    const stored = this.plugin.sessionStatuses?.statusFor(sessionId);
+    if (sessionId === this.model.sessionId) {
+      this.applySessionStatus(stored?.payload, origin === "event");
+      return;
+    }
+    if (!this.model.descendantSessions.has(sessionId)) return;
+    const descendant = this.model.descendantSessions.get(sessionId);
+    if (descendant) descendant.statusType = stored?.type ?? "idle";
+    this.island.refreshState();
+    void this.timeline.renderStreaming().catch((error) => logger.warn("session-status", "timeline render failed", { error }));
+    this.composer.updateProgressBar();
+    this.island.refreshChrome();
+  }
+
+  /** Reconciles busy, retry, and idle status chrome with composer state; unread bookkeeping stays in the store. */
   private applySessionStatus(status: JsonObject | undefined, fromEvent = false): void {
-    if (fromEvent) this.model.sessionStatusRevision += 1;
     const previousType = this.model.sessionStatusType;
     const nextType = jsonHelpers.readString(status ?? {}, ["type", "status", "state"]) ?? "idle";
     const nextRetry = sessionRetryStatus(status);
@@ -687,8 +758,6 @@ export class SessionView extends ItemView {
       this.stream.scheduleCanonicalSync(120);
       this.scroll.releaseFollowLatestAfterIdle();
     }
-    if (wasBusy && !isBusy && this.model.sessionId) this.setSessionUnread(true);
-    if (this.model.sessionId) this.plugin.notifySessionStatusChanged(this.model.sessionId, nextType);
     this.refreshSessionStateChrome();
     if (wasBusy !== isBusy || retryChanged || clearedSessionError) void this.timeline.renderStreaming().catch((error) => logger.warn("session-status", "timeline render failed", { error }));
     if (wasBusy !== isBusy) this.composer.onSessionStatusChanged();
@@ -698,14 +767,16 @@ export class SessionView extends ItemView {
   private sessionVisualStatus(): SessionVisualStatus {
     if (this.model.pendingPermissions.length > 0 || this.model.pendingQuestions.length > 0) return "attention";
     if (this.model.sessionError) return "error";
+    // Errors reported while this tab was closed stay visible through the shared store overlay.
+    if (this.model.sessionId && this.plugin.sessionStatuses?.hasSessionError(this.model.sessionId)) return "error";
     return visualStatusForSession(this.model.sessionStatusType, this.model.sessionId ? this.plugin.isSessionUnread(this.model.sessionId) : false);
   }
 
-  /** Retains one non-abort session error for timeline rendering and native error chrome. */
+  /** Retains one non-abort session error for timeline rendering and shares it with the store's error overlay. */
   private applySessionError(error: unknown): void {
     if (isAssistantAbortError(error)) return;
     this.model.sessionError = { error, message: assistantErrorMessage(error) };
-    if (this.model.sessionId) this.plugin.notifySessionStatusChanged(this.model.sessionId, "error");
+    if (this.model.sessionId) this.plugin.sessionStatuses?.markSessionError(this.model.sessionId);
     this.refreshSessionStateChrome();
   }
 
@@ -716,6 +787,7 @@ export class SessionView extends ItemView {
     const error = latestAssistant?.info.error;
     if (!isDisplayableAssistantError(error)) return;
     this.model.sessionError = { error, message: assistantErrorMessage(error) };
+    if (this.model.sessionId) this.plugin.sessionStatuses?.markSessionError(this.model.sessionId);
     this.refreshSessionStateChrome();
   }
 
@@ -754,7 +826,7 @@ export class SessionView extends ItemView {
     this.docks.resetQueue();
     if (this.model.sessionId) {
       void this.plugin.forgetSessionState([this.model.sessionId]).catch((error) => logger.warn("settings", "deleted session cleanup failed", { error }));
-      this.plugin.notifySessionStatusChanged(this.model.sessionId, "idle");
+      this.plugin.sessionStatuses?.forgetSessions([this.model.sessionId]);
     }
     this.refreshSessionStateChrome();
     this.renderSessionDeleted();

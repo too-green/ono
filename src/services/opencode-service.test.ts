@@ -65,6 +65,33 @@ describe("OpenCodeService v1 worktree API", () => {
   });
 });
 
+describe("OpenCodeService session status API", () => {
+  it("passes the directory scope to the status endpoint as an HTTP query", async () => {
+    vi.mocked(requestUrl).mockClear();
+    vi.mocked(requestUrl).mockResolvedValue({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      json: { ses_1: { type: "busy" } },
+      text: JSON.stringify({ ses_1: { type: "busy" } }),
+      arrayBuffer: new ArrayBuffer(0),
+    });
+    const service = new OpenCodeService({ baseUrl: "https://remote.example" });
+
+    await expect(service.getSessionStatus("/repo/packages/app")).resolves.toEqual({ ses_1: { type: "busy" } });
+    await expect(service.getSessionStatus()).resolves.toEqual({ ses_1: { type: "busy" } });
+    service.dispose();
+
+    expect(requestUrl).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      url: "https://remote.example/session/status?directory=%2Frepo%2Fpackages%2Fapp",
+      method: "GET",
+    }));
+    expect(requestUrl).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      url: "https://remote.example/session/status",
+      method: "GET",
+    }));
+  });
+});
+
 describe("OpenCodeService session move API", () => {
   it("posts a no-file-transfer move to the experimental control plane", async () => {
     vi.mocked(requestUrl).mockResolvedValue({

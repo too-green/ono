@@ -3,6 +3,7 @@ import { Menu, Notice } from "obsidian";
 
 import type OpenCodePlugin from "../../main";
 import { SessionsPanelView } from "./SessionsPanelView";
+import { SessionStatusStore } from "../services/session-status-store";
 
 type DomOptions = { text?: string; cls?: string; attr?: Record<string, string> };
 type TestMenuItem = { title: string; disabled: boolean; callback?: () => unknown };
@@ -152,6 +153,55 @@ describe("SessionsPanelView lifecycle", () => {
     expect(openSessionTab).toHaveBeenCalledWith("parent", "Parent session");
   });
 
+  it("reconciles only each directory's own status response scope", async () => {
+    const service = {
+      health: vi.fn(async () => undefined),
+      subscribeToEvents: vi.fn(() => ({ close: vi.fn() })),
+      listProjects: vi.fn(async () => [
+        { id: "project-a", name: "Repo", worktree: "/repo", sandboxes: [] },
+        { id: "project-b", name: "Other", worktree: "/other", sandboxes: [] },
+      ]),
+      getCurrentProject: vi.fn(async (directory: string) => directory === "/repo"
+        ? { id: "project-a", name: "Repo", worktree: "/repo" }
+        : { id: "project-b", name: "Other", worktree: "/other" }),
+      listSessions: vi.fn(async ({ directory }: { directory: string }) => directory === "/repo"
+        ? [{ id: "ses-a", title: "Repo session", directory: "/repo", projectID: "project-a" }]
+        : [{ id: "ses-b", title: "Other session", directory: "/other", projectID: "project-b" }]),
+      getSessionStatus: vi.fn(async (directory: string) => directory === "/repo" ? { "ses-a": { type: "busy" } } : {}),
+      listPermissionRequests: vi.fn(async () => []),
+      listQuestionRequests: vi.fn(async () => []),
+    };
+    const sessionStatuses = new SessionStatusStore({});
+    const plugin = {
+      settings: { workingAnimation: "pulse", folderCollapseDisplay: "inset" },
+      getOpenedDirectories: () => ["/repo", "/other"],
+      getActiveSessionId: () => undefined,
+      requireOpenCodeService: () => service,
+      directoryContexts: { getProject: service.getCurrentProject },
+      sessionStatuses,
+      cacheSessionHierarchy: vi.fn(),
+      routePermissionRequest: vi.fn(),
+      shouldSuppressPermissionRequest: vi.fn(() => false),
+      getSessionNotificationState: vi.fn(() => ({ muted: false, isSubagent: false })),
+      isSessionUnread: vi.fn(() => false),
+      openDirectoryWithPicker: vi.fn(),
+    } as unknown as OpenCodePlugin;
+    const view = new SessionsPanelView({ app: {} } as never, plugin);
+
+    await view.onOpen();
+
+    // Each directory gets its own scoped GET, and only its response is reconciled into its scope.
+    expect(service.getSessionStatus).toHaveBeenCalledWith("/repo");
+    expect(service.getSessionStatus).toHaveBeenCalledWith("/other");
+    expect(sessionStatuses.statusFor("ses-a")?.type).toBe("busy");
+    expect(sessionStatuses.statusFor("ses-a")?.directory).toBe("/repo");
+    expect(sessionStatuses.statusFor("ses-b")).toBeUndefined();
+    const repoRow = view.contentEl.querySelector<HTMLElement>('[data-session-id="ses-a"]')!;
+    expect(repoRow.querySelector(".opencode-status-badge--working")).not.toBeNull();
+    const otherRow = view.contentEl.querySelector<HTMLElement>('[data-session-id="ses-b"]')!;
+    expect(otherRow.querySelector(".opencode-status-badge--working")).toBeNull();
+  });
+
   it("retains tree scroll, session rows, and rename input across streamed refreshes", async () => {
     vi.useFakeTimers();
     let onEvent: ((event: { type: string; properties?: Record<string, unknown> }) => void) | undefined;
@@ -180,6 +230,7 @@ describe("SessionsPanelView lifecycle", () => {
       listPermissionRequests: vi.fn(async () => []),
       listQuestionRequests: vi.fn(async () => []),
     };
+    const sessionStatuses = new SessionStatusStore({});
     const plugin = {
       settings: {
         sessionsPanelSessionSort: "created-desc",
@@ -190,6 +241,7 @@ describe("SessionsPanelView lifecycle", () => {
       getActiveSessionId: () => undefined,
       requireOpenCodeService: () => service,
       directoryContexts: { getProject: service.getCurrentProject },
+      sessionStatuses,
       cacheSessionHierarchy: vi.fn(),
       routePermissionRequest: vi.fn(),
       settleSessionRequest: vi.fn(),
@@ -224,13 +276,13 @@ describe("SessionsPanelView lifecycle", () => {
 
     const refreshCount = listSessions.mock.calls.length;
     const indicator = row.querySelector(".opencode-status-badge--working span");
-    onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "busy" } } });
+    sessionStatuses.handleStatus("/workspace", "session-1", { type: "busy" }, "event");
     vi.advanceTimersByTime(300);
 
     expect(row.querySelector(".opencode-status-badge--working span")).toBe(indicator);
     expect(listSessions).toHaveBeenCalledTimes(refreshCount);
 
-    onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "idle" } } });
+    sessionStatuses.handleStatus("/workspace", "session-1", { type: "idle" }, "event");
     vi.advanceTimersByTime(300);
 
     expect(view.contentEl.querySelector(".opencode-sessions-panel__tree")).toBe(tree);
@@ -238,11 +290,11 @@ describe("SessionsPanelView lifecycle", () => {
     expect(row.querySelector(".opencode-status-badge--working")).toBeNull();
     expect(listSessions).toHaveBeenCalledTimes(refreshCount);
 
-    onEvent?.({ type: "session.error", properties: { sessionID: "session-1", error: { name: "APIError", data: { message: "Failed" } } } });
+    sessionStatuses.handleEvent("/workspace", { type: "session.error", properties: { sessionID: "session-1", error: { name: "APIError", data: { message: "Failed" } } } });
     expect(row.querySelector(".opencode-status-badge--error")).not.toBeNull();
-    onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "idle" } } });
+    sessionStatuses.handleStatus("/workspace", "session-1", { type: "idle" }, "event");
     expect(row.querySelector(".opencode-status-badge--error")).not.toBeNull();
-    onEvent?.({ type: "session.status", properties: { sessionID: "session-1", status: { type: "busy" } } });
+    sessionStatuses.handleStatus("/workspace", "session-1", { type: "busy" }, "event");
     expect(row.querySelector(".opencode-status-badge--error")).toBeNull();
     expect(row.querySelector(".opencode-status-badge--working")).not.toBeNull();
 
@@ -250,6 +302,8 @@ describe("SessionsPanelView lifecycle", () => {
     await vi.advanceTimersByTimeAsync(0);
     await Promise.resolve();
     expect(listSessions.mock.calls.length).toBeGreaterThan(refreshCount);
+    // Reconnect hydration refetches each opened directory's scoped status snapshot.
+    expect(service.getSessionStatus).toHaveBeenCalledWith("/workspace");
 
     service.health.mockRejectedValueOnce(new Error("offline"));
     onError?.(new Error("offline"));
@@ -374,6 +428,7 @@ describe("SessionsPanelView lifecycle", () => {
       listPermissionRequests: vi.fn(async () => []),
       listQuestionRequests: vi.fn(async () => []),
     };
+    const sessionStatuses = new SessionStatusStore({});
     const getProject = vi.fn(async (directory: string) => projects.find((project) => project.worktree === directory || project.sandboxes.includes(directory))!);
     const plugin = {
       settings: { sessionsPanelSessionSort: "created-desc", workingAnimation: "pulse", folderCollapseDisplay: "inset" },
@@ -381,6 +436,7 @@ describe("SessionsPanelView lifecycle", () => {
       getActiveSessionId: () => undefined,
       requireOpenCodeService: () => service,
       directoryContexts: { getProject },
+      sessionStatuses,
       cacheSessionHierarchy: vi.fn(),
       routePermissionRequest: vi.fn(),
       shouldSuppressPermissionRequest: vi.fn(() => false),
@@ -437,7 +493,7 @@ describe("SessionsPanelView lifecycle", () => {
     dispatchDrag(otherProject, "drop");
     expect(moveSessionToDirectory).toHaveBeenCalledTimes(1);
 
-    view.applyLiveSessionStatus("ses_123", "busy");
+    sessionStatuses.handleStatus("/repo", "ses_123", { type: "busy" }, "event");
     dispatchDrag(session, "dragstart");
     dispatchDrag(expandedFeature, "dragenter");
     dispatchDrag(expandedFeature, "dragover");

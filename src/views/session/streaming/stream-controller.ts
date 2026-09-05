@@ -27,7 +27,8 @@ export interface StreamDeps {
   onMessageChanged: (message: OpenCodeMessageBundle) => void;
   onMessageRemoved: (messageId: string) => void;
   onStreamOpen: (reconnected: boolean) => void;
-  onStatusChange: (status: JsonObject) => void;
+  /** Receives live status events for the bound session or a mounted descendant; consumers ingest into the shared store. */
+  onSessionStatus: (sessionId: string | undefined, status: JsonObject) => void;
   onSessionError: (error: unknown) => void;
   onConnectionChange: (connected: boolean) => void;
   onSessionDeleted: () => void;
@@ -121,15 +122,10 @@ export class StreamController {
     const info = jsonHelpers.readObject(properties ?? {}, "info");
     const eventSessionId = jsonHelpers.readString(properties ?? {}, ["sessionID", "sessionId"]) ?? (info ? jsonHelpers.readString(info, ["id", "sessionID", "sessionId"]) : undefined);
     if (event.type === "session.status") {
-      const previous = eventSessionId ? this.deps.model.descendantSessions.get(eventSessionId) : undefined;
       const status = jsonHelpers.readObject(properties ?? {}, "status");
-      if (!eventSessionId || !previous || !status) return;
-      this.deps.model.descendantSessions.set(eventSessionId, {
-        ...previous,
-        statusType: jsonHelpers.readString(status, ["type", "status", "state"]) ?? "idle",
-      });
-      this.deps.model.recordDescendantSessionMutation(eventSessionId);
-      this.deps.onDescendantsChanged();
+      if (!eventSessionId || !status) return;
+      if (!this.deps.model.descendantSessions.has(eventSessionId)) return;
+      this.deps.onSessionStatus(eventSessionId, status);
       return;
     }
     const parentId = info ? jsonHelpers.readString(info, ["parentID", "parentId"]) : undefined;
@@ -271,7 +267,7 @@ export class StreamController {
     }
     if (event.type === "session.status") {
       const status = jsonHelpers.readObject(properties, "status");
-      if (status) this.deps.onStatusChange(status);
+      if (status) this.deps.onSessionStatus(this.deps.model.sessionId, status);
       return;
     }
     if (event.type === "session.error") {

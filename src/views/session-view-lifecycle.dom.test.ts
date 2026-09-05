@@ -35,7 +35,7 @@ interface LifecycleHarness {
   timeline: { clearDisclosureState: ReturnType<typeof vi.fn> };
   scroll: { clearJumpButtonReference: ReturnType<typeof vi.fn>; disableFollowLatest: ReturnType<typeof vi.fn> };
   descendantChildrenCache: Map<string, unknown>;
-  plugin: { forgetSessionState: ReturnType<typeof vi.fn>; notifySessionStatusChanged: ReturnType<typeof vi.fn> };
+  plugin: { forgetSessionState: ReturnType<typeof vi.fn> };
   refreshSessionStateChrome: ReturnType<typeof vi.fn>;
   sessionBindingVersion: number;
   canonicalRequestVersion: number;
@@ -62,7 +62,7 @@ function setup(): LifecycleHarness {
     timeline: { clearDisclosureState: vi.fn() },
     scroll: { clearJumpButtonReference: vi.fn(), disableFollowLatest: vi.fn() },
     descendantChildrenCache: new Map(),
-    plugin: { forgetSessionState: vi.fn(async () => undefined), notifySessionStatusChanged: vi.fn() },
+    plugin: { forgetSessionState: vi.fn(async () => undefined) },
     refreshSessionStateChrome: vi.fn(),
     sessionBindingVersion: 4,
     canonicalRequestVersion: 7,

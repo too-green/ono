@@ -4,7 +4,8 @@ import { Notice } from "obsidian";
 import OpenCodePlugin, { LEGACY_DIFF_PANEL_VIEW_TYPE } from "../main.ts";
 import { OpenCodeHttpError } from "./services/opencode-http";
 import { OpenCodeService } from "./services/opencode-service";
-import type { OpenCodeHealth } from "./services/opencode-types";
+import { SessionStatusStore } from "./services/session-status-store";
+import type { JsonObject, OpenCodeHealth } from "./services/opencode-types";
 import { logger } from "./logger";
 import { DEFAULT_OPENCODE_SETTINGS, OPENCODE_DATA_SCHEMA_VERSION, type OpenCodePluginData, type OpenCodePluginSettings, type PersistedSessionState } from "./settings";
 import { VIEW_TYPE_OPENCODE_SESSIONS_PANEL } from "./views/SessionsPanelView";
@@ -113,6 +114,7 @@ describe("OpenCodePlugin worktree workflows", () => {
     await plugin.requestWorktreeRemove("/repo", "/repo/feature");
 
     expect(getSessionStatus).toHaveBeenCalledTimes(2);
+    expect(getSessionStatus).toHaveBeenCalledWith("/repo/feature");
     expect(remove).not.toHaveBeenCalled();
   });
 
@@ -166,6 +168,7 @@ describe("OpenCodePlugin session move workflow", () => {
       destination: { directory: "/repo/feature" },
       moveChanges: false,
     });
+    expect(getSessionStatus).toHaveBeenCalledWith("/repo");
     expect(sendPromptAsync).toHaveBeenCalledWith("ses_123", expect.objectContaining({
       noReply: true,
       parts: [expect.objectContaining({ type: "text", synthetic: true })],
@@ -641,8 +644,27 @@ describe("OpenCodePlugin session-state retention", () => {
     expect(saveSettings).toHaveBeenCalledOnce();
   });
 
-  it("schedules canonical pruning when a directory event stream reconnects", () => {
-    let onOpen: (() => void) | undefined;
+  it("marks a centrally settled turn unread once and refreshes sidebar rows", async () => {
+    const saveSettings = vi.fn(async () => undefined);
+    const refreshSessionsPanels = vi.fn(async () => undefined);
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      settings: pluginSettings(),
+      sessionState: pluginSessionState({ ses_1: { autoApprove: true } }),
+      saveSettings,
+      refreshSessionsPanels,
+    });
+    const settle = (plugin as unknown as { rememberTurnSettled(sessionId: string): Promise<void> }).rememberTurnSettled.bind(plugin);
+
+    await settle("ses_1");
+    expect(plugin.isSessionUnread("ses_1")).toBe(true);
+    expect(refreshSessionsPanels).toHaveBeenCalledWith({ showLoading: false });
+
+    await settle("ses_1");
+    expect(saveSettings).toHaveBeenCalledOnce();
+  });
+
+  it("schedules canonical pruning when a directory event stream reconnects", () => {    let onOpen: (() => void) | undefined;
     const scheduleSessionStatePrune = vi.fn();
     const invalidateDirectoryContext = vi.fn();
     const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
@@ -657,6 +679,7 @@ describe("OpenCodePlugin session-state retention", () => {
           onOpen = handlers.onOpen;
           return { close: vi.fn() };
         }),
+        getSessionStatus: vi.fn(async () => ({})),
       },
     });
 
@@ -665,6 +688,157 @@ describe("OpenCodePlugin session-state retention", () => {
 
     expect(scheduleSessionStatePrune).toHaveBeenCalledOnce();
     expect(invalidateDirectoryContext).toHaveBeenCalledWith("/workspace");
+  });
+
+  it("hydrates directory status on stream reconnect with no views and settles missed completions", async () => {
+    let onOpen: (() => void) | undefined;
+    const getSessionStatus = vi.fn(async () => ({}) as JsonObject);
+    const saveSettings = vi.fn(async () => undefined);
+    const refreshSessionsPanels = vi.fn(async () => undefined);
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    const rememberTurnSettled = (plugin as unknown as { rememberTurnSettled(sessionId: string): Promise<void> }).rememberTurnSettled.bind(plugin);
+    Object.assign(plugin, {
+      settings: pluginSettings({ openedDirectories: ["/workspace"] }),
+      notificationEventSubscriptions: new Map(),
+      layoutReady: true,
+      scheduleSessionStatePrune: vi.fn(),
+      directoryContexts: { invalidate: vi.fn() },
+      sessionState: pluginSessionState({ ses_1: {} }),
+      saveSettings,
+      refreshSessionsPanels,
+      opencode: {
+        subscribeToEvents: vi.fn((handlers: { onOpen?: () => void }) => {
+          onOpen = handlers.onOpen;
+          return { close: vi.fn() };
+        }),
+        getSessionStatus,
+      },
+    });
+    Object.assign(plugin, {
+      sessionStatuses: new SessionStatusStore({ onTurnSettled: (sessionId) => void rememberTurnSettled(sessionId) }),
+    });
+    plugin.sessionStatuses.handleStatus("/workspace", "ses_1", { type: "busy" }, "event");
+
+    (plugin as unknown as { syncNotificationEventSubscriptions(): void }).syncNotificationEventSubscriptions();
+    onOpen?.();
+
+    await vi.waitFor(() => expect(plugin.sessionStatuses.statusFor("ses_1")?.type).toBe("idle"));
+    expect(getSessionStatus).toHaveBeenCalledWith("/workspace");
+    expect(plugin.isSessionUnread("ses_1")).toBe(true);
+    expect(refreshSessionsPanels).toHaveBeenCalledWith({ showLoading: false });
+  });
+
+  it("preserves cached statuses when the reconnect hydration fetch fails", async () => {
+    let onOpen: (() => void) | undefined;
+    const getSessionStatus = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      settings: pluginSettings({ openedDirectories: ["/workspace"] }),
+      notificationEventSubscriptions: new Map(),
+      layoutReady: true,
+      scheduleSessionStatePrune: vi.fn(),
+      directoryContexts: { invalidate: vi.fn() },
+      sessionState: pluginSessionState({ ses_1: {} }),
+      saveSettings: vi.fn(async () => undefined),
+      refreshSessionsPanels: vi.fn(async () => undefined),
+      opencode: {
+        subscribeToEvents: vi.fn((handlers: { onOpen?: () => void }) => {
+          onOpen = handlers.onOpen;
+          return { close: vi.fn() };
+        }),
+        getSessionStatus,
+      },
+    });
+    Object.assign(plugin, { sessionStatuses: new SessionStatusStore() });
+    plugin.sessionStatuses.handleStatus("/workspace", "ses_1", { type: "busy" }, "event");
+
+    (plugin as unknown as { syncNotificationEventSubscriptions(): void }).syncNotificationEventSubscriptions();
+    onOpen?.();
+    await vi.waitFor(() => expect(getSessionStatus).toHaveBeenCalled());
+    await Promise.resolve();
+
+    expect(plugin.sessionStatuses.statusFor("ses_1")?.type).toBe("busy");
+    expect(plugin.isSessionUnread("ses_1")).toBe(false);
+  });
+
+  it("drops an in-flight status hydration after the server changes", async () => {
+    let onOpen: (() => void) | undefined;
+    let releaseStatus!: (statuses: JsonObject) => void;
+    const getSessionStatus = vi.fn(() => new Promise<JsonObject>((resolve) => { releaseStatus = resolve; }));
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      settings: pluginSettings({ openedDirectories: ["/workspace"] }),
+      notificationEventSubscriptions: new Map(),
+      layoutReady: true,
+      scheduleSessionStatePrune: vi.fn(),
+      directoryContexts: { invalidate: vi.fn() },
+      sessionState: pluginSessionState(),
+      saveSettings: vi.fn(async () => undefined),
+      refreshSessionsPanels: vi.fn(async () => undefined),
+      opencode: {
+        subscribeToEvents: vi.fn((handlers: { onOpen?: () => void }) => {
+          onOpen = handlers.onOpen;
+          return { close: vi.fn() };
+        }),
+        getSessionStatus,
+      },
+    });
+    Object.assign(plugin, { sessionStatuses: new SessionStatusStore() });
+
+    (plugin as unknown as { syncNotificationEventSubscriptions(): void }).syncNotificationEventSubscriptions();
+    onOpen?.();
+    await vi.waitFor(() => expect(getSessionStatus).toHaveBeenCalled());
+    // Server swap: applyServerConfig clears the store, bumping the lifecycle generation.
+    plugin.sessionStatuses.clear();
+    releaseStatus({ ses_1: { type: "idle" } });
+    await Promise.resolve();
+
+    expect(plugin.sessionStatuses.statusFor("ses_1")).toBeUndefined();
+  });
+
+  it("starts a fresh hydration for a new generation while the previous one is still in flight", async () => {
+    let onOpen: (() => void) | undefined;
+    const releases: Array<(statuses: JsonObject) => void> = [];
+    const getSessionStatus = vi.fn(() => new Promise<JsonObject>((resolve) => { releases.push(resolve); }));
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      settings: pluginSettings({ openedDirectories: ["/workspace"] }),
+      notificationEventSubscriptions: new Map(),
+      layoutReady: true,
+      scheduleSessionStatePrune: vi.fn(),
+      directoryContexts: { invalidate: vi.fn() },
+      sessionState: pluginSessionState(),
+      saveSettings: vi.fn(async () => undefined),
+      refreshSessionsPanels: vi.fn(async () => undefined),
+      opencode: {
+        subscribeToEvents: vi.fn((handlers: { onOpen?: () => void }) => {
+          onOpen = handlers.onOpen;
+          return { close: vi.fn() };
+        }),
+        getSessionStatus,
+      },
+    });
+    Object.assign(plugin, { sessionStatuses: new SessionStatusStore() });
+    const sync = () => (plugin as unknown as { syncNotificationEventSubscriptions(): void }).syncNotificationEventSubscriptions();
+
+    sync();
+    onOpen?.();
+    await vi.waitFor(() => expect(getSessionStatus).toHaveBeenCalledTimes(1));
+
+    // Server swap: the generation changes, so a new hydration must start before the old resolves.
+    plugin.sessionStatuses.clear();
+    sync();
+    onOpen?.();
+    await vi.waitFor(() => expect(getSessionStatus).toHaveBeenCalledTimes(2));
+
+    releases[0]?.({ ses_1: { type: "busy" } });
+    await Promise.resolve();
+    expect(plugin.sessionStatuses.statusFor("ses_1")).toBeUndefined();
+
+    releases[1]?.({ ses_1: { type: "idle" } });
+    await vi.waitFor(() => expect(plugin.sessionStatuses.statusFor("ses_1")?.type).toBe("idle"));
   });
 });
 

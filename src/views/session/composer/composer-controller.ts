@@ -635,9 +635,11 @@ export class ComposerController {
     model.submittingPrompt = true;
     let targetSessionId = model.sessionId;
     let createdTitle: string | undefined;
+    let createdNewSession = false;
     const isSubmissionBound = (): boolean => model.composerStorageKey === composerKey || (!!targetSessionId && model.composerStorageKey === targetSessionId);
     try {
       if (!targetSessionId) {
+        createdNewSession = true;
         const created = await this.deps.plugin.requireOpenCodeService().createSession(
           {
             agent: submissionAgent,
@@ -651,7 +653,6 @@ export class ComposerController {
         createdTitle = created.title;
         await this.deps.plugin.rememberSessionDraft(composerKey, this.composerTextarea?.value ?? text);
         await this.deps.plugin.promoteSessionDraft(composerKey, targetSessionId);
-        if (model.composerStorageKey === composerKey) await this.deps.requestDraftPromotion(targetSessionId, createdTitle);
         await this.deps.plugin.refreshSessionsPanels({ showLoading: false });
       }
 
@@ -694,6 +695,12 @@ export class ComposerController {
         this.updateInsetSoon();
       }
       await this.deps.plugin.clearSessionComposer(targetSessionId);
+      // Promote the draft leaf only after the prompt POST settles so the canonical fetch
+      // triggered by promotion already sees the persisted user message; promoting earlier
+      // renders an empty timeline until the POST completes (first-send flash).
+      if (createdNewSession && model.draftId && model.composerStorageKey === composerKey) {
+        await this.deps.requestDraftPromotion(targetSessionId, createdTitle);
+      }
       if (isSubmissionBound()) {
         model.submittingPrompt = false;
         await this.refresh();

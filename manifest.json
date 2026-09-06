@@ -1,7 +1,7 @@
 {
   "id": "ono",
   "name": "ONO",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "minAppVersion": "1.6.0",
   "description": "OpenCode client with an Obsidian-native user experience. Desktop Only",
   "author": "Ahmed Yaseen",

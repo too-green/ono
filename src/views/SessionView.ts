@@ -437,7 +437,9 @@ export class SessionView extends ItemView {
     const initialLoad = this.model.renderedSessionId !== sessionId;
     if (initialLoad) this.resetTimelineState(options);
     this.loadingSessionId = sessionId;
-    if (initialLoad) this.renderLoading();
+    // Draft promotion mid-submission keeps the mounted draft shell instead of flashing the
+    // loading state; `resetTimelineState` preserved `submittingPrompt` exactly for this case.
+    if (initialLoad && !this.model.submittingPrompt) this.renderLoading();
     // Seed the freshly bound or reopened tab from the shared status cache so it never flashes idle
     // while the canonical fetch is still in flight.
     this.applyCachedSessionStatus();

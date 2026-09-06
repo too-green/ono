@@ -224,7 +224,7 @@ export class TimelineRenderer {
     const renderedWorkingPlaceholder = this.renderWorkingAssistantPlaceholder(timeline, activeAssistantId);
     renderRewindBoundary(timeline, this.rewindBoundaryProps());
     this.annotateRewindBoundary(timeline);
-    if (visibleMessages.length === 0 && !renderedRetry && !renderedSessionError && !renderedWorkingPlaceholder && !this.deps.getRevertMessageId()) {
+    if (visibleMessages.length === 0 && !renderedRetry && !renderedSessionError && !renderedWorkingPlaceholder && !this.deps.getRevertMessageId() && !this.deps.model.submittingPrompt) {
       timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
     }
     return visibleMessages.length;
@@ -341,7 +341,9 @@ export class TimelineRenderer {
         if (child === history || entries.some((entry) => (entry.current ?? entry.next) === child) || child === retry || child === sessionError || child === placeholder || child === rewind) continue;
         child.remove();
       }
-      if (visibleMessages.length === 0 && !retry && !sessionError && !placeholder && !rewind) timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
+      // A submission in flight may not have persisted its user message yet; the empty-state
+      // placeholder would flash for one frame before SSE reconciliation lands it.
+      if (visibleMessages.length === 0 && !retry && !sessionError && !placeholder && !rewind && !this.deps.model.submittingPrompt) timeline.createDiv({ text: "No messages in this session yet.", cls: "opencode-session-view__empty" });
       this.deps.restoreFollowLatest(followGeneration);
       this.deps.updateJumpButton();
     } finally {

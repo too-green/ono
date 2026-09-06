@@ -10,7 +10,9 @@ export const WORKING_ANIMATION_LABELS = {
 
 export type WorkingAnimation = keyof typeof WORKING_ANIMATION_LABELS;
 
-export const DEFAULT_WORKING_ANIMATION: WorkingAnimation = "bounce";
+export const SELECTABLE_WORKING_ANIMATIONS = ["orbit"] as const satisfies readonly WorkingAnimation[];
+
+export const DEFAULT_WORKING_ANIMATION: WorkingAnimation = "orbit";
 
 /** Normalizes current and legacy persisted animation settings; referenced during load and settings updates. */
 export function normalizeWorkingAnimation(value: unknown): WorkingAnimation {
@@ -20,6 +22,12 @@ export function normalizeWorkingAnimation(value: unknown): WorkingAnimation {
   if (value === "W3") return "bounce";
   if (value === "W4") return "scanner";
   return DEFAULT_WORKING_ANIMATION;
+}
+
+/** Restricts persisted user choices to animations currently exposed by the settings UI. */
+export function normalizeSelectableWorkingAnimation(value: unknown): WorkingAnimation {
+  const animation = normalizeWorkingAnimation(value);
+  return SELECTABLE_WORKING_ANIMATIONS.some((item) => item === animation) ? animation : DEFAULT_WORKING_ANIMATION;
 }
 
 /** Returns whether an OpenCode session status means the agent is still active. */

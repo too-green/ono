@@ -5,12 +5,7 @@
       "repository": "anomalyco/opencode",
       "branch": "dev",
       "description": "Refer for communication layer details and UI behaviours of first-pary clients and opencode server API docs"
-    },
-    "openchamber": {
-      "repository": "openchamber/openchamber",
-      "branch": "main",
-      "description": "a popular 3rd party opensource opencode GUI client app"
-    },
+    }
   },
   "instructions": ["custom-instructions/*.md"]
 }

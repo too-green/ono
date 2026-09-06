@@ -15,6 +15,7 @@ import {
   modelVariants,
   nextAgentName,
   nextFavoriteRef,
+  nextModelVariant,
   sameModel,
   titleCaseAgent,
   visibleAgents,
@@ -186,6 +187,30 @@ describe("modelVariants", () => {
   });
 });
 
+describe("nextModelVariant", () => {
+  const variants = ["none", "low", "high"];
+
+  it("advances from OpenCode's default to the first catalog variant", () => {
+    expect(nextModelVariant(variants, undefined)).toBe("none");
+  });
+
+  it("advances variants in catalog order", () => {
+    expect(nextModelVariant(variants, "low")).toBe("high");
+  });
+
+  it("wraps the last variant back to OpenCode's default", () => {
+    expect(nextModelVariant(variants, "high")).toBeUndefined();
+  });
+
+  it("starts from the first variant when the current value is stale", () => {
+    expect(nextModelVariant(variants, "unsupported")).toBe("none");
+  });
+
+  it("returns default when the model has no explicit variants", () => {
+    expect(nextModelVariant([], "high")).toBeUndefined();
+  });
+});
+
 describe("modelLabelForRef / modelShortLabelForRef", () => {
   const models: JsonObject[] = [
     { providerID: "anthropic", modelID: "claude-3.5", name: "Claude 3.5 Sonnet" },
@@ -297,6 +322,32 @@ describe("composerModelFromState", () => {
     ];
     const session: JsonObject = { agent: "build" };
     expect(composerModelFromState(models, availableAgents, session, [], "plan")).toEqual({ providerID: "openai", modelID: "gpt-4o", variant: "low" });
+  });
+
+  it("uses the configured default before the catalog fallback", () => {
+    expect(composerModelFromState(models, [{ name: "build" }], {}, [], "build", { model: "openai/gpt-4o" })).toEqual({
+      providerID: "openai",
+      modelID: "gpt-4o",
+    });
+  });
+
+  it("supports configured model IDs containing slashes", () => {
+    const nestedModels: JsonObject[] = [
+      { providerID: "anthropic", modelID: "claude" },
+      { providerID: "openrouter", modelID: "google/gemini-pro" },
+    ];
+    expect(composerModelFromState(nestedModels, [], {}, [], undefined, { model: "openrouter/google/gemini-pro" })).toEqual({
+      providerID: "openrouter",
+      modelID: "google/gemini-pro",
+    });
+  });
+
+  it("skips configured and agent models missing from the catalog", () => {
+    const unavailableAgent: JsonObject[] = [{ name: "build", model: { providerID: "missing", modelID: "agent-model" } }];
+    expect(composerModelFromState(models, unavailableAgent, {}, [], "build", { model: "missing/config-model" })).toEqual({
+      providerID: "anthropic",
+      modelID: "claude",
+    });
   });
 
   it("falls back to first available ref when no other source resolves", () => {

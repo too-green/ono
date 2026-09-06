@@ -29,7 +29,7 @@ import { confirmSessionArchive, requestRetryAction, requestSessionTitle, type Se
 import { SessionsPanelView, VIEW_TYPE_OPENCODE_SESSIONS_PANEL } from "./src/views/SessionsPanelView";
 import { SessionView, VIEW_TYPE_OPENCODE_SESSION } from "./src/views/SessionView";
 import { loadFolderSuggestions, NewSessionFolderModal } from "./src/views/NewSessionFolderModal";
-import { isActiveSessionStatus, normalizeWorkingAnimation } from "./src/session-state";
+import { isActiveSessionStatus, normalizeSelectableWorkingAnimation } from "./src/session-state";
 import { PermissionCoordinator } from "./src/permission-coordinator";
 import type { SessionAutoApproveState } from "./src/session-auto-approve";
 import { SessionHierarchy } from "./src/session-hierarchy";
@@ -869,7 +869,7 @@ export default class OpenCodePlugin extends Plugin {
     this.settings.notifyOnTurnComplete = this.settings.notifyOnTurnComplete !== false;
     this.settings.retryActionLastShown = normalizeRetryActionLastShown(this.settings.retryActionLastShown);
     this.settings.retryActionSuppressed = normalizeRetryActionSuppressed(this.settings.retryActionSuppressed);
-    this.settings.workingAnimation = normalizeWorkingAnimation(this.settings.workingAnimation);
+    this.settings.workingAnimation = normalizeSelectableWorkingAnimation(this.settings.workingAnimation);
     this.settings.folderCollapseDisplay = normalizeFolderCollapseDisplay(this.settings.folderCollapseDisplay);
     this.settings.sessionsPanelSessionSort = normalizeSessionsPanelSessionSort(this.settings.sessionsPanelSessionSort);
     this.settings.contextBar = normalizeContextBarSettings(this.settings.contextBar);

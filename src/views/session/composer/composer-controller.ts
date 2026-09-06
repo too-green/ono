@@ -170,6 +170,10 @@ export class ComposerController {
     this.deps.renderThinkingPill(labels);
 
     const right = controls.createDiv({ cls: "opencode-session-view__composer-right" });
+    right.createSpan({
+      cls: "opencode-session-view__composer-hint",
+      text: `${Platform.isMacOS ? "⌘" : "Ctrl"}+Enter to send`,
+    });
     this.renderTogglePill(
       right,
       "",

@@ -123,6 +123,12 @@ describe("ComposerController input stability", () => {
     expect(actions.every((button) => !button.disabled)).toBe(true);
   });
 
+  it("shows the composer send shortcut", () => {
+    const { contentEl } = setup();
+
+    expect(contentEl.querySelector(".opencode-session-view__composer-hint")?.textContent).toMatch(/^(⌘|Ctrl)\+Enter to send$/);
+  });
+
   it("leaves arrow keys to native textarea navigation", () => {
     const { contentEl } = setup();
     const textarea = contentEl.querySelector<HTMLTextAreaElement>("textarea")!;

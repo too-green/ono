@@ -80,6 +80,14 @@ export function modelVariants(models: JsonObject[], ref: OpenCodeModelRef | unde
   return [];
 }
 
+/** Returns the next explicit model variant, wrapping the last preset to OpenCode's default. */
+export function nextModelVariant(variants: string[], current: string | undefined): string | undefined {
+  if (variants.length === 0) return undefined;
+  const index = current ? variants.indexOf(current) : -1;
+  if (index < 0) return variants[0];
+  return index === variants.length - 1 ? undefined : variants[index + 1];
+}
+
 /** Produces a concise provider/model label for menus and the composer pill. */
 export function modelLabelForRef(models: JsonObject[], ref: OpenCodeModelRef): string {
   const info = models.find((item) => sameModel(modelRefFromInfo(item), ref));
@@ -158,13 +166,14 @@ export function composerAgentFromState(
   return agentName(visible[0] ?? {});
 }
 
-/** Determines the composer model from canonical session/message state, agent default, or first available model. */
+/** Determines the composer model from session state, agent/config defaults, or the first available model. */
 export function composerModelFromState(
   models: JsonObject[],
   agents: JsonObject[],
   session: JsonObject,
   messages: OpenCodeMessageBundle[],
   selectedAgent?: string,
+  config: JsonObject = {},
 ): OpenCodeModelRef | undefined {
   const sessionModel = readObject(session, "model");
   const sessionProvider = sessionModel ? readString(sessionModel, ["providerID", "providerId"]) : undefined;
@@ -172,8 +181,17 @@ export function composerModelFromState(
   if (sessionProvider && sessionModelID) return { providerID: sessionProvider, modelID: sessionModelID, variant: sessionModel ? readString(sessionModel, ["variant"]) : undefined };
   const messageModel = latestUserModel(messages);
   if (messageModel) return messageModel;
+  const available = availableModelRefs(models);
   const agent = selectedAgent ?? readString(session, ["agent"]);
-  return modelForAgent(agents, agent) ?? availableModelRefs(models)[0];
+  const agentModel = modelForAgent(agents, agent);
+  if (agentModel && available.some((item) => sameModel(item, agentModel))) return agentModel;
+  const configured = readString(config, ["model"]);
+  if (configured) {
+    const [providerID, ...modelParts] = configured.split("/");
+    const configuredModel = { providerID, modelID: modelParts.join("/") };
+    if (configuredModel.modelID && available.some((item) => sameModel(item, configuredModel))) return configuredModel;
+  }
+  return available[0];
 }
 
 // ---- stateful controller
@@ -213,9 +231,16 @@ export class ModelVariantsController {
     return composerAgentFromState(this.deps.model.availableAgents, session, this.deps.model.loadedMessages);
   }
 
-  /** Determines the composer model from canonical session/message state, agent default, or first available model. */
+  /** Determines the composer model from canonical session state and configured defaults. */
   resolveModelForSession(session: JsonObject, agentNameValue: string | undefined): OpenCodeModelRef | undefined {
-    return composerModelFromState(this.deps.model.availableModels, this.deps.model.availableAgents, session, this.deps.model.loadedMessages, agentNameValue);
+    return composerModelFromState(
+      this.deps.model.availableModels,
+      this.deps.model.availableAgents,
+      session,
+      this.deps.model.loadedMessages,
+      agentNameValue,
+      this.deps.model.serverConfig,
+    );
   }
 
   // ---- rendering (called by renderComposer)
@@ -270,7 +295,7 @@ export class ModelVariantsController {
   renderThinkingPill(container: HTMLElement): void {
     const selected = this.deps.model.selectedModel;
     const variants = modelVariants(this.deps.model.availableModels, selected);
-    const label = selected?.variant ?? "off";
+    const label = selected?.variant ?? "default";
     const el = container.createSpan({ cls: "opencode-session-view__thinking-pill", attr: { role: "button", tabindex: "0" } });
     const icon = el.createSpan({ cls: "opencode-session-view__thinking-pill-icon" });
     setIcon(icon, "brain");
@@ -314,7 +339,7 @@ export class ModelVariantsController {
     await this.deps.requestRefresh();
   }
 
-  /** Cycles the current model's configured variants, treating no variant as thinking off/default. */
+  /** Cycles the current model's configured variants, treating no explicit variant as OpenCode's default. */
   async cycleThinkingVariant(): Promise<void> {
     const selected = this.deps.model.selectedModel;
     if (!selected) return;
@@ -324,11 +349,7 @@ export class ModelVariantsController {
       new Notice("This model does not expose reasoning variants.");
       return;
     }
-    const current = selected.variant;
-    const index = current ? variants.indexOf(current) : -1;
-    const firstEnabled = variants.find((variant) => !isOffReasoningVariant(variant)) ?? variants[0];
-    const offVariant = variants.find((variant) => isOffReasoningVariant(variant));
-    const next = index < 0 ? firstEnabled : index === variants.length - 1 ? offVariant : variants[index + 1];
+    const next = nextModelVariant(variants, selected.variant);
     await this.chooseComposerModel({ ...selected, variant: next });
   }
 

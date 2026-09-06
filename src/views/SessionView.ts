@@ -560,7 +560,7 @@ export class SessionView extends ItemView {
       service.listAgents(directory),
       service.listModels(directory).catch(logServiceError([], "listModels")),
       service.listCommands(directory).catch(logServiceError([], "listCommands")),
-      service.getConfig().catch(logServiceError({}, "getConfig")),
+      service.getConfig(directory).catch(logServiceError({}, "getConfig")),
       service.listPermissionRequests(directory).catch(logServiceError(permissionFallback, "listPermissionRequests")),
       service.listQuestionRequests(directory).catch(logServiceError(questionFallback, "listQuestionRequests")),
       // A directory-scoped status GET; failure resolves to undefined so the shared cache survives untouched.
@@ -862,7 +862,7 @@ export class SessionView extends ItemView {
         service.listAgents(directory),
         service.listModels(directory).catch(logServiceError([], "listModels")),
         service.listCommands(directory).catch(logServiceError([], "listCommands")),
-        service.getConfig().catch(logServiceError({}, "getConfig")),
+        service.getConfig(directory).catch(logServiceError({}, "getConfig")),
         this.plugin.directoryContexts.get(directory),
       ]);
       if (this.sessionBindingVersion !== bindingVersion || this.model.draftId !== draftId || this.model.sessionId) return;

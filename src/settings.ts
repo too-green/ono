@@ -5,8 +5,9 @@ import type { SessionNotificationTestKind } from "./services/session-notificatio
 import type { OpenCodeServerConfig } from "./services/opencode-service";
 import {
   DEFAULT_WORKING_ANIMATION,
+  SELECTABLE_WORKING_ANIMATIONS,
   WORKING_ANIMATION_LABELS,
-  normalizeWorkingAnimation,
+  normalizeSelectableWorkingAnimation,
   type WorkingAnimation,
 } from "./session-state";
 import {
@@ -663,9 +664,9 @@ export class OpenCodeSettingTab extends PluginSettingTab {
       .setName("Working indicator animation")
       .setDesc("Choose a compact animation for session rows, tabs, and active-turn metadata.")
       .addDropdown((dropdown) => {
-        for (const [value, label] of Object.entries(WORKING_ANIMATION_LABELS)) dropdown.addOption(value, label);
+        for (const value of SELECTABLE_WORKING_ANIMATIONS) dropdown.addOption(value, WORKING_ANIMATION_LABELS[value]);
         dropdown.setValue(this.plugin.settings.workingAnimation).onChange(async (value) => {
-          this.plugin.settings.workingAnimation = normalizeWorkingAnimation(value);
+          this.plugin.settings.workingAnimation = normalizeSelectableWorkingAnimation(value);
           await this.plugin.saveSettings();
           await Promise.all([
             this.plugin.refreshSessionsPanels({ showLoading: false }),

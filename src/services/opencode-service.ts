@@ -117,9 +117,9 @@ export class OpenCodeService {
     return this.http.post<boolean>(WORKTREE_RESET_PATH, input, { directory });
   }
 
-  /** Reads OpenCode config metadata from `GET /config`. */
-  getConfig(): Promise<JsonObject> {
-    return this.http.get<JsonObject>("/config");
+  /** Reads directory-scoped OpenCode config metadata from `GET /config`; referenced by session composer hydration. */
+  getConfig(directory?: string): Promise<JsonObject> {
+    return this.http.get<JsonObject>("/config", { directory });
   }
 
   /** Lists configured providers from `GET /config/providers`. */

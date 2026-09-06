@@ -23,15 +23,25 @@ export class WorktreeManagementService {
   /** Removes a managed worktree and its branch without allowing the primary workspace as the target. */
   remove(projectDirectory: string, worktreeDirectory: string): Promise<boolean> {
     const directories = this.requireManagedDirectories(projectDirectory, worktreeDirectory);
-    return this.requireListedWorktree(directories).then(() =>
-      this.getClient().removeWorktree(directories.project, { directory: directories.worktree }));
+    return this.removeListedWorktree(directories);
+  }
+
+  /** Removes one validated worktree after confirming it remains server-managed. */
+  private async removeListedWorktree(directories: { project: string; worktree: string }): Promise<boolean> {
+    await this.requireListedWorktree(directories);
+    return await this.getClient().removeWorktree(directories.project, { directory: directories.worktree });
   }
 
   /** Resets a managed worktree to the project's default branch without touching the primary workspace. */
   reset(projectDirectory: string, worktreeDirectory: string): Promise<boolean> {
     const directories = this.requireManagedDirectories(projectDirectory, worktreeDirectory);
-    return this.requireListedWorktree(directories).then(() =>
-      this.getClient().resetWorktree(directories.project, { directory: directories.worktree }));
+    return this.resetListedWorktree(directories);
+  }
+
+  /** Resets one validated worktree after confirming it remains server-managed. */
+  private async resetListedWorktree(directories: { project: string; worktree: string }): Promise<boolean> {
+    await this.requireListedWorktree(directories);
+    return await this.getClient().resetWorktree(directories.project, { directory: directories.worktree });
   }
 
   /** Confirms destructive targets against the server's project-scoped worktree registry. */

@@ -63,14 +63,20 @@ export class SessionHierarchy {
     const key = `${effectiveDirectory ?? ""}\u0000${sessionId}`;
     const pending = this.pendingSessions.get(key);
     if (pending) return pending;
-    const request = this.deps.getSession(sessionId, effectiveDirectory)
-      .then((session) => {
-        this.cache([session], true);
-        return session;
-      })
-      .finally(() => this.pendingSessions.delete(key));
+    const request = this.loadSession(key, sessionId, effectiveDirectory);
     this.pendingSessions.set(key, request);
     return request;
+  }
+
+  /** Hydrates and caches one session while releasing its shared in-flight slot on settlement. */
+  private async loadSession(key: string, sessionId: string, directory?: string): Promise<OpenCodeSession> {
+    try {
+      const session = await this.deps.getSession(sessionId, directory);
+      this.cache([session], true);
+      return session;
+    } finally {
+      this.pendingSessions.delete(key);
+    }
   }
 
   /** Hydrates a cycle-safe owner-to-root lineage, retaining the resolved prefix on upper lookup failure. */

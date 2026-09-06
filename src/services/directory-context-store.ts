@@ -58,16 +58,9 @@ export class DirectoryContextStore {
     if (entry.project) return Promise.resolve(entry.project);
     if (entry.projectPromise) return entry.projectPromise;
     const revision = entry.projectRevision;
-    const promise = this.getClient().getCurrentProject(directory).then((project) => {
-      if (revision !== entry.projectRevision || this.entries.get(key) !== entry) return this.getProject(directory);
-      entry.project = project;
-      return project;
-    });
+    const promise = this.loadProject(key, entry, revision, directory);
     entry.projectPromise = promise;
-    void promise.then(
-      () => this.clearPromise(key, entry, "projectPromise", promise),
-      () => this.clearPromise(key, entry, "projectPromise", promise),
-    );
+    void this.clearPromiseWhenSettled(key, entry, "projectPromise", promise);
     return promise;
   }
 
@@ -78,16 +71,9 @@ export class DirectoryContextStore {
     if (entry.vcs) return Promise.resolve(entry.vcs);
     if (entry.vcsPromise) return entry.vcsPromise;
     const revision = entry.vcsRevision;
-    const promise = this.getClient().getVcs(directory).then((vcs) => {
-      if (revision !== entry.vcsRevision || this.entries.get(key) !== entry) return this.getVcs(directory);
-      entry.vcs = vcs;
-      return vcs;
-    });
+    const promise = this.loadVcs(key, entry, revision, directory);
     entry.vcsPromise = promise;
-    void promise.then(
-      () => this.clearPromise(key, entry, "vcsPromise", promise),
-      () => this.clearPromise(key, entry, "vcsPromise", promise),
-    );
+    void this.clearPromiseWhenSettled(key, entry, "vcsPromise", promise);
     return promise;
   }
 
@@ -158,6 +144,38 @@ export class DirectoryContextStore {
       entry.localGitLoaded = true;
     }
     return entry.localGit;
+  }
+
+  /** Loads and conditionally caches project metadata for the current entry revision. */
+  private async loadProject(key: string, entry: DirectoryContextEntry, revision: number, directory?: string): Promise<OpenCodeProject> {
+    const project = await this.getClient().getCurrentProject(directory);
+    if (revision !== entry.projectRevision || this.entries.get(key) !== entry) return await this.getProject(directory);
+    entry.project = project;
+    return project;
+  }
+
+  /** Loads and conditionally caches VCS metadata for the current entry revision. */
+  private async loadVcs(key: string, entry: DirectoryContextEntry, revision: number, directory?: string): Promise<OpenCodeVcsInfo> {
+    const vcs = await this.getClient().getVcs(directory);
+    if (revision !== entry.vcsRevision || this.entries.get(key) !== entry) return await this.getVcs(directory);
+    entry.vcs = vcs;
+    return vcs;
+  }
+
+  /** Clears one fulfilled or rejected shared request without masking its result from callers. */
+  private async clearPromiseWhenSettled<K extends "projectPromise" | "vcsPromise">(
+    key: string,
+    entry: DirectoryContextEntry,
+    property: K,
+    promise: NonNullable<DirectoryContextEntry[K]>,
+  ): Promise<void> {
+    try {
+      await promise;
+    } catch {
+      // The original promise retains the request error for its callers.
+    } finally {
+      this.clearPromise(key, entry, property, promise);
+    }
   }
 
   /** Clears one settled request without disturbing a newer replacement request. */

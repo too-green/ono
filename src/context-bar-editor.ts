@@ -193,8 +193,14 @@ export class ContextBarEditor {
     const config = normalizeContextBarSettings(this.deps.getConfig());
     mutate(config);
     this.deps.setConfig(normalizeContextBarSettings(config));
-    void this.deps.save().then(() => this.deps.onApplied());
+    void this.saveAndApply();
     this.render();
+  }
+
+  /** Persists one committed policy before refreshing every session view. */
+  private async saveAndApply(): Promise<void> {
+    await this.deps.save();
+    this.deps.onApplied();
   }
 
   // ---- Rendering ----

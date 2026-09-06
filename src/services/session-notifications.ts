@@ -229,31 +229,38 @@ export class SessionNotificationService {
 
   /** Runs asynchronous notification preparation without exposing unhandled promise rejections. */
   private queue(content: NotificationContent): void {
-    void this.show(content)
-      .catch((error) => logger.warn("notifications", "delivery failed", { error }))
-      .finally(() => {
-        if (
-          content.kind === "attention" &&
-          content.requestId &&
-          this.preparingAttentionGenerationByKey.get(content.key) === content.attentionGeneration
-        ) {
-          this.preparingAttentionGenerationByKey.delete(content.key);
-        }
-      });
+    void this.showQueued(content);
+  }
+
+  /** Prepares one queued notification and always releases its attention-generation lock. */
+  private async showQueued(content: NotificationContent): Promise<void> {
+    try {
+      await this.show(content);
+    } catch (error) {
+      logger.warn("notifications", "delivery failed", { error });
+    } finally {
+      if (
+        content.kind === "attention" &&
+        content.requestId &&
+        this.preparingAttentionGenerationByKey.get(content.key) === content.attentionGeneration
+      ) {
+        this.preparingAttentionGenerationByKey.delete(content.key);
+      }
+    }
   }
 
   /** Resolves the owner or nearest enabled ancestor, then rechecks all delivery gates. */
   private async show(content: NotificationContent): Promise<void> {
     if (!this.shouldPrepare(content) || this.deps.isSessionVisible(content.sessionId)) return;
-    const lineage = content.kind === "attention"
-      ? await this.deps.getSessionLineage(content.sessionId, content.directory).catch((error) => {
-        logger.debug("notifications", "lineage lookup failed", { error });
-        return [];
-      })
-      : await this.deps.getSession(content.sessionId, content.directory).then((session) => [session]).catch((error) => {
-        logger.debug("notifications", "session lookup failed", { error });
-        return [];
-      });
+    let lineage: OpenCodeSession[];
+    try {
+      lineage = content.kind === "attention"
+        ? await this.deps.getSessionLineage(content.sessionId, content.directory)
+        : [await this.deps.getSession(content.sessionId, content.directory)];
+    } catch (error) {
+      logger.debug("notifications", content.kind === "attention" ? "lineage lookup failed" : "session lookup failed", { error });
+      lineage = [];
+    }
     if (lineage.length === 0 || !this.shouldPrepare(content)) return;
 
     const target = content.kind === "attention"

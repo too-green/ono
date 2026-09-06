@@ -497,7 +497,7 @@ export class TimelineRenderer {
 
     this.reconcileAnimatedSummary(currentSummary, nextSummary, ".opencode-session-view__reasoning-icon");
     this.syncAttributes(currentBody, nextBody);
-    if (currentBody.innerHTML !== nextBody.innerHTML && !this.keepStreamingBlock(currentBody, nextBody, messageId)) {
+    if (!currentBody.isEqualNode(nextBody) && !this.keepStreamingBlock(currentBody, nextBody, messageId)) {
       this.cancelStreamingPatches(currentBody, messageId);
       currentBody.replaceChildren(...Array.from(nextBody.childNodes));
     }
@@ -539,7 +539,7 @@ export class TimelineRenderer {
       if (nextChild !== nextIcon || !currentIcon) return nextChild;
       retainedChildren.add(currentIcon);
       this.syncAttributes(currentIcon, nextIcon);
-      if (currentIcon.innerHTML !== nextIcon.innerHTML) currentIcon.replaceChildren(...Array.from(nextIcon.childNodes));
+      if (!currentIcon.isEqualNode(nextIcon)) currentIcon.replaceChildren(...Array.from(nextIcon.childNodes));
       return currentIcon;
     });
     this.syncAttributes(current, next);
@@ -967,7 +967,7 @@ export class TimelineRenderer {
     this.renderHistoryBoundary(scratch);
     const next = scratch.firstElementChild as HTMLElement;
     const current = timeline.querySelector<HTMLElement>(":scope > .opencode-session-view__history-boundary");
-    if (current && current.className === next.className && current.innerHTML === next.innerHTML) return current;
+    if (current?.isEqualNode(next)) return current;
     if (current) current.replaceWith(next);
     else timeline.prepend(next);
     return next;

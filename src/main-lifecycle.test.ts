@@ -1,15 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Notice } from "obsidian";
 
-import OpenCodePlugin, { LEGACY_DIFF_PANEL_VIEW_TYPE } from "../main.ts";
+import OpenCodePlugin from "../main.ts";
 import { OpenCodeHttpError } from "./services/opencode-http";
 import { OpenCodeService } from "./services/opencode-service";
 import { SessionStatusStore } from "./services/session-status-store";
 import type { JsonObject, OpenCodeHealth } from "./services/opencode-types";
 import { logger } from "./logger";
 import { DEFAULT_OPENCODE_SETTINGS, OPENCODE_DATA_SCHEMA_VERSION, type OpenCodePluginData, type OpenCodePluginSettings, type PersistedSessionState } from "./settings";
-import { VIEW_TYPE_OPENCODE_SESSIONS_PANEL } from "./views/SessionsPanelView";
-import { VIEW_TYPE_OPENCODE_SESSION } from "./views/SessionView";
 import * as WorktreeModals from "./views/WorktreeModals";
 
 /** Returns isolated mutable settings records for plugin method tests. */
@@ -198,9 +196,9 @@ describe("OpenCodePlugin session move workflow", () => {
 });
 
 describe("OpenCodePlugin unload lifecycle", () => {
-  it("detaches every plugin view before disposing the service", () => {
+  it("preserves plugin leaves while disposing background resources", () => {
     const order: string[] = [];
-    const detachLeavesOfType = vi.fn((viewType: string) => { order.push(viewType); });
+    const detachLeavesOfType = vi.fn();
     const closeSubscription = vi.fn(() => { order.push("close-subscription"); });
     const disposeNotifications = vi.fn(() => { order.push("dispose-notifications"); });
     const dispose = vi.fn(() => { order.push("dispose"); });
@@ -215,13 +213,11 @@ describe("OpenCodePlugin unload lifecycle", () => {
     plugin.onunload();
 
     expect(order).toEqual([
-      VIEW_TYPE_OPENCODE_SESSIONS_PANEL,
-      VIEW_TYPE_OPENCODE_SESSION,
-      LEGACY_DIFF_PANEL_VIEW_TYPE,
       "close-subscription",
       "dispose-notifications",
       "dispose",
     ]);
+    expect(detachLeavesOfType).not.toHaveBeenCalled();
   });
 });
 

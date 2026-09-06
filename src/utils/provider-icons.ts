@@ -36,6 +36,7 @@
 import spriteText from "../assets/provider-icons.svg";
 
 const SPRITE_CONTAINER_ID = "opencode-provider-icon-sprite";
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 
 /**
  * Injects the provider icon sprite (hidden <svg> with <symbol> defs) into the document body.
@@ -45,10 +46,17 @@ export function ensureProviderIconSprite(): void {
   if (document.getElementById(SPRITE_CONTAINER_ID)) return;
   const holder = document.createElement("div");
   holder.id = SPRITE_CONTAINER_ID;
+  holder.classList.add("opencode-provider-icon-sprite");
   holder.setAttribute("aria-hidden", "true");
-  holder.style.cssText = "position:absolute;width:0;height:0;overflow:hidden;";
-  holder.innerHTML = spriteText;
+  const parsed = new DOMParser().parseFromString(spriteText, "image/svg+xml");
+  if (parsed.querySelector("parsererror")) throw new Error("Unable to parse the bundled provider icon sprite.");
+  holder.appendChild(document.importNode(parsed.documentElement, true));
   document.body.appendChild(holder);
+}
+
+/** Removes the document-level provider sprite when the plugin unloads. */
+export function removeProviderIconSprite(): void {
+  if (typeof document !== "undefined") document.getElementById(SPRITE_CONTAINER_ID)?.remove();
 }
 
 /**
@@ -58,7 +66,16 @@ export function ensureProviderIconSprite(): void {
  */
 export function setProviderIcon(el: HTMLElement, providerID: string, size = 16): void {
   ensureProviderIconSprite();
-  const known = document.getElementById(providerID) !== null;
+  const holder = document.getElementById(SPRITE_CONTAINER_ID);
+  const known = Array.from(holder?.getElementsByTagNameNS(SVG_NAMESPACE, "symbol") ?? [])
+    .some((symbol) => symbol.id === providerID);
   const symbolId = known ? providerID : "synthetic";
-  el.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 40 40"><use href="#${symbolId}"/></svg>`;
+  const svg = document.createElementNS(SVG_NAMESPACE, "svg");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("viewBox", "0 0 40 40");
+  const use = document.createElementNS(SVG_NAMESPACE, "use");
+  use.setAttribute("href", `#${symbolId}`);
+  svg.appendChild(use);
+  el.replaceChildren(svg);
 }

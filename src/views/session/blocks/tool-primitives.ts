@@ -156,13 +156,24 @@ function hydrateLazyDetailsBody(details: HTMLDetailsElement, immediate = false):
   body.createDiv({ text: "Loading details…", cls: "opencode-session-view__tool-empty" });
   const scratch = document.createElement("div");
   lazyRenderOwners.set(scratch, details);
-  void Promise.resolve()
-    .then(() => state.render(scratch))
-    .then(() => {
-      if (lazyDetailsStates.get(details) !== state || state.version !== version || state.body !== body || body.parentElement !== details) return;
-      body.replaceChildren(...Array.from(scratch.childNodes));
-    })
-    .catch((error) => logger.warn("tool-details", "render failed", { error }));
+  void renderLazyDetails(details, state, version, body, scratch);
+}
+
+/** Renders and commits one lazy details body while discarding stale asynchronous results. */
+async function renderLazyDetails(
+  details: HTMLDetailsElement,
+  state: LazyDetailsState,
+  version: number,
+  body: HTMLElement,
+  scratch: HTMLElement,
+): Promise<void> {
+  try {
+    await state.render(scratch);
+    if (lazyDetailsStates.get(details) !== state || state.version !== version || state.body !== body || body.parentElement !== details) return;
+    body.replaceChildren(...Array.from(scratch.childNodes));
+  } catch (error) {
+    logger.warn("tool-details", "render failed", { error });
+  }
 }
 
 /** Renders a per-block raw-context control and switches between specialized output and the complete source part. */

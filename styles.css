@@ -1,3 +1,10 @@
+.opencode-provider-icon-sprite {
+  height: 0;
+  overflow: hidden;
+  position: absolute;
+  width: 0;
+}
+
 .view-content.opencode-sidebar-panel {
   color: var(--text-normal);
   /* The workspace leaf owns the sidebar surface, including translucent-window compositing. */
@@ -1864,9 +1871,9 @@ textarea.opencode-session-view__composer-input:focus {
   font-weight: var(--font-semibold);
 }
 
-/* Dark ink on a passed yellow bead: Obsidian exposes no on-color token for --color-yellow and --text-on-accent is tuned for the accent hue. Upcoming yellow beads stay hollow with muted ink. */
+/* Passed yellow beads need the foreground token intended for light accent surfaces. */
 .opencode-session-view__composer-progress-marker.is-passed.is-warn .opencode-session-view__composer-progress-marker-label {
-  color: #222;
+  color: var(--text-on-accent-inverted);
 }
 
 /* Right-align the model-limit bead so it stays inside the bar's right inset. */

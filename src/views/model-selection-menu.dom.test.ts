@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../assets/provider-icons.svg", () => ({
+  default: '<svg xmlns="http://www.w3.org/2000/svg"><defs><symbol id="anthropic"/><symbol id="openai"/><symbol id="google"/><symbol id="synthetic"/></defs></svg>',
+}));
+
 import {
   ModelSelectionMenu,
   reorderFavoritesList,

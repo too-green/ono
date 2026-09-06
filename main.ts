@@ -43,6 +43,7 @@ import { DirectoryContextStore } from "./src/services/directory-context-store";
 import { SessionStatusStore } from "./src/services/session-status-store";
 import { WorktreeManagementService } from "./src/services/worktree-management-service";
 import { confirmWorktreeAction, ExistingWorktreeModal, requestWorktreeCreation } from "./src/views/WorktreeModals";
+import { removeProviderIconSprite } from "./src/utils/provider-icons";
 
 export const LEGACY_DIFF_PANEL_VIEW_TYPE = "opencode-diff-panel";
 
@@ -140,7 +141,6 @@ export default class OpenCodePlugin extends Plugin {
     this.addCommand({
       id: "opencode-open-agent-panel",
       name: "Open sessions panel",
-      hotkeys: [{ modifiers: ["Mod", "Shift"], key: "A" }],
       callback: () => void this.activateSessionsPanel(),
     });
 
@@ -160,8 +160,8 @@ export default class OpenCodePlugin extends Plugin {
       id: "opencode-cycle-active-session-island-tab",
       name: "Cycle active session island tab",
       checkCallback: (checking) => {
-        const view = this.app.workspace.activeLeaf?.view;
-        if (!(view instanceof SessionView) || !view.canCycleSessionIslandTabs()) return false;
+        const view = this.activeSessionView();
+        if (!view?.canCycleSessionIslandTabs()) return false;
         if (!checking) view.cycleSessionIslandTab();
         return true;
       },
@@ -171,8 +171,8 @@ export default class OpenCodePlugin extends Plugin {
       id: "opencode-cycle-favorite-model",
       name: "Cycle favorite model-variant pairs",
       checkCallback: (checking) => {
-        const view = this.app.workspace.activeLeaf?.view;
-        if (!(view instanceof SessionView)) return false;
+        const view = this.activeSessionView();
+        if (!view) return false;
         if (!checking) view.cycleFavoriteModel();
         return true;
       },
@@ -182,8 +182,8 @@ export default class OpenCodePlugin extends Plugin {
       id: "opencode-cycle-agent-mode",
       name: "Cycle agent mode",
       checkCallback: (checking) => {
-        const view = this.app.workspace.activeLeaf?.view;
-        if (!(view instanceof SessionView)) return false;
+        const view = this.activeSessionView();
+        if (!view) return false;
         if (!checking) view.cycleAgentMode();
         return true;
       },
@@ -230,16 +230,13 @@ export default class OpenCodePlugin extends Plugin {
     logger.debug("lifecycle", "loaded");
   }
 
-  /** Detaches plugin-owned views before releasing service resources during unload or reload. */
+  /** Releases plugin-owned background resources while Obsidian preserves open view positions. */
   onunload(): void {
     logger.debug("lifecycle", "unloading");
     this.unloading = true;
     if (this.sessionStatePruneTimer !== undefined) window.clearTimeout(this.sessionStatePruneTimer);
     this.sessionStatePruneTimer = undefined;
     logger.setDebugEnabled(false);
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_SESSIONS_PANEL);
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_OPENCODE_SESSION);
-    this.app.workspace.detachLeavesOfType(LEGACY_DIFF_PANEL_VIEW_TYPE);
     this.closeNotificationEventSubscriptions();
     this.worktreeEventSubscription?.close();
     this.worktreeEventSubscription = undefined;
@@ -250,6 +247,7 @@ export default class OpenCodePlugin extends Plugin {
     this.directoryContexts?.clear();
     this.sessionStatuses?.clear();
     this.opencode?.dispose();
+    removeProviderIconSprite();
   }
 
   /** Returns the initialized OpenCode API service for registered plugin views. */
@@ -772,13 +770,18 @@ export default class OpenCodePlugin extends Plugin {
 
   /** Returns the session id of the currently focused session tab, if any; referenced by SessionsPanelView.onOpen. */
   getActiveSessionId(): string | undefined {
-    return this.sessionIdFromLeaf(this.app.workspace.activeLeaf);
+    const sessionId = this.activeSessionView()?.getState().sessionId;
+    return typeof sessionId === "string" ? sessionId : undefined;
   }
 
   /** Returns the working directory of the focused session tab; referenced by the open-in-IDE command/menu. */
   getActiveSessionDirectory(): string | undefined {
-    const view = this.app.workspace.activeLeaf?.view;
-    return view instanceof SessionView ? view.getSessionDirectory() : undefined;
+    return this.activeSessionView()?.getSessionDirectory();
+  }
+
+  /** Returns the focused session view through Obsidian's supported workspace lookup API. */
+  private activeSessionView(): SessionView | null {
+    return this.app.workspace.getActiveViewOfType(SessionView);
   }
 
   /** Extracts the session id from a leaf when it is an OpenCode session view. */
@@ -904,9 +907,24 @@ export default class OpenCodePlugin extends Plugin {
       sessions: this.sessionState.sessions,
       drafts: this.sessionState.drafts,
     })) as OpenCodePluginData;
-    const save = (this.settingsSaveQueue ?? Promise.resolve()).then(() => this.saveData(data));
-    this.settingsSaveQueue = save.catch(() => undefined);
+    const save = this.runQueuedOperation(this.settingsSaveQueue, () => this.saveData(data));
+    this.settingsSaveQueue = this.settleQueuedOperation(save);
     await save;
+  }
+
+  /** Runs one serialized settings operation after its predecessor settles successfully. */
+  private async runQueuedOperation(previous: Promise<void> | undefined, operation: () => Promise<void>): Promise<void> {
+    await previous;
+    await operation();
+  }
+
+  /** Converts one queued failure into a settled tail while optionally reporting the error. */
+  private async settleQueuedOperation(operation: Promise<void>, onError?: (error: unknown) => void): Promise<void> {
+    try {
+      await operation;
+    } catch (error) {
+      onError?.(error);
+    }
   }
 
   /** Applies settings-tab server changes, resolves the named secret, and reconnects the service and views. */
@@ -966,7 +984,7 @@ export default class OpenCodePlugin extends Plugin {
 
   /** Persists and immediately applies verbose developer-console diagnostics from the settings tab. */
   async setDebugLogging(enabled: boolean): Promise<void> {
-    const update = (this.debugLoggingSaveQueue ?? Promise.resolve()).then(async () => {
+    const update = this.runQueuedOperation(this.debugLoggingSaveQueue, async () => {
       const previous = this.settings.debugLogging;
       this.settings.debugLogging = enabled;
       try {
@@ -978,7 +996,7 @@ export default class OpenCodePlugin extends Plugin {
       logger.setDebugEnabled(enabled);
       logger.debug("lifecycle", "debug logging enabled");
     });
-    this.debugLoggingSaveQueue = update.catch(() => undefined);
+    this.debugLoggingSaveQueue = this.settleQueuedOperation(update);
     await update;
   }
 
@@ -1149,9 +1167,11 @@ export default class OpenCodePlugin extends Plugin {
       this.sessionStatePruneTimer = undefined;
       const pruneDrafts = this.pendingDraftPrune;
       this.pendingDraftPrune = false;
-      this.sessionStatePruneQueue = (this.sessionStatePruneQueue ?? Promise.resolve())
-        .then(() => this.pruneStaleSessionState(pruneDrafts))
-        .catch((error) => logger.warn("settings", "session state cleanup failed", { error }));
+      const prune = this.runQueuedOperation(this.sessionStatePruneQueue, () => this.pruneStaleSessionState(pruneDrafts));
+      this.sessionStatePruneQueue = this.settleQueuedOperation(
+        prune,
+        (error) => logger.warn("settings", "session state cleanup failed", { error }),
+      );
     }, delay);
   }
 
@@ -1293,20 +1313,28 @@ export default class OpenCodePlugin extends Plugin {
     if (hydrations.has(key)) return;
     const generation = store.generation();
     const baseline = store.revision();
-    const hydration = this.requireOpenCodeService().getSessionStatus(directory)
-      .then((statuses) => {
-        if (store.generation() !== generation) return;
-        if (statuses && typeof statuses === "object" && !Array.isArray(statuses)) {
-          store.applySnapshot(directory, statuses as JsonObject, baseline);
-        }
-      })
-      .catch((error) => {
-        logServiceError(undefined, "hydrateSessionStatus")(error);
-      })
-      .finally(() => {
-        if (hydrations.get(key) === hydration) hydrations.delete(key);
-      });
+    const hydration = this.loadDirectoryStatusSnapshot(store, directory, generation, baseline);
     hydrations.set(key, hydration);
+    void this.clearDirectoryStatusHydration(hydrations, key, hydration);
+  }
+
+  /** Loads one canonical status snapshot while preserving the cache on request failure. */
+  private async loadDirectoryStatusSnapshot(store: SessionStatusStore, directory: string, generation: number, baseline: number): Promise<void> {
+    try {
+      const statuses = await this.requireOpenCodeService().getSessionStatus(directory);
+      if (store.generation() !== generation) return;
+      if (statuses && typeof statuses === "object" && !Array.isArray(statuses)) {
+        store.applySnapshot(directory, statuses as JsonObject, baseline);
+      }
+    } catch (error) {
+      logServiceError(undefined, "hydrateSessionStatus")(error);
+    }
+  }
+
+  /** Releases one completed status hydration without deleting a newer request for the same key. */
+  private async clearDirectoryStatusHydration(hydrations: Map<string, Promise<void>>, key: string, hydration: Promise<void>): Promise<void> {
+    await hydration;
+    if (hydrations.get(key) === hydration) hydrations.delete(key);
   }
 
   /** Marks one centrally detected turn completion unread and refreshes sidebar rows; referenced by SessionStatusStore. */

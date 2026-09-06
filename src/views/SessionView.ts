@@ -95,7 +95,7 @@ export class SessionView extends ItemView {
       register: this.makeRegistrar(),
       relocationRootEl: this.app.workspace.containerEl,
       relocationContainerEl: this.containerEl,
-      isActive: () => this.app.workspace.activeLeaf === this.leaf,
+      isActive: () => this.isActiveView(),
       consumeTabGroupRelocation: () => this.consumeTabGroupRelocation(),
       onNearTop: () => {
         void this.loadOlderMessages();
@@ -140,7 +140,7 @@ export class SessionView extends ItemView {
       component: this,
       model: this.model,
       getRevertMessageId: () => this.revertMessageId(),
-      isActive: () => this.app.workspace.activeLeaf === this.leaf,
+      isActive: () => this.isActiveView(),
       isSessionMuted: () => this.isSessionMuted(),
       shouldAutoApprove: () => this.docks.shouldAutoApprove(),
       isAutoApproveInherited: () => this.docks.isAutoApproveInherited(),
@@ -238,6 +238,11 @@ export class SessionView extends ItemView {
   /** Returns a `DomEventRegistrar` view of this `ItemView`; Obsidian cleans up registrations on close. */
   private makeRegistrar(): DomEventRegistrar {
     return { registerDomEvent: this.registerDomEvent.bind(this) };
+  }
+
+  /** Reports whether this view is focused through Obsidian's supported workspace lookup API. */
+  private isActiveView(): boolean {
+    return this.app.workspace.getActiveViewOfType(SessionView) === this;
   }
 
   /** Returns the stable Obsidian view type used by plugin registration. */
@@ -1083,10 +1088,18 @@ export class SessionView extends ItemView {
   /** Persists the current session's unread completion marker and refreshes visible sidebar rows. */
   private setSessionUnread(unread: boolean): void {
     if (!this.model.sessionId || this.plugin.isSessionUnread(this.model.sessionId) === unread) return;
-    void this.plugin.rememberSessionUnread(this.model.sessionId, unread).then(() => {
+    void this.persistSessionUnread(this.model.sessionId, unread);
+  }
+
+  /** Persists one unread transition and synchronizes its visible session chrome. */
+  private async persistSessionUnread(sessionId: string, unread: boolean): Promise<void> {
+    try {
+      await this.plugin.rememberSessionUnread(sessionId, unread);
       this.refreshSessionStateChrome();
-      void this.plugin.refreshSessionsPanels({ showLoading: false });
-    });
+      await this.plugin.refreshSessionsPanels({ showLoading: false });
+    } catch (error) {
+      logger.warn("settings", "session unread update failed", { error });
+    }
   }
 
   /** Refreshes native status chrome, composer state, and explicit follow position after the docks controller re-renders. */
@@ -1290,7 +1303,7 @@ export class SessionView extends ItemView {
 
   /** Applies the user's current native rename-file hotkey to the active session view. */
   private handleNativeSessionHotkeys = (event: KeyboardEvent): void => {
-    if (!this.model.sessionId || this.app.workspace.activeLeaf !== this.leaf || event.repeat) return;
+    if (!this.model.sessionId || !this.isActiveView() || event.repeat) return;
     const target = event.target instanceof Element ? event.target : undefined;
     const titleEditor = target?.closest<HTMLElement>(".view-header-title");
     if (titleEditor?.isContentEditable || target?.closest(".modal")) return;

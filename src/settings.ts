@@ -469,14 +469,26 @@ export class OpenCodeSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  /** Renders the plugin settings currently exposed by the product specification. */
+  /**
+   * Renders the settings tab as headed sections. Headings use `setHeading`, omit the word
+   * "settings", and skip a plugin-name heading per the Obsidian plugin guidelines; general
+   * settings stay un-headed at the top.
+   */
   display(): void {
     this.contextBarEditor?.dispose();
     this.contextBarEditor = undefined;
     this.containerEl.empty();
 
+    this.renderGeneralSettings();
     this.renderServerSettings();
+    this.renderNotificationSettings();
+    this.renderAppearanceSettings();
+    this.renderAdvancedSettings();
+    this.renderExperimentalSettings();
+  }
 
+  /** Renders general behavior defaults; un-headed because they precede the first section heading. */
+  private renderGeneralSettings(): void {
     new Setting(this.containerEl)
       .setName("Open project in IDE")
       .setDesc("Editor launched by the \u201COpen current project in IDE\u201D command and the session menu item.")
@@ -508,9 +520,16 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }),
       );
+  }
 
+  /** Renders delivery-mode, event, and test controls under the "Notifications" heading; referenced by display. */
+  private renderNotificationSettings(): void {
     new Setting(this.containerEl)
       .setName("Notifications")
+      .setHeading();
+
+    new Setting(this.containerEl)
+      .setName("Notification delivery")
       .setDesc("Choose how OpenCode reports sessions that need attention, fail, or finish a turn.")
       .addDropdown((dropdown) => {
         for (const [value, label] of Object.entries(NOTIFICATION_MODE_LABELS)) dropdown.addOption(value, label);
@@ -569,13 +588,14 @@ export class OpenCodeSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("Send test").onClick(() => void this.plugin.sendTestNotification(notificationTestKind)),
       );
+  }
 
+  /** Renders sessions-panel and session-view presentation controls under the "Appearance" heading; referenced by display. */
+  private renderAppearanceSettings(): void {
     new Setting(this.containerEl)
-      .setName("Reset usage-limit prompts")
-      .setDesc("Show OpenCode usage-limit action prompts again after choosing Don’t show again.")
-      .addButton((button) =>
-        button.setButtonText("Reset").onClick(() => void this.plugin.resetRetryActionPrompts()),
-      );
+      .setName("Appearance")
+      .setDesc("Control how sessions, panels, and indicators are presented.")
+      .setHeading();
 
     new Setting(this.containerEl)
       .setName("Folder collapse indicator")
@@ -674,6 +694,14 @@ export class OpenCodeSettingTab extends PluginSettingTab {
           ]);
         });
       });
+  }
+
+  /** Renders diagnostic and maintenance controls under the "Advanced" heading; referenced by display. */
+  private renderAdvancedSettings(): void {
+    new Setting(this.containerEl)
+      .setName("Advanced")
+      .setDesc("Diagnostics and maintenance controls.")
+      .setHeading();
 
     new Setting(this.containerEl)
       .setName("Debug logging")
@@ -685,8 +713,18 @@ export class OpenCodeSettingTab extends PluginSettingTab {
       );
 
     new Setting(this.containerEl)
-      .setName("Custom tool displays")
-      .setDesc("Choose the Lucide icon and input argument shown when a matching tool call is collapsed.")
+      .setName("Reset usage-limit prompts")
+      .setDesc("Show OpenCode usage-limit action prompts again after choosing Don’t show again.")
+      .addButton((button) =>
+        button.setButtonText("Reset").onClick(() => void this.plugin.resetRetryActionPrompts()),
+      );
+  }
+
+  /** Renders custom tool display mappings under the "Experimental" heading; referenced by display. */
+  private renderExperimentalSettings(): void {
+    new Setting(this.containerEl)
+      .setName("Experimental")
+      .setDesc("Custom tool displays: choose the Lucide icon and input argument shown when a matching tool call is collapsed. These options may change or be removed in future releases.")
       .setHeading();
 
     for (const display of this.plugin.settings.customToolDisplays) this.renderToolDisplaySetting(display);

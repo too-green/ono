@@ -12,7 +12,7 @@
  * Migration: Phase 1.5 of `docs/tmp/SessionView Decomposition Plan.md`.
  * Behavior-preserving — storage location only; method ownership unchanged.
  */
-import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef, OpenCodePermissionRequest, OpenCodeQuestionRequest } from "../../services/opencode-types";
+import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef, OpenCodePermissionRequest, OpenCodeQuestionRequest } from "../../services/opencode/opencode-types";
 import type { DiffFileSummary } from "../../diff-utils";
 import type { SessionRetryStatus } from "./session-status";
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { JsonObject } from "../../services/opencode-types";
+import type { JsonObject } from "../../services/opencode/opencode-types";
 import { readNumber, readObject, readObjectArray, readString, readStringArray } from "./json-helpers";
 
 describe("readObject", () => {

@@ -1,9 +1,9 @@
-import type { OpenCodeService } from "./services/opencode-service";
-import type { OpenCodePermissionRequest, OpenCodeSession } from "./services/opencode-types";
+import type { OpenCodeServiceApi } from "./services/opencode/opencode-service-api";
+import type { OpenCodePermissionRequest, OpenCodeSession } from "./services/opencode/opencode-types";
 import { resolveSessionAutoApprove, type SessionAutoApproveState } from "./session-auto-approve";
 import type { SessionHierarchy } from "./session-hierarchy";
 
-type PermissionService = Pick<OpenCodeService, "replyPermission">;
+type PermissionService = Pick<OpenCodeServiceApi, "replyPermission">;
 type PendingPermissionState = "evaluating" | "surfaced" | "responding";
 
 interface PendingPermission {

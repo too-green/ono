@@ -1,6 +1,6 @@
 import { setIcon } from "obsidian";
 
-import type { JsonObject } from "../../../services/opencode-types";
+import type { JsonObject } from "../../../services/opencode/opencode-types";
 import { readObject, readString } from "../json-helpers";
 import { contextSummary, renderToolCall, toolPartsDetailSignature } from "./tool-renderer";
 import { bindDisclosureState, disclosureKey, renderLazyDetailsBody, type BlockRenderCtx } from "./tool-primitives";

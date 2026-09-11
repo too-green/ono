@@ -1,5 +1,5 @@
 import { orderedBoundary } from "./message-order";
-import type { OpenCodeMessageBundle, OpenCodeSession } from "./services/opencode-types";
+import type { OpenCodeMessageBundle, OpenCodeSession } from "./services/opencode/opencode-types";
 import { messageId, messageTime } from "./views/session/message-helpers";
 
 export interface ForkMessageBoundary {

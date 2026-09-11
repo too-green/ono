@@ -1,5 +1,5 @@
 import { FuzzySuggestModal, Modal, Setting, setIcon, type App, type FuzzyMatch } from "obsidian";
-import type { OpenCodeCreateWorktreeInput } from "../services/opencode-types";
+import type { OpenCodeCreateWorktreeInput } from "../services/opencode/opencode-types";
 
 export type WorktreeDestructiveAction = "remove" | "reset";
 

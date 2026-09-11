@@ -1,7 +1,7 @@
 import { MarkdownRenderer, Notice, setIcon, type App, type Component } from "obsidian";
 
 import { assistantErrorDiagnostics, assistantErrorDiagnosticsText, assistantErrorMessage, isDisplayableAssistantError } from "../../../services/assistant-error";
-import type { JsonObject, OpenCodeMessageBundle } from "../../../services/opencode-types";
+import type { JsonObject, OpenCodeMessageBundle } from "../../../services/opencode/opencode-types";
 import { orderedBoundary } from "../../../message-order";
 import { renderContextToolGroup } from "../blocks/context-tool-group";
 import { renderMessageMeta, renderRewindBoundary, type AssistantMetaOptions, type MessageMetaCallbacks, type RewindBoundaryProps } from "../blocks/message-meta";

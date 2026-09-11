@@ -1,4 +1,4 @@
-import type { JsonObject } from "../../services/opencode-types";
+import type { JsonObject } from "../../services/opencode/opencode-types";
 import type { SessionRetryAction } from "../../session-retry-action";
 import * as jsonHelpers from "./json-helpers";
 

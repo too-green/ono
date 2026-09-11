@@ -21,9 +21,12 @@ import {
   type OpenCodePluginSettings,
   type PersistedSessionState,
 } from "./src/settings";
-import { OpenCodeService, type OpenCodeServerConfig } from "./src/services/opencode-service";
-import type { OpenCodeEventSubscription } from "./src/services/opencode-events";
-import type { JsonObject, OpenCodeEvent, OpenCodeHealth, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./src/services/opencode-types";
+import { createOpenCodeService, OpenCodeService, type OpenCodeServerConfig } from "./src/services/opencode/opencode-service";
+import type { OpenCodeServiceApi } from "./src/services/opencode/opencode-service-api";
+import { isBenchmarkOpenCodeService, type BenchmarkOpenCodeService, type BenchmarkPlaybackStatus } from "./src/services/benchmark/benchmark-opencode-service";
+import { parseBenchmarkWorkspaceLayout } from "./src/services/benchmark/benchmark-workspace-layout";
+import type { OpenCodeEventSubscription } from "./src/services/opencode/events-helper";
+import type { JsonObject, OpenCodeEvent, OpenCodeHealth, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./src/services/opencode/opencode-types";
 import { SessionNotificationService, isElementVisibleInFocusedWindow, type SessionNotificationTestKind } from "./src/services/session-notifications";
 import { confirmSessionArchive, requestRetryAction, requestSessionTitle, type SessionArchiveNode } from "./src/session-actions";
 import { SessionsPanelView, VIEW_TYPE_OPENCODE_SESSIONS_PANEL } from "./src/views/SessionsPanelView";
@@ -36,7 +39,7 @@ import { SessionHierarchy } from "./src/session-hierarchy";
 import { muteOverrideForState, resolveSessionNotificationState } from "./src/session-notification-state";
 import { getIdeOrDefault, launchIde } from "./src/utils/ide-launcher";
 import { nextAvailableForkTitle } from "./src/session-fork";
-import { logServiceError, OpenCodeHttpError } from "./src/services/opencode-http";
+import { logServiceError, OpenCodeHttpError } from "./src/services/opencode/http-helper";
 import { logger } from "./src/logger";
 import { eligibleRetryActionKey, safeRetryActionLink, type SessionRetryAction } from "./src/session-retry-action";
 import { DirectoryContextStore } from "./src/services/directory-context-store";
@@ -49,7 +52,7 @@ export const LEGACY_DIFF_PANEL_VIEW_TYPE = "opencode-diff-panel";
 
 export default class OpenCodePlugin extends Plugin {
   settings: OpenCodePluginSettings = DEFAULT_OPENCODE_SETTINGS;
-  opencode?: OpenCodeService;
+  opencode?: OpenCodeServiceApi;
   readonly directoryContexts = new DirectoryContextStore(() => this.requireOpenCodeService());
   readonly sessionStatuses = new SessionStatusStore({ onTurnSettled: (sessionId) => void this.rememberTurnSettled(sessionId) });
   readonly worktrees = new WorktreeManagementService(() => this.requireOpenCodeService());
@@ -96,7 +99,14 @@ export default class OpenCodePlugin extends Plugin {
     this.layoutReady = false;
     this.unloading = false;
     await this.loadSettings();
-    this.opencode = new OpenCodeService(this.settings.server);
+    this.opencode = this.createService();
+    // Benchmark preparation failures must not abort plugin loading; hydration reads retry
+    // preparation later, and the benchmark command reports the state through a Notice.
+    if (OPENCODE_BENCHMARK_BUILD) {
+      await this.configureBenchmarkReplay().catch((error) => {
+        new Notice(`Benchmark startup failed: ${error instanceof Error ? error.message : String(error)}`, 10_000);
+      });
+    }
     this.worktreeEventSubscription = this.opencode.subscribeToGlobalEvents({
       onEvent: (event, directory) => this.handleWorktreeEvent(event, directory),
     });
@@ -155,6 +165,16 @@ export default class OpenCodePlugin extends Plugin {
       name: "Check OpenCode server connection",
       callback: () => this.checkConnection(),
     });
+
+    // Command Palette entry exists only in benchmark builds; the compile-time flag keeps
+    // ordinary builds free of benchmark control surfaces.
+    if (OPENCODE_BENCHMARK_BUILD) {
+      this.addCommand({
+        id: "opencode-benchmark-start-replay",
+        name: "Start benchmark replay",
+        callback: () => void this.runBenchmarkReplayCommand(),
+      });
+    }
 
     this.addCommand({
       id: "opencode-cycle-active-session-island-tab",
@@ -251,8 +271,71 @@ export default class OpenCodePlugin extends Plugin {
   }
 
   /** Returns the initialized OpenCode API service for registered plugin views. */
-  requireOpenCodeService(): OpenCodeService {
+  requireOpenCodeService(): OpenCodeServiceApi {
     if (!this.opencode) throw new Error("OpenCode service has not been initialized.");
+    return this.opencode;
+  }
+
+  /** Builds the plugin service through the single construction seam; benchmark builds receive the replay service. */
+  private createService(): OpenCodeServiceApi {
+    return createOpenCodeService(this.settings.server, OPENCODE_BENCHMARK_BUILD ? { benchmark: {} } : undefined);
+  }
+
+  /**
+   * Benchmark-build startup: derives the configured sessions from the workspace layout Obsidian
+   * already restored from the benchmark vault's workspace.json, configures the benchmark service,
+   * and awaits preparation before session views can hydrate. Registration further below happens
+   * only after this resolves, so restored custom leaves cannot call getSession early.
+   */
+  private async configureBenchmarkReplay(): Promise<void> {
+    const service = this.requireBenchmarkService();
+    const { sessionIds, uniqueSessionIds } = parseBenchmarkWorkspaceLayout(this.app.workspace.getLayout());
+    if (uniqueSessionIds.length === 0) {
+      throw new Error("Benchmark layout has no opencode-session leaves with session ids; restore the benchmark vault workspace before starting.");
+    }
+    service.configure(sessionIds);
+    await service.prepare();
+  }
+
+  /** Returns benchmark readiness and replay progress for the CDP runner; benchmark builds only. */
+  getBenchmarkStatus(): BenchmarkPlaybackStatus {
+    return this.requireBenchmarkService().status();
+  }
+
+  /** Explicitly starts benchmark replay and resolves when every timeline finishes; benchmark builds only. */
+  startBenchmarkReplay(): Promise<void> {
+    return this.requireBenchmarkService().start();
+  }
+
+  /** Command entry that starts paused replay with concise Notice feedback for state, start, completion, and errors. */
+  private async runBenchmarkReplayCommand(): Promise<void> {
+    try {
+      const phase = this.requireBenchmarkService().status().phase;
+      if (phase === "playing") {
+        new Notice("Benchmark replay is already running.");
+        return;
+      }
+      if (phase === "complete") {
+        new Notice("Benchmark replay already finished; reload the plugin to replay again.");
+        return;
+      }
+      if (phase !== "ready") {
+        new Notice(`Benchmark replay is not ready (phase "${phase}"); check the benchmark server and vault layout.`, 8_000);
+        return;
+      }
+      const finished = this.startBenchmarkReplay();
+      new Notice("Benchmark replay started.");
+      await finished;
+      new Notice("Benchmark replay complete.");
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Benchmark replay failed.");
+    }
+  }
+
+  /** Narrows the loaded service to the benchmark implementation; rejects outside benchmark builds. */
+  private requireBenchmarkService(): BenchmarkOpenCodeService {
+    if (!OPENCODE_BENCHMARK_BUILD) throw new Error("Benchmark control is only available in benchmark builds.");
+    if (!isBenchmarkOpenCodeService(this.opencode)) throw new Error("OpenCode service is not running in benchmark mode.");
     return this.opencode;
   }
 
@@ -951,7 +1034,7 @@ export default class OpenCodePlugin extends Plugin {
     this.worktreeStatusTimers?.clear();
     if (this.opencode) this.opencode.updateConfig(this.settings.server);
     else {
-      this.opencode = new OpenCodeService(this.settings.server);
+      this.opencode = this.createService();
       this.worktreeEventSubscription?.close();
       this.worktreeEventSubscription = this.opencode.subscribeToGlobalEvents({
         onEvent: (event, directory) => this.handleWorktreeEvent(event, directory),

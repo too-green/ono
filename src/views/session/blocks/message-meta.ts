@@ -1,7 +1,7 @@
 import { setIcon } from "obsidian";
 
 import type { DiffFileSummary } from "../../../diff-utils";
-import type { OpenCodeMessageBundle } from "../../../services/opencode-types";
+import type { OpenCodeMessageBundle } from "../../../services/opencode/opencode-types";
 import type { WorkingAnimation } from "../../../session-state";
 import { renderStatusBadge } from "../../../status-badge";
 import { capitalized, elapsedDurationLabel, messageId, messageTime, modelLabel, modelVariantLabel } from "../message-helpers";

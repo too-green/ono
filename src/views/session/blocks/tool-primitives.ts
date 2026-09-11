@@ -1,7 +1,7 @@
 import { MarkdownRenderer, setIcon, type Component } from "obsidian";
 
 import { logger } from "../../../logger";
-import type { JsonObject } from "../../../services/opencode-types";
+import type { JsonObject } from "../../../services/opencode/opencode-types";
 import type { ToolDisplaySetting } from "../../../settings";
 import { escapeFence } from "../diff-parsing";
 

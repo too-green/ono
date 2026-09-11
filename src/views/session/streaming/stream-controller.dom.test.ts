@@ -1,5 +1,5 @@
-import type { OpenCodeEventHandlers } from "../../../services/opencode-events";
-import type { JsonObject, OpenCodeEvent } from "../../../services/opencode-types";
+import type { OpenCodeEventHandlers } from "../../../services/opencode/events-helper";
+import type { JsonObject, OpenCodeEvent } from "../../../services/opencode/opencode-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { logger } from "../../../logger";

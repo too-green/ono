@@ -2,7 +2,7 @@ import { Component, MarkdownRenderer } from "obsidian";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type OpenCodePlugin from "../../../main";
-import type { OpenCodeMessageBundle, OpenCodeTodo } from "../../services/opencode-types";
+import type { OpenCodeMessageBundle, OpenCodeTodo } from "../../services/opencode/opencode-types";
 import { SessionViewModel } from "./session-view-model";
 import { SessionIslandController } from "./session-island-controller";
 

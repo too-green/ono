@@ -1,5 +1,7 @@
-import { OpenCodeEventStream, type OpenCodeEventHandlers, type OpenCodeEventSubscription } from "./opencode-events";
-import { OpenCodeHttpClient } from "./opencode-http";
+import { BenchmarkOpenCodeService, type BenchmarkOpenCodeServiceOptions } from "../benchmark/benchmark-opencode-service";
+import { OpenCodeEventStream, type OpenCodeEventHandlers, type OpenCodeEventSubscription } from "./events-helper";
+import { OpenCodeHttpClient } from "./http-helper";
+import type { OpenCodeServiceApi } from "./opencode-service-api";
 import type {
   JsonObject,
   OpenCodeCommandInput,
@@ -29,6 +31,27 @@ import type {
   OpenCodeWorktree,
   OpenCodeWorktreeDirectoryInput,
 } from "./opencode-types";
+
+/** Factory options selecting which implementation the plugin receives from the construction seam. */
+export interface OpenCodeServiceFactoryOptions {
+  /** When set, benchmark builds receive the in-plugin replay service instead of a live client. */
+  benchmark?: BenchmarkOpenCodeServiceOptions;
+}
+
+/** Builds the plugin-owned OpenCode service; the single construction seam benchmark builds can replace. */
+export function createOpenCodeService(config: OpenCodeServerConfig, options?: OpenCodeServiceFactoryOptions): OpenCodeServiceApi {
+  if (options?.benchmark) {
+    const server = options.benchmark.server ?? config;
+    return new BenchmarkOpenCodeService({
+      ...options.benchmark,
+      server,
+      // Benchmark preparation fetches its snapshot through the real production client; only
+      // the benchmark service's prepare() path uses it (getSession, listMessages, dispose).
+      createSourceClient: (serverConfig) => new OpenCodeService(serverConfig),
+    });
+  }
+  return new OpenCodeService(config);
+}
 
 const WORKTREE_PATH = "/experimental/worktree";
 const WORKTREE_RESET_PATH = "/experimental/worktree/reset";

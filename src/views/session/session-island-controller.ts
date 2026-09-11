@@ -12,7 +12,7 @@ import {
   type TurnFileDiff,
 } from "../../diff-utils";
 import type OpenCodePlugin from "../../../main";
-import type { OpenCodeMessageBundle, OpenCodeTodo } from "../../services/opencode-types";
+import type { OpenCodeMessageBundle, OpenCodeTodo } from "../../services/opencode/opencode-types";
 import { normalizeSessionIslandContextLabel, normalizeTodoStatusCharacter } from "../../settings";
 import { isActiveSessionStatus, normalizeWorkingAnimation } from "../../session-state";
 import { renderStatusBadge } from "../../status-badge";

@@ -6,7 +6,7 @@ import { orderedBoundary } from "../message-order";
 import { logger } from "../logger";
 import { confirmSessionRewind } from "../session-actions";
 import { forkBoundaryAfterMessage } from "../session-fork";
-import { isLoggedRequestError, logServiceError, OpenCodeHttpError } from "../services/opencode-http";
+import { isLoggedRequestError, logServiceError, OpenCodeHttpError } from "../services/opencode/http-helper";
 import { assistantErrorMessage, isAssistantAbortError, isDisplayableAssistantError } from "../services/assistant-error";
 import type {
   JsonObject,
@@ -15,7 +15,7 @@ import type {
   OpenCodePermissionRequest,
   OpenCodeQuestionRequest,
   OpenCodeSession,
-} from "../services/opencode-types";
+} from "../services/opencode/opencode-types";
 import { isActiveSessionStatus, normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
 import { sessionStatusDirectoryKey } from "../services/session-status-store";
 import { paintStatusBadge, renderStatusBadge } from "../status-badge";

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requestUrl } from "obsidian";
 
-import { logger } from "../logger";
-import { OpenCodeHttpClient, OpenCodeHttpError } from "./opencode-http";
+import { logger } from "../../logger";
+import { OpenCodeHttpClient, OpenCodeHttpError } from "./http-helper";
 
 vi.mock("obsidian", async (importOriginal) => {
   const actual = await importOriginal<typeof import("obsidian")>();

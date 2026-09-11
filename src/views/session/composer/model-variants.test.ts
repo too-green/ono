@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef } from "../../../services/opencode-types";
+import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef } from "../../../services/opencode/opencode-types";
 import {
   agentColor,
   agentName,

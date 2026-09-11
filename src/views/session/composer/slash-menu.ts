@@ -1,4 +1,4 @@
-import type { JsonObject } from "../../../services/opencode-types";
+import type { JsonObject } from "../../../services/opencode/opencode-types";
 import type { SessionViewModel } from "../session-view-model";
 import { readObject, readString } from "../json-helpers";
 

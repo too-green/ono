@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { logger, type LogMethod } from "../logger";
+import { logger, type LogMethod } from "../../logger";
 
 const loggedRequestErrors = new WeakSet<object>();
 

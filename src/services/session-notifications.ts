@@ -2,7 +2,7 @@ import { Notice } from "obsidian";
 import { logger } from "../logger";
 import type { NotificationMode } from "../settings";
 import { assistantErrorMessage, isAssistantAbortError } from "./assistant-error";
-import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./opencode-types";
+import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "./opencode/opencode-types";
 
 export type SessionNotificationKind = "attention" | "error" | "turn-complete";
 export type SessionNotificationTestKind = "permission" | "question" | "turn-complete" | "error";

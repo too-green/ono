@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { SessionView } from "./SessionView";
 import { SessionViewModel } from "./session/session-view-model";
 import { SessionStatusStore } from "../services/session-status-store";
-import type { JsonObject, OpenCodeSession } from "../services/opencode-types";
+import type { JsonObject, OpenCodeSession } from "../services/opencode/opencode-types";
 
 interface StatusHarness {
   model: SessionViewModel;

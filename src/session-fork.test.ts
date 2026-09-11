@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { JsonObject, OpenCodeMessageBundle, OpenCodeSession } from "./services/opencode-types";
+import type { JsonObject, OpenCodeMessageBundle, OpenCodeSession } from "./services/opencode/opencode-types";
 import { forkBoundaryAfterMessage, nextAvailableForkTitle } from "./session-fork";
 
 /** Builds a message bundle for fork-boundary tests. */

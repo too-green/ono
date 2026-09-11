@@ -2,7 +2,7 @@ import { Notice, setIcon } from "obsidian";
 import type OpenCodePlugin from "../../../main";
 import { hashRenderState } from "./render-signature";
 import type { SessionViewModel } from "./session-view-model";
-import type { OpenCodePermissionReply, OpenCodePermissionRequest, OpenCodeQuestionAnswer, OpenCodeQuestionRequest } from "../../services/opencode-types";
+import type { OpenCodePermissionReply, OpenCodePermissionRequest, OpenCodeQuestionAnswer, OpenCodeQuestionRequest } from "../../services/opencode/opencode-types";
 
 /**
  * Deps injected by `SessionView` when constructing a `RequestDocksController`.

@@ -1,5 +1,5 @@
 import { setIcon } from "obsidian";
-import type { OpenCodeModelRef } from "../services/opencode-types";
+import type { OpenCodeModelRef } from "../services/opencode/opencode-types";
 import { setProviderIcon } from "../utils/provider-icons";
 
 /** Pre-computed model entry passed in by SessionView for the selection menu. */

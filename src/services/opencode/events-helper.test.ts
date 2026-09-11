@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { logger } from "../logger";
-import { OpenCodeEventStream, type OpenCodeEventHandlers } from "./opencode-events";
-import type { OpenCodeHttpClient } from "./opencode-http";
+import { logger } from "../../logger";
+import { OpenCodeEventStream, type OpenCodeEventHandlers } from "./events-helper";
+import type { OpenCodeHttpClient } from "./http-helper";
 
 interface EventStreamHarness {
   connections: Map<string, { abort: AbortController; handlers: Set<OpenCodeEventHandlers>; directory?: string; global?: boolean }>;

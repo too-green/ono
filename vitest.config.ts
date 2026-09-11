@@ -2,6 +2,10 @@ import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
+  define: {
+    // Mirrors the esbuild define; tests always run in the non-benchmark build mode.
+    OPENCODE_BENCHMARK_BUILD: "false",
+  },
   resolve: {
     alias: {
       // The real `obsidian` package ships type declarations but no resolvable runtime entry.

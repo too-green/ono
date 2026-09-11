@@ -2,7 +2,7 @@ import { AbstractInputSuggest, PluginSettingTab, SecretComponent, Setting, getIc
 import { ContextBarEditor } from "./context-bar-editor";
 import type OpenCodePlugin from "../main";
 import type { SessionNotificationTestKind } from "./services/session-notifications";
-import type { OpenCodeServerConfig } from "./services/opencode-service";
+import type { OpenCodeServerConfig } from "./services/opencode/opencode-service";
 import {
   DEFAULT_WORKING_ANIMATION,
   SELECTABLE_WORKING_ANIMATIONS,

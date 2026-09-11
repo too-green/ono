@@ -1,4 +1,4 @@
-import type { OpenCodeTodo } from "../../services/opencode-types";
+import type { OpenCodeTodo } from "../../services/opencode/opencode-types";
 
 /** Builds the compact completed/total title used by the Session Island Todos trigger. */
 export function todoTabTitle(todos: OpenCodeTodo[]): string {

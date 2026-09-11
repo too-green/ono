@@ -1,8 +1,8 @@
 import * as http from "http";
 import * as https from "https";
 import type { IncomingMessage, RequestOptions } from "http";
-import { logger } from "../logger";
-import type { OpenCodeHttpClient } from "./opencode-http";
+import { logger } from "../../logger";
+import type { OpenCodeHttpClient } from "./http-helper";
 import type { OpenCodeEvent } from "./opencode-types";
 
 export interface OpenCodeEventSubscription {

@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Notice } from "obsidian";
 
 import OpenCodePlugin from "../main.ts";
-import { OpenCodeHttpError } from "./services/opencode-http";
-import { OpenCodeService } from "./services/opencode-service";
+import { OpenCodeHttpError } from "./services/opencode/http-helper";
+import { OpenCodeService } from "./services/opencode/opencode-service";
 import { SessionStatusStore } from "./services/session-status-store";
-import type { JsonObject, OpenCodeHealth } from "./services/opencode-types";
+import type { JsonObject, OpenCodeHealth } from "./services/opencode/opencode-types";
 import { logger } from "./logger";
 import { DEFAULT_OPENCODE_SETTINGS, OPENCODE_DATA_SCHEMA_VERSION, type OpenCodePluginData, type OpenCodePluginSettings, type PersistedSessionState } from "./settings";
 import * as WorktreeModals from "./views/WorktreeModals";
@@ -835,6 +835,70 @@ describe("OpenCodePlugin session-state retention", () => {
 
     releases[1]?.({ ses_1: { type: "idle" } });
     await vi.waitFor(() => expect(plugin.sessionStatuses.statusFor("ses_1")?.type).toBe("idle"));
+  });
+});
+
+describe("OpenCodePlugin benchmark command", () => {
+  /** Builds the plugin with a stubbed benchmark service for command Notice tests. */
+  function benchmarkPlugin(status: { phase: string }, start?: () => Promise<void>) {
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    Object.assign(plugin, {
+      requireBenchmarkService: () => ({ status: () => status, start: start ?? vi.fn(async () => undefined) }),
+    });
+    return plugin;
+  }
+
+  it("announces start and completion when replay runs from ready", async () => {
+    let resolveReplay: (() => void) | undefined;
+    const start = vi.fn(() => new Promise<void>((resolve) => { resolveReplay = resolve; }));
+    const plugin = benchmarkPlugin({ phase: "ready" }, start);
+
+    const command = (plugin as unknown as { runBenchmarkReplayCommand(): Promise<void> }).runBenchmarkReplayCommand();
+    await vi.waitFor(() => expect((Notice as unknown as { history: unknown[] }).history.at(-1)).toEqual({ message: "Benchmark replay started." }));
+    resolveReplay?.();
+    await command;
+
+    expect((Notice as unknown as { history: unknown[] }).history.map((entry) => entry.message)).toEqual([
+      "Benchmark replay started.",
+      "Benchmark replay complete.",
+    ]);
+  });
+
+  it("reports invalid state without starting replay", async () => {
+    const start = vi.fn(async () => undefined);
+    const plugin = benchmarkPlugin({ phase: "empty" }, start);
+
+    await (plugin as unknown as { runBenchmarkReplayCommand(): Promise<void> }).runBenchmarkReplayCommand();
+
+    expect(start).not.toHaveBeenCalled();
+    expect((Notice as unknown as { history: unknown[] }).history).toHaveLength(1);
+    expect((Notice as unknown as { history: unknown[] }).history[0]?.message).toContain('phase "empty"');
+  });
+
+  it("reports an already finished replay without starting again", async () => {
+    const start = vi.fn(async () => undefined);
+    const plugin = benchmarkPlugin({ phase: "complete" }, start);
+
+    await (plugin as unknown as { runBenchmarkReplayCommand(): Promise<void> }).runBenchmarkReplayCommand();
+
+    expect(start).not.toHaveBeenCalled();
+    expect((Notice as unknown as { history: unknown[] }).history.at(-1)?.message).toContain("already finished");
+  });
+
+  it("surfaces replay failures as a Notice", async () => {
+    const plugin = benchmarkPlugin({ phase: "ready" }, vi.fn(async () => { throw new Error("replay crashed"); }));
+
+    await (plugin as unknown as { runBenchmarkReplayCommand(): Promise<void> }).runBenchmarkReplayCommand();
+
+    expect((Notice as unknown as { history: unknown[] }).history.map((entry) => entry.message)).toEqual([
+      "Benchmark replay started.",
+      "replay crashed",
+    ]);
+  });
+
+  it("keeps benchmark control unavailable outside benchmark builds", async () => {
+    const plugin = Object.create(OpenCodePlugin.prototype) as OpenCodePlugin;
+    expect(() => plugin.getBenchmarkStatus()).toThrow(/only available in benchmark builds/);
   });
 });
 

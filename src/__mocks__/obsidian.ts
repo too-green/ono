@@ -134,7 +134,21 @@ export class Menu {
 
 export const Platform = { isMacOS: false, isWin: false, isMobile: false };
 
-export const requestUrl = async (): Promise<Record<string, unknown>> => ({});
+type RequestUrlHandler = (init: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>;
+let requestUrlHandler: RequestUrlHandler | undefined;
+
+/**
+ * Installs a temporary `requestUrl` responder for tests that exercise the HTTP client path;
+ * pass undefined to restore the permissive no-op.
+ */
+export function setRequestUrlHandler(handler?: RequestUrlHandler): void {
+  requestUrlHandler = handler;
+}
+
+export const requestUrl = async (init: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
+  const handler = requestUrlHandler;
+  return handler ? handler(init) : {};
+};
 
 export class Modal {
   titleEl = typeof document === "undefined" ? {} as HTMLElement : document.createElement("div");

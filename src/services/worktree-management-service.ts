@@ -1,8 +1,8 @@
-import type { OpenCodeService } from "./opencode-service";
-import type { OpenCodeCreateWorktreeInput, OpenCodeWorktree } from "./opencode-types";
+import type { OpenCodeServiceApi } from "./opencode/opencode-service-api";
+import type { OpenCodeCreateWorktreeInput, OpenCodeWorktree } from "./opencode/opencode-types";
 
 export type WorktreeManagementClient = Pick<
-  OpenCodeService,
+  OpenCodeServiceApi,
   "listWorktrees" | "createWorktree" | "removeWorktree" | "resetWorktree"
 >;
 

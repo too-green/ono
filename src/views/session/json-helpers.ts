@@ -1,6 +1,6 @@
 /** Safe accessors for loosely-typed OpenCode JSON payloads. Extracted from SessionView for unit testing. */
 
-import type { JsonObject } from "../../services/opencode-types";
+import type { JsonObject } from "../../services/opencode/opencode-types";
 
 /** Reads a nested object field from a loosely typed OpenCode object. */
 export function readObject(source: JsonObject, key: string): JsonObject | undefined {

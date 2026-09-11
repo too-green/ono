@@ -1,6 +1,6 @@
 import { MarkdownRenderer, setIcon } from "obsidian";
 
-import type { JsonObject } from "../../../services/opencode-types";
+import type { JsonObject } from "../../../services/opencode/opencode-types";
 import { reasoningComplete, reasoningText, reasoningTokenCount } from "../message-helpers";
 import { bindDisclosureState, blockPartId, disclosureKey, markdownSourcePath, type BlockRenderCtx } from "./tool-primitives";
 

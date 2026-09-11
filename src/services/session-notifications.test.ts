@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { SessionNotificationService, type SessionNotificationPreferences } from "./session-notifications";
-import type { OpenCodeSession } from "./opencode-types";
+import type { OpenCodeSession } from "./opencode/opencode-types";
 
 interface FakeNotificationRecord {
   title: string;

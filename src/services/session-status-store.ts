@@ -1,7 +1,7 @@
 import { isAssistantAbortError } from "./assistant-error";
 import { logger } from "../logger";
 import { isActiveSessionStatus } from "../session-state";
-import type { JsonObject, OpenCodeEvent } from "./opencode-types";
+import type { JsonObject, OpenCodeEvent } from "./opencode/opencode-types";
 
 /** Canonical runtime status; `payload` retains the full v1 status (including retry info). */
 export interface SessionRuntimeStatus {

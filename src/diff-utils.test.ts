@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { diffTotals, latestSummarizedTurnDiffs, sessionDiffFiles } from "./diff-utils";
-import type { OpenCodeMessageBundle } from "./services/opencode-types";
+import type { OpenCodeMessageBundle } from "./services/opencode/opencode-types";
 
 /** Builds one user message with an optional authoritative summary for roll-up helper tests. */
 function userMessage(id: string, created: number, diffs?: Array<Record<string, unknown>>): OpenCodeMessageBundle {

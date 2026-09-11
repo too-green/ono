@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { JsonObject, OpenCodeMessageBundle } from "../../services/opencode-types";
+import type { JsonObject, OpenCodeMessageBundle } from "../../services/opencode/opencode-types";
 import { attachmentUrl, capitalized, elapsedDurationLabel, imageAttachments, isCompactionMessage, isImageAttachment, messageCompletedTime, messageId, messageRole, messageTime, modelLabel, modelVariantLabel, reasoningComplete, reasoningText, reasoningTokenCount, textFromParts, userMessageText } from "./message-helpers";
 
 function bundle(info: JsonObject, parts: JsonObject[] = []): OpenCodeMessageBundle {

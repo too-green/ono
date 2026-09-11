@@ -1,7 +1,7 @@
 import { diffFilesFromRecords, type DiffFileSummary } from "../../../diff-utils";
 import { logger } from "../../../logger";
-import type { OpenCodeEventHandlers, OpenCodeEventSubscription } from "../../../services/opencode-events";
-import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeTodo } from "../../../services/opencode-types";
+import type { OpenCodeEventHandlers, OpenCodeEventSubscription } from "../../../services/opencode/events-helper";
+import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeTodo } from "../../../services/opencode/opencode-types";
 import * as jsonHelpers from "../json-helpers";
 import { messageId, messageTime } from "../message-helpers";
 import { touchRenderedState } from "../render-signature";

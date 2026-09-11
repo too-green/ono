@@ -2,7 +2,7 @@ import { Notice, Platform, setIcon } from "obsidian";
 import { pathToFileURL } from "url";
 import type OpenCodePlugin from "../../../../main";
 import type { ComposerAttachment, ComposerImageAttachment } from "../../../settings";
-import type { JsonObject } from "../../../services/opencode-types";
+import type { JsonObject } from "../../../services/opencode/opencode-types";
 import type { SessionViewModel } from "../session-view-model";
 import type { DomEventRegistrar } from "../dom-registrar";
 import { commandName, visibleBuiltinCommands } from "./slash-menu";

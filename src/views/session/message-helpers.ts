@@ -1,6 +1,6 @@
 /** Pure message-bundle metadata accessors. Extracted from SessionView for unit testing. */
 
-import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef } from "../../services/opencode-types";
+import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef } from "../../services/opencode/opencode-types";
 import { readNumber, readObject, readObjectArray, readString } from "./json-helpers";
 import { basename } from "./path-utils";
 

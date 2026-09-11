@@ -1,4 +1,4 @@
-import type { JsonObject, OpenCodeMessageBundle } from "../../../services/opencode-types";
+import type { JsonObject, OpenCodeMessageBundle } from "../../../services/opencode/opencode-types";
 import { describe, expect, it } from "vitest";
 
 import {

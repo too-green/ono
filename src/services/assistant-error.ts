@@ -1,4 +1,4 @@
-import type { JsonObject } from "./opencode-types";
+import type { JsonObject } from "./opencode/opencode-types";
 
 /** Returns whether a v1 assistant error represents a user-requested interruption. */
 export function isAssistantAbortError(error: unknown): boolean {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { normalizeTodoStatusCharacter } from "../../settings";
-import type { OpenCodeTodo } from "../../services/opencode-types";
+import type { OpenCodeTodo } from "../../services/opencode/opencode-types";
 import { sessionTodoMarkdown, todoTabTitle } from "./session-rollup-helpers";
 
 const todos: OpenCodeTodo[] = [

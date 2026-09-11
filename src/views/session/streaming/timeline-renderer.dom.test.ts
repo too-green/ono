@@ -1,6 +1,6 @@
 import { Component, MarkdownRenderer, type App } from "obsidian";
-import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle } from "../../../services/opencode-types";
-import type { OpenCodeEventHandlers } from "../../../services/opencode-events";
+import type { JsonObject, OpenCodeEvent, OpenCodeMessageBundle } from "../../../services/opencode/opencode-types";
+import type { OpenCodeEventHandlers } from "../../../services/opencode/events-helper";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SessionViewModel } from "../session-view-model";

@@ -1,6 +1,6 @@
 import { Notice, setIcon } from "obsidian";
 
-import type { JsonObject } from "../../../services/opencode-types";
+import type { JsonObject } from "../../../services/opencode/opencode-types";
 import { displayPath as displayPathRaw } from "../path-utils";
 import {
   languageFromPath,

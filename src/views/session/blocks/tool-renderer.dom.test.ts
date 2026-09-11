@@ -1,7 +1,7 @@
 import { MarkdownRenderer, type Component } from "obsidian";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { JsonObject } from "../../../services/opencode-types";
+import type { JsonObject } from "../../../services/opencode/opencode-types";
 import { renderToolCall } from "./tool-renderer";
 import { adoptLazyDetailsBody, renderLazyDetailsBody } from "./tool-primitives";
 

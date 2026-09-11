@@ -1,4 +1,4 @@
-import type { OpenCodeSession } from "./services/opencode-types";
+import type { OpenCodeSession } from "./services/opencode/opencode-types";
 
 export interface SessionHierarchyDeps {
   getSession(sessionId: string, directory?: string): Promise<OpenCodeSession>;

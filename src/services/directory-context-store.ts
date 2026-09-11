@@ -1,6 +1,6 @@
 import type { GitInfo } from "../utils/git-info";
 import { readGitInfo, withServerBranch } from "../utils/git-info";
-import type { OpenCodeEvent, OpenCodeProject, OpenCodeVcsInfo } from "./opencode-types";
+import type { OpenCodeEvent, OpenCodeProject, OpenCodeVcsInfo } from "./opencode/opencode-types";
 
 export interface DirectoryContext {
   directory?: string;

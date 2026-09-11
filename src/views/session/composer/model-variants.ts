@@ -2,7 +2,7 @@ import { Menu, Notice, setIcon } from "obsidian";
 import type OpenCodePlugin from "../../../../main";
 import { logger } from "../../../logger";
 import { ModelSelectionMenu, type FavoriteModelRef, type ModelEntry } from "../../ModelSelectionMenu";
-import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef } from "../../../services/opencode-types";
+import type { JsonObject, OpenCodeMessageBundle, OpenCodeModelRef } from "../../../services/opencode/opencode-types";
 import { setProviderIcon } from "../../../utils/provider-icons";
 import type { SessionViewModel } from "../session-view-model";
 import { latestUserAgent, latestUserModel } from "../message-helpers";

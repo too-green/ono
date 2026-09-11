@@ -1,9 +1,9 @@
 import { ItemView, Menu, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import type OpenCodePlugin from "../../main";
 import { DELETE_CURRENT_FILE_COMMANDS, RENAME_CURRENT_FILE_COMMANDS, matchesObsidianCommandHotkey } from "../obsidian-hotkeys";
-import type { OpenCodeEventSubscription } from "../services/opencode-events";
-import { logServiceError } from "../services/opencode-http";
-import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "../services/opencode-types";
+import type { OpenCodeEventSubscription } from "../services/opencode/events-helper";
+import { logServiceError } from "../services/opencode/http-helper";
+import type { JsonObject, OpenCodeEvent, OpenCodePermissionRequest, OpenCodeQuestionRequest, OpenCodeSession } from "../services/opencode/opencode-types";
 import { normalizeWorkingAnimation, visualStatusForSession, type SessionVisualStatus } from "../session-state";
 import { hashRenderState } from "./session/render-signature";
 import {

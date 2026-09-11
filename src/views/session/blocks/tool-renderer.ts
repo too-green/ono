@@ -1,6 +1,6 @@
 import { setIcon } from "obsidian";
 
-import type { JsonObject } from "../../../services/opencode-types";
+import type { JsonObject } from "../../../services/opencode/opencode-types";
 import type { ToolDisplaySetting } from "../../../settings";
 import { inlineValue, languageFromPath, parseReadOutputRows, parseUnifiedDiffRows } from "../diff-parsing";
 import { readNumber, readObject, readString } from "../json-helpers";

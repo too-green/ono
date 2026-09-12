@@ -144,7 +144,7 @@ export function parseCpuTime(value) {
 }
 
 /** Resolves the root and every recursive descendant from one process snapshot. */
-function processTree(processes, rootPid) {
+export function processTree(processes, rootPid) {
   const selected = new Set([rootPid]);
   let changed = true;
   while (changed) {
@@ -159,7 +159,7 @@ function processTree(processes, rootPid) {
 }
 
 /** Classifies Electron helper processes for report aggregation. */
-function processRole(process, rootPid) {
+export function processRole(process, rootPid) {
   if (process.pid === rootPid) return "main";
   if (process.command.includes("--type=renderer")) return "renderer";
   if (process.command.includes("--type=gpu-process")) return "gpu";

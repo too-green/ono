@@ -40,6 +40,16 @@ export interface BenchmarkPlaybackStatus {
   preparedSessions: number;
   totalEvents: number;
   emittedEvents: number;
+  /** Per-session replay state aligned with the configured workspace sessions. */
+  sessions: BenchmarkSessionPlaybackStatus[];
+}
+
+/** Current replay progress for one configured session. */
+export interface BenchmarkSessionPlaybackStatus {
+  sessionId: string;
+  status: "busy" | "idle";
+  totalEvents: number;
+  emittedEvents: number;
 }
 
 /** Narrow orchestration surface; obtained from a service instance via isBenchmarkOpenCodeService. */
@@ -146,6 +156,16 @@ export class BenchmarkOpenCodeService implements OpenCodeServiceApi {
       preparedSessions: this.capturedSessions.size,
       totalEvents: this.plan?.totalEvents ?? 0,
       emittedEvents: this.emittedEvents,
+      sessions: this.configuredIds.map((sessionId, index) => {
+        const totalEvents = this.plan?.timelines[index]?.events.length ?? 0;
+        const emittedEvents = this.replayPointers[index] ?? 0;
+        return {
+          sessionId,
+          status: this.phase === "playing" && emittedEvents < totalEvents ? "busy" : "idle",
+          totalEvents,
+          emittedEvents,
+        };
+      }),
     };
   }
 

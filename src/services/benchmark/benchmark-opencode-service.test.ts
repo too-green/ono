@@ -128,6 +128,10 @@ describe("BenchmarkOpenCodeService preparation", () => {
       preparedSessions: 2,
       totalEvents: 6,
       emittedEvents: 0,
+      sessions: [
+        { sessionId: "ses-a", status: "idle", totalEvents: 3, emittedEvents: 0 },
+        { sessionId: "ses-b", status: "idle", totalEvents: 3, emittedEvents: 0 },
+      ],
     });
     service.dispose();
   });
@@ -362,11 +366,19 @@ describe("BenchmarkOpenCodeService replay", () => {
     const playback = service.start();
     await new Promise((resolve) => setTimeout(resolve, 130));
     await expect(service.getSessionStatus("/repo")).resolves.toEqual({ "ses-a": { type: "busy" }, "ses-b": { type: "busy" } });
+    expect(service.status().sessions).toEqual([
+      expect.objectContaining({ sessionId: "ses-a", status: "busy" }),
+      expect.objectContaining({ sessionId: "ses-b", status: "busy" }),
+    ]);
     // Sessions outside the requested directory scope are never reported.
     await expect(service.getSessionStatus("/other")).resolves.toEqual({});
 
     await playback;
     await expect(service.getSessionStatus("/repo")).resolves.toEqual({});
+    expect(service.status().sessions).toEqual([
+      expect.objectContaining({ sessionId: "ses-a", status: "idle" }),
+      expect.objectContaining({ sessionId: "ses-b", status: "idle" }),
+    ]);
     service.dispose();
   });
 

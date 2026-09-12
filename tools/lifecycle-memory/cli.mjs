@@ -17,6 +17,9 @@ import {
   restoreNormalObsidian,
   waitForVaultTarget,
 } from "../benchmark-runner/obsidian-launcher.mjs";
+import { parseFootprint } from "../benchmark-runner/macos-memory.mjs";
+
+export { parseFootprint } from "../benchmark-runner/macos-memory.mjs";
 
 const execFile = promisify(execFileCallback);
 const currentFile = fileURLToPath(import.meta.url);
@@ -199,23 +202,6 @@ async function checkpoint(client, rendererPid, phase, reload, options) {
   };
 }
 
-/** Parses macOS footprint output into physical, dirty, swapped, and peak byte counters. */
-export function parseFootprint(source) {
-  const header = source.match(/Footprint:\s*(\d+) B/);
-  const total = source.match(/^(\d+) B\s+(\d+) B\s+(\d+) B\s+(\d+) B\s+\d+\s+TOTAL$/m);
-  const physical = source.match(/phys_footprint:\s*(\d+) B/);
-  const peak = source.match(/phys_footprint_peak:\s*(\d+) B/);
-  return {
-    footprintBytes: numberMatch(header),
-    dirtyBytes: total ? Number(total[1]) : undefined,
-    swappedBytes: total ? Number(total[2]) : undefined,
-    cleanBytes: total ? Number(total[3]) : undefined,
-    reclaimableBytes: total ? Number(total[4]) : undefined,
-    physicalBytes: numberMatch(physical),
-    peakPhysicalBytes: numberMatch(peak),
-  };
-}
-
 /** Restores the same session IDs and sessions panel when an unload condition removes them. */
 async function ensureOpenCodeViews(client, expected, pluginId) {
   await client.evaluate(`(async () => {
@@ -300,11 +286,6 @@ function summarizeNumbers(values) {
     max: sorted.at(-1),
     samples: values,
   };
-}
-
-/** Extracts the first numeric capture from one regular-expression result. */
-function numberMatch(match) {
-  return match ? Number(match[1]) : undefined;
 }
 
 /** Computes one SHA-256 artifact identity for the report. */

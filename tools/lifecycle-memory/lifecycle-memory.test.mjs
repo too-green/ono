@@ -24,7 +24,10 @@ test("parses macOS renderer footprint counters", () => {
     swappedBytes: 142704640,
     cleanBytes: 61292544,
     reclaimableBytes: 14893056,
+    wiredBytes: undefined,
+    regions: 34068,
     physicalBytes: 525781704,
     peakPhysicalBytes: 1072941816,
+    categories: [],
   });
 });

@@ -267,6 +267,7 @@ export class TimelineRenderer {
       );
       const entries: Array<{ id: string; signature: string; current?: HTMLElement; next?: HTMLElement }> = [];
       const followGeneration = this.deps.captureFollowLatest();
+      let renderedRows = false;
 
       for (let index = 0; index < visibleMessages.length; index += 1) {
         const message = visibleMessages[index];
@@ -277,26 +278,30 @@ export class TimelineRenderer {
         const signature = this.messageRowSignature(message, options, assistantOptions, queued);
         const current = mountedRows.get(id);
         const next = current?.dataset.messageSignature === signature ? undefined : await this.renderMessageRow(message, options, assistantOptions, queued);
+        if (next) renderedRows = true;
         if (!this.isBindingCurrent(binding) || reconcileVersion !== this.reconcileVersion || !timeline.isConnected) return;
         entries.push({ id, signature, current, next });
       }
 
-      const latestVisibleMessages = this.visibleMessages(messages);
-      const latestActiveAssistantId = this.activeAssistantMessageId(latestVisibleMessages);
-      const latestPendingIndex = lastUncompletedAssistantIndex(latestVisibleMessages);
-      const staleSnapshot = latestVisibleMessages.length !== entries.length || entries.some((entry, index) => {
-        const message = latestVisibleMessages[index];
-        if (!message || messageHelpers.messageId(message) !== entry.id) return true;
-        return this.messageRowSignature(
-          message,
-          messageRenderOptions(latestVisibleMessages, index),
-          this.assistantMetaOptions(latestVisibleMessages, index, latestActiveAssistantId),
-          this.isUserQueued(latestVisibleMessages, index, latestPendingIndex),
-        ) !== entry.signature;
-      });
-      if (staleSnapshot) {
-        if (retryOnStale) await this.reconcileTimeline(messages, false);
-        return;
+      // Only row rendering yields to concurrent stream events; an unchanged pass is fully synchronous.
+      if (renderedRows) {
+        const latestVisibleMessages = this.visibleMessages(messages);
+        const latestActiveAssistantId = this.activeAssistantMessageId(latestVisibleMessages);
+        const latestPendingIndex = lastUncompletedAssistantIndex(latestVisibleMessages);
+        const staleSnapshot = latestVisibleMessages.length !== entries.length || entries.some((entry, index) => {
+          const message = latestVisibleMessages[index];
+          if (!message || messageHelpers.messageId(message) !== entry.id) return true;
+          return this.messageRowSignature(
+            message,
+            messageRenderOptions(latestVisibleMessages, index),
+            this.assistantMetaOptions(latestVisibleMessages, index, latestActiveAssistantId),
+            this.isUserQueued(latestVisibleMessages, index, latestPendingIndex),
+          ) !== entry.signature;
+        });
+        if (staleSnapshot) {
+          if (retryOnStale) await this.reconcileTimeline(messages, false);
+          return;
+        }
       }
 
       const desiredIds = new Set(entries.map((entry) => entry.id));

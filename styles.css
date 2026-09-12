@@ -1907,6 +1907,8 @@ textarea.opencode-session-view__composer-input:focus {
 }
 
 .opencode-session-view__message-row {
+  contain-intrinsic-block-size: auto 120px;
+  content-visibility: auto;
   display: flex;
   flex-direction: column;
 }

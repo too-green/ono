@@ -151,7 +151,8 @@ export class SessionView extends ItemView {
       model: this.model,
       subscribeToEvents: (handlers, directory) => this.plugin.requireOpenCodeService().subscribeToEvents(handlers, directory),
       findStreamingPartTarget: (messageId, partId, type) => this.markdownPatcher.findPartTarget(messageId, partId, type),
-      queueStreamingMarkdownPatch: (key, element, markdown) => this.markdownPatcher.queue(key, element, markdown),
+      queueStreamingMarkdownPatch: (key, element, source) => this.markdownPatcher.queue(key, element, source),
+      cancelStreamingMarkdownPatch: (key) => this.markdownPatcher.cancel(key),
       extendFollowLatest: (durationMs) => this.scroll.extendFollowLatest(durationMs),
       onSessionUpdated: (session) => this.applySessionUpdate(session),
       onSessionDiff: (diffs) => {

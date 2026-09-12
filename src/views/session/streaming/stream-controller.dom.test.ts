@@ -68,6 +68,7 @@ describe("StreamController", () => {
       }),
       findStreamingPartTarget: vi.fn<(messageId: string, partId: string, type: string) => HTMLElement | undefined>(() => undefined),
       queueStreamingMarkdownPatch: vi.fn(),
+      cancelStreamingMarkdownPatch: vi.fn(),
       extendFollowLatest: vi.fn(),
       onSessionUpdated: vi.fn(),
       onSessionDiff: vi.fn(),
@@ -192,8 +193,49 @@ describe("StreamController", () => {
 
     emit(handlers, "message.part.updated", { sessionID: "s1", part: { id: "p1", messageID: "m1", type: "text", text: "snapshot" } });
 
-    expect(deps.queueStreamingMarkdownPatch).toHaveBeenCalledWith("m1:p1:text", target, "snapshot");
+    expect(deps.queueStreamingMarkdownPatch).toHaveBeenCalledWith("m1:p1:text", target, expect.any(Function));
+    expect(deps.queueStreamingMarkdownPatch.mock.calls[0]?.[2]()).toBe("snapshot");
     expect(frames.size).toBe(0);
+  });
+
+  it("canonicalizes completed text snapshots instead of retaining their live patch", () => {
+    const { model, handlers, deps, controller } = setup();
+    const target = document.createElement("div");
+    target.dataset.partId = "p1";
+    deps.findStreamingPartTarget.mockReturnValue(target);
+    model.loadedMessages = [{ info: { id: "m1" }, parts: [{ id: "p1", messageID: "m1", type: "text", text: "partial" }] }];
+
+    emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: " result" });
+    expect(controller.isPartStreaming("m1", "p1")).toBe(true);
+    deps.queueStreamingMarkdownPatch.mockClear();
+    emit(handlers, "message.part.updated", {
+      sessionID: "s1",
+      part: { id: "p1", messageID: "m1", type: "text", text: "partial result", time: { start: 1, end: 2 } },
+    });
+
+    expect(controller.isPartStreaming("m1", "p1")).toBe(false);
+    expect(deps.queueStreamingMarkdownPatch).not.toHaveBeenCalled();
+    expect(deps.cancelStreamingMarkdownPatch).toHaveBeenCalledWith("m1:p1:text");
+    expect(frames.size).toBe(1);
+  });
+
+  it("retains a grouped patch until every streamed part completes", () => {
+    const { model, handlers, deps, controller } = setup();
+    const target = document.createElement("div");
+    target.dataset.partIds = "p1 p2";
+    deps.findStreamingPartTarget.mockReturnValue(target);
+    model.loadedMessages = [{ info: { id: "m1" }, parts: [
+      { id: "p1", messageID: "m1", type: "text", text: "a" },
+      { id: "p2", messageID: "m1", type: "text", text: "b" },
+    ] }];
+    emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: "1" });
+
+    emit(handlers, "message.part.updated", { sessionID: "s1", part: { id: "p1", messageID: "m1", type: "text", text: "a1", time: { end: 1 } } });
+    expect(controller.isPartStreaming("m1", "p2")).toBe(true);
+    expect(deps.cancelStreamingMarkdownPatch).not.toHaveBeenCalled();
+
+    emit(handlers, "message.part.updated", { sessionID: "s1", part: { id: "p2", messageID: "m1", type: "text", text: "b", time: { end: 2 } } });
+    expect(deps.cancelStreamingMarkdownPatch).toHaveBeenCalledWith("m1:p1:text");
   });
 
   it("patches mounted text deltas directly and falls back to a timeline render without a target", () => {
@@ -205,7 +247,8 @@ describe("StreamController", () => {
 
     emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: "b" });
     expect(model.loadedMessages[0]?.parts[0]?.text).toBe("ab");
-    expect(deps.queueStreamingMarkdownPatch).toHaveBeenCalledWith("m1:p1:text", target, "ab");
+    expect(deps.queueStreamingMarkdownPatch).toHaveBeenCalledWith("m1:p1:text", target, expect.any(Function));
+    expect(deps.queueStreamingMarkdownPatch.mock.calls[0]?.[2]()).toBe("ab");
     expect(deps.extendFollowLatest).toHaveBeenCalledWith(1600);
     expect(frames.size).toBe(0);
 
@@ -220,10 +263,14 @@ describe("StreamController", () => {
     const target = document.createElement("div");
     target.dataset.partIds = "p1 p2";
     deps.findStreamingPartTarget.mockReturnValue(target);
-    model.loadedMessages = [{ info: { id: "m1" }, parts: [{ id: "p1", messageID: "m1", type: "text", text: "a" }] }];
+    model.loadedMessages = [{ info: { id: "m1" }, parts: [
+      { id: "p1", messageID: "m1", type: "text", text: "a" },
+      { id: "p2", messageID: "m1", type: "text", text: "c" },
+    ] }];
 
     emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: "b" });
 
+    expect(deps.queueStreamingMarkdownPatch.mock.calls[0]?.[2]()).toBe("ab\n\nc");
     expect(controller.isPartStreaming("m1", "p1")).toBe(true);
     expect(controller.isPartStreaming("m1", "p2")).toBe(true);
     expect(controller.isPartStreaming("m1", "p3")).toBe(false);
@@ -233,6 +280,21 @@ describe("StreamController", () => {
     vi.advanceTimersByTime(1);
     expect(controller.isPartStreaming("m1", "p1")).toBe(false);
     expect(controller.isPartStreaming("m1", "p2")).toBe(false);
+  });
+
+  it("clears all live patch activity when the session becomes idle", () => {
+    const { model, handlers, deps, controller } = setup();
+    const target = document.createElement("div");
+    target.dataset.partIds = "p1 p2";
+    deps.findStreamingPartTarget.mockReturnValue(target);
+    model.loadedMessages = [{ info: { id: "m1" }, parts: [{ id: "p1", messageID: "m1", type: "text", text: "a" }] }];
+    emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: "b" });
+
+    emit(handlers, "session.status", { sessionID: "s1", status: { type: "idle" } });
+
+    expect(controller.isPartStreaming("m1", "p1")).toBe(false);
+    expect(controller.isPartStreaming("m1", "p2")).toBe(false);
+    expect(deps.onSessionStatus).toHaveBeenCalledWith("s1", { type: "idle" });
   });
 
   it("clears part activity when the part completes, is removed, or its message is removed", () => {
@@ -369,7 +431,8 @@ describe("StreamController", () => {
     await vi.waitFor(() => expect(deps.requestTimelineRender).toHaveBeenCalledOnce());
 
     emit(handlers, "message.part.delta", { sessionID: "s1", messageID: "m1", partID: "p1", field: "text", delta: "b" });
-    expect(deps.queueStreamingMarkdownPatch).toHaveBeenCalledWith("m1:p1:text", expect.any(HTMLElement), "ab");
+    expect(deps.queueStreamingMarkdownPatch).toHaveBeenCalledWith("m1:p1:text", expect.any(HTMLElement), expect.any(Function));
+    expect(deps.queueStreamingMarkdownPatch.mock.calls[0]?.[2]()).toBe("ab");
     expect(frames.size).toBe(0);
     releaseFirst?.();
     await vi.waitFor(() => expect(frames.size).toBe(1));

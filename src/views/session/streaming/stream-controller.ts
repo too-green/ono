@@ -19,7 +19,8 @@ export interface StreamDeps {
   model: SessionViewModel;
   subscribeToEvents: (handlers: OpenCodeEventHandlers, directory?: string) => OpenCodeEventSubscription;
   findStreamingPartTarget: (messageId: string, partId: string, type: string) => HTMLElement | undefined;
-  queueStreamingMarkdownPatch: (key: string, element: HTMLElement, markdown: string) => void;
+  queueStreamingMarkdownPatch: (key: string, element: HTMLElement, source: () => string) => void;
+  cancelStreamingMarkdownPatch: (key: string) => void;
   extendFollowLatest: (durationMs: number) => void;
   onSessionUpdated: (session: JsonObject) => void;
   onSessionDiff: (diffs: DiffFileSummary[]) => void;
@@ -231,10 +232,13 @@ export class StreamController {
         const parentId = jsonHelpers.readString(part, ["messageID", "messageId"]);
         const partId = jsonHelpers.readString(part, ["id", "partID", "partId"]);
         const time = jsonHelpers.readObject(part, "time");
-        const reasoningComplete = type === "reasoning" && typeof time?.end === "number";
-        const patchable = (type === "text" && part.synthetic !== true && part.ignored !== true) || (type === "reasoning" && !reasoningComplete);
+        const complete = typeof time?.end === "number";
+        const patchable = !complete && ((type === "text" && part.synthetic !== true && part.ignored !== true) || type === "reasoning");
         if (patchable && parentId && partId && this.patchPart({ messageId: parentId, partId, field: "text", part })) return;
-        if (!patchable && parentId && partId) this.forgetStreamingPart(parentId, partId);
+        if (!patchable && parentId && partId) {
+          this.forgetStreamingPart(parentId, partId);
+          if (complete && (type === "text" || type === "reasoning")) this.cancelPartPatch(parentId, partId, type);
+        }
       }
       this.scheduleRender();
       return;
@@ -267,7 +271,11 @@ export class StreamController {
     }
     if (event.type === "session.status") {
       const status = jsonHelpers.readObject(properties, "status");
-      if (status) this.deps.onSessionStatus(this.deps.model.sessionId, status);
+      if (status) {
+        const type = jsonHelpers.readString(status, ["type", "status", "state"]);
+        if (type === "idle") this.streamingActivity.clear();
+        this.deps.onSessionStatus(this.deps.model.sessionId, status);
+      }
       return;
     }
     if (event.type === "session.error") {
@@ -345,8 +353,12 @@ export class StreamController {
 
   /** Returns true when a part was patched within the last 10 seconds, keeping its block uncanonicalized. */
   isPartStreaming(messageId: string, partId: string): boolean {
-    const last = this.streamingActivity.get(`${messageId}:${partId}`);
-    return last !== undefined && Date.now() - last < 10_000;
+    const key = `${messageId}:${partId}`;
+    const last = this.streamingActivity.get(key);
+    if (last === undefined) return false;
+    if (Date.now() - last < 10_000) return true;
+    this.streamingActivity.delete(key);
+    return false;
   }
 
   /** Records patch activity for every grouped part id mounted on one streaming target. */
@@ -376,14 +388,30 @@ export class StreamController {
     if (!target) return false;
     const groupedPartIds = (target.dataset.partIds ?? target.dataset.partId ?? delta.partId).split(" ");
     this.touchStreamingParts(delta.messageId, groupedPartIds);
-    const bundle = this.deps.model.loadedMessages.find((message) => messageId(message) === delta.messageId);
-    const markdown = groupedPartIds
+    const source = groupedPartIds.length === 1 && groupedPartIds[0] === delta.partId
+      ? () => (jsonHelpers.readString(delta.part, ["text"]) ?? "").trim()
+      : () => this.groupedPartMarkdown(delta.messageId, groupedPartIds);
+    this.deps.queueStreamingMarkdownPatch(`${delta.messageId}:${groupedPartIds[0] ?? delta.partId}:${delta.field}`, target, source);
+    return true;
+  }
+
+  /** Reads the latest combined source only when the throttled Markdown patch is ready to paint. */
+  private groupedPartMarkdown(targetMessageId: string, partIds: string[]): string {
+    const bundle = this.deps.model.loadedMessages.find((message) => messageId(message) === targetMessageId);
+    return partIds
       .map((partId) => bundle?.parts.find((part) => jsonHelpers.readString(part, ["id", "partID", "partId"]) === partId))
       .map((part) => part ? jsonHelpers.readString(part, ["text"]) ?? "" : "")
       .join("\n\n")
       .trim();
-    this.deps.queueStreamingMarkdownPatch(`${delta.messageId}:${groupedPartIds[0] ?? delta.partId}:${delta.field}`, target, markdown);
-    return true;
+  }
+
+  /** Cancels a grouped live patch once none of its text or reasoning parts remain active. */
+  private cancelPartPatch(messageId: string, partId: string, type: string): void {
+    const target = this.deps.findStreamingPartTarget(messageId, partId, type);
+    if (!target) return;
+    const groupedPartIds = (target.dataset.partIds ?? target.dataset.partId ?? partId).split(" ");
+    if (groupedPartIds.some((groupedPartId) => this.isPartStreaming(messageId, groupedPartId))) return;
+    this.deps.cancelStreamingMarkdownPatch(`${messageId}:${groupedPartIds[0] ?? partId}:text`);
   }
 
   /** Queues a frame-bounded timeline render without postponing every token delta. */

@@ -686,6 +686,7 @@ describe("TimelineRenderer DOM", () => {
       },
       findStreamingPartTarget: () => undefined,
       queueStreamingMarkdownPatch: vi.fn(),
+      cancelStreamingMarkdownPatch: vi.fn(),
       extendFollowLatest: vi.fn(),
       onSessionUpdated: vi.fn(),
       onSessionDiff: vi.fn(),

@@ -28,12 +28,13 @@ describe("MarkdownPatcher", () => {
 
   afterEach(() => {
     document.body.replaceChildren();
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
   /** Creates a patcher and mounted target with observable scroll callbacks. */
-  function setup(followLatest = true) {
+  function setup(followLatest = true, renderIntervalMs = 0) {
     const contentEl = document.createElement("div");
     const target = document.createElement("div");
     contentEl.appendChild(target);
@@ -49,6 +50,7 @@ describe("MarkdownPatcher", () => {
     const patcher = new MarkdownPatcher({
       contentEl,
       component,
+      renderIntervalMs,
       getSessionId: () => "session-1",
       captureFollowLatest: () => followAnchor,
       restoreFollowLatest,
@@ -97,6 +99,81 @@ describe("MarkdownPatcher", () => {
     expect(updateJumpButton).toHaveBeenCalledOnce();
   });
 
+  it("resolves only the latest queued Markdown source when the frame flushes", async () => {
+    const { patcher, target } = setup(false);
+    const stale = vi.fn(() => "stale");
+    const latest = vi.fn(() => "latest");
+    vi.spyOn(MarkdownRenderer, "renderMarkdown").mockImplementation(async (markdown, container) => {
+      container.textContent = markdown;
+    });
+
+    patcher.queue("part", target, stale);
+    patcher.queue("part", target, latest);
+    expect(stale).not.toHaveBeenCalled();
+    expect(latest).not.toHaveBeenCalled();
+    runNextFrame();
+    await settle();
+
+    expect(stale).not.toHaveBeenCalled();
+    expect(latest).toHaveBeenCalledOnce();
+    expect(target.textContent).toBe("latest");
+  });
+
+  it("coalesces Markdown renders within the configured paint interval", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const { patcher, target } = setup(false, 50);
+    const render = vi.spyOn(MarkdownRenderer, "renderMarkdown").mockImplementation(async (markdown, container) => {
+      container.textContent = markdown;
+    });
+
+    patcher.queue("part", target, "first");
+    runNextFrame();
+    await settle();
+    patcher.queue("part", target, "second");
+    patcher.queue("part", target, "latest");
+
+    expect(frames.size).toBe(0);
+    now = 49;
+    vi.advanceTimersByTime(49);
+    expect(frames.size).toBe(0);
+    now = 50;
+    vi.advanceTimersByTime(1);
+    expect(frames.size).toBe(1);
+    runNextFrame();
+    await settle();
+
+    expect(render).toHaveBeenCalledTimes(2);
+    expect(target.textContent).toBe("latest");
+  });
+
+  it("spaces a pending render from completion of a slow render", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const { patcher, target } = setup(false, 50);
+    let releaseRender: (() => void) | undefined;
+    vi.spyOn(MarkdownRenderer, "renderMarkdown").mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { releaseRender = resolve; });
+    });
+
+    patcher.queue("part", target, "first");
+    runNextFrame();
+    await vi.waitFor(() => expect(releaseRender).toBeTypeOf("function"));
+    patcher.queue("part", target, "latest");
+    now = 100;
+    releaseRender?.();
+    await settle();
+
+    now = 149;
+    vi.advanceTimersByTime(49);
+    expect(frames.size).toBe(0);
+    now = 150;
+    vi.advanceTimersByTime(1);
+    expect(frames.size).toBe(1);
+  });
+
   it("follows up with the newest delta when rendering is already in flight", async () => {
     const { patcher, target } = setup(false);
     let releaseFirst: (() => void) | undefined;
@@ -122,6 +199,26 @@ describe("MarkdownPatcher", () => {
     runNextFrame();
     await vi.waitFor(() => expect(target.textContent).toBe("latest"));
     expect(render).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an in-flight render when a newer source resolves to identical Markdown", async () => {
+    const { patcher, target } = setup(false);
+    let releaseRender: (() => void) | undefined;
+    const render = vi.spyOn(MarkdownRenderer, "renderMarkdown").mockImplementationOnce(async (markdown, container) => {
+      await new Promise<void>((resolve) => { releaseRender = resolve; });
+      container.textContent = markdown;
+    });
+
+    patcher.queue("part", target, () => "same");
+    runNextFrame();
+    await vi.waitFor(() => expect(releaseRender).toBeTypeOf("function"));
+    patcher.queue("part", target, () => "same");
+    releaseRender?.();
+    await settle();
+
+    expect(target.textContent).toBe("same");
+    expect(render).toHaveBeenCalledOnce();
+    expect(frames.size).toBe(0);
   });
 
   it("keeps only one mounted render scope when grouped part keys patch the same target", async () => {
@@ -151,6 +248,11 @@ describe("MarkdownPatcher", () => {
   });
 
   it("cancels queued and in-flight work on disposal", async () => {
+    const queued = setup();
+    queued.patcher.queue("queued", queued.target, "queued");
+    queued.patcher.dispose();
+    expect(cancelFrame).toHaveBeenCalledWith(1);
+
     const { patcher, target } = setup();
     let releaseRender: (() => void) | undefined;
     const blockedRender = new Promise<void>((resolve) => {
@@ -161,11 +263,6 @@ describe("MarkdownPatcher", () => {
       container.textContent = "stale";
     });
 
-    patcher.queue("queued", target, "queued");
-    patcher.dispose();
-    expect(cancelFrame).toHaveBeenCalledWith(1);
-    expect(render).not.toHaveBeenCalled();
-
     patcher.queue("active", target, "active");
     runNextFrame();
     await vi.waitFor(() => expect(render).toHaveBeenCalledOnce());
@@ -173,6 +270,15 @@ describe("MarkdownPatcher", () => {
     releaseRender?.();
     await vi.waitFor(() => expect(frames.size).toBe(0));
     expect(target.textContent).toBe("");
+  });
+
+  it("ignores queues after disposal", () => {
+    const { patcher, target } = setup();
+    patcher.dispose();
+
+    patcher.queue("late", target, "late");
+
+    expect(frames.size).toBe(0);
   });
 
   it("cancels a stale part patch before canonical reconciliation commits", async () => {
@@ -204,6 +310,25 @@ describe("MarkdownPatcher", () => {
     expect(cancelFrame).toHaveBeenCalledWith(1);
     expect(frames.size).toBe(0);
     expect(target.textContent).toBe("");
+  });
+
+  it("cancels a throttled part patch before its timer elapses", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const { patcher, target } = setup(false, 50);
+    const render = vi.spyOn(MarkdownRenderer, "renderMarkdown").mockResolvedValue();
+    patcher.queue("message:part:text", target, "first");
+    runNextFrame();
+    await settle();
+    patcher.queue("message:part:text", target, "stale");
+
+    patcher.cancel("message:part:text");
+    now = 100;
+    vi.advanceTimersByTime(100);
+
+    expect(frames.size).toBe(0);
+    expect(render).toHaveBeenCalledOnce();
   });
 
   /** Drains the microtask queue so a queued animation frame's async flush fully settles. */

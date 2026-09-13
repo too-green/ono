@@ -1695,14 +1695,6 @@ textarea.opencode-session-view__composer-input:focus {
   display: inline-flex;
 }
 
-.opencode-session-view__composer-hint {
-  color: var(--text-faint);
-  font-size: var(--font-ui-smaller);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .opencode-session-view__composer-send {
   align-items: center;
   display: inline-flex;

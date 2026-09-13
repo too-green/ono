@@ -2,6 +2,10 @@
 
 An [OpenCode](https://opencode.ai) client that lives inside Obsidian with a UX made to feel native to the Obsidian app. It uses your vault's theme to render OpenCode sessions and offers a Sessions Panel made to feel like home (read: Files panel).
 
+>Not affiliated with the team behind OpenCode in any way!
+
+![demo](assets/ono-demo.gif)
+
 ## What's so "Obsidian-Native" about it?
 
 If you give this a spin, try the following:
